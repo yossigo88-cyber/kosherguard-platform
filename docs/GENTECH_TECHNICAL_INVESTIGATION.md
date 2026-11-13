@@ -2,7 +2,7 @@
 
 KosherGuard platform - technical investigation into reproducing the observable functionality of GenTech's iPhone management and filtering system, and the architecture options for building our own backend, MDM infrastructure, filtering engine, policy management, and administrator dashboard.
 
-Date: November 13, 2026 (revised same day after critical review: commercial MDM authorization, URL Filter limits, GenTech evidence separation, cost/feasibility recalculation, development decision)
+Date: November 13, 2026 (revised same day after critical review: commercial MDM authorization, URL Filter limits, GenTech evidence separation, cost/feasibility recalculation, development decision; second revision same day: URL Filter deployment modes and full infrastructure, Apple Business enrollment status, entitlement approval clarity)
 Status: Investigation only. No application code, no mockups, no deployments.
 
 **Evidence labels used in this document:**
@@ -11,6 +11,7 @@ Status: Investigation only. No application code, no mockups, no deployments.
 - **[Verified - Apple]** - directly stated in current Apple documentation (including the public Developer Program License Agreement PDF) fetched November 13, 2026.
 - **[Evidence]** - third-party, community, or indirect but checkable evidence; not official confirmation.
 - **[Hypothesis]** - our inference; not confirmed.
+- **[User-reported]** - reported by the project owner about his own accounts/devices; not independently verifiable from public sources.
 
 Nothing here is copied from any previous project. All Apple claims were re-checked against current documentation on the date above; the platform has changed recently (iOS 26/27), and some older guidance is now stale.
 
@@ -83,6 +84,12 @@ All iPhone management flows through Apple's device management framework (built i
 - Two delivery styles coexist: legacy XML configuration profiles and the newer Declarative Device Management (DDM) JSON declarations. Apple is actively migrating payloads to DDM (see section 6).
 - Device identity for enrollment uses ACME (recommended in current docs) or SCEP certificate enrollment. **[Verified - Apple]** (same intro page)
 
+### 2.4 Apple Business availability and our current enrollment status (unresolved)
+
+- Apple currently presents Apple Business as available to "any business, from solo entrepreneurs to large enterprises," free to get started, with **built-in device management** included at no cost. **[Verified - Apple]** (https://business.apple.com/support/ FAQ). Apple announced Apple Business in March 2026 as a free all-in-one platform merging Business Manager, Business Essentials, and Business Connect, with built-in MDM; Essentials customers stopped being charged after April 14, 2026. **[Verified - Apple]** (https://www.apple.com/newsroom/2026/03/introducing-apple-business-a-new-all-in-one-platform-for-businesses-of-all-sizes/)
+- **However, our own enrollment is not working. [User-reported]:** KosherGuard's previous Apple Business organization enrollment attempt was marked **"Not Qualified,"** and the Apple Account showed a message that it is already managed by an existing organization. This issue is **unresolved**. We do not claim that organization verification is currently possible for us, and we do not assume a future attempt will succeed.
+- **Next step:** Apple Support review of the "Not Qualified" decision and the existing-organization account conflict. Until that resolves, every plan item that depends on Apple Business (ADE non-removable enrollment, the free built-in MDM fallback, Configurator-for-iPhone device adds) is at risk, and the alternatives in section F gain weight.
+
 ---
 
 ## 3. How to build our own MDM server
@@ -153,7 +160,7 @@ Apple's current "Filter content for Apple devices" page (published November 3, 2
 | DNS Proxy payload (on-device DNS proxy app) | No on iOS 15+ (installed via MDM) | Hosts only | DNS lookups only | Needs a companion app with an Apple-granted entitlement |
 | DNS Settings payload (DoH/DoT to a filtered resolver) | Lockable on supervised | Hosts only | DNS lookups only | Cheap, no proxy server needed |
 | Content filter providers (Network Extension filter app) | App deletion preventable on supervised | Yes | Yes (browser/socket filters on iOS; packet filter is macOS-only per the iOS 27 DDM config) | On-device; runs in a restrictive sandbox |
-| URL filters (NEURLFilter, iOS 26+) | No | Yes - **but only WebKit/URLSession traffic by default** | No | New; strict coverage and reporting limits - see 5.4 |
+| URL filters (NEURLFilter, iOS 26+) | **Depends on mode and OS version** - standalone app: No; iOS 26 MDM configuration: Yes; iOS 27 DDM configuration: No but scoped to managed apps when unsupervised (see 5.4) | Yes - **but only WebKit/URLSession traffic by default** | No | New; strict coverage and reporting limits - see 5.4 |
 | VPN / packet tunnel | No (except Always-On VPN: supervised) | Within tunneled traffic | Yes | GenTech explicitly does NOT use this |
 
 ### 5.2 Global HTTP Proxy with TLS inspection (the GenTech model)
@@ -170,22 +177,39 @@ Apple's current "Filter content for Apple devices" page (published November 3, 2
 - **On-device URL filter (possible future route, with real limits):** see 5.4 - promising for privacy and for removing proxy bandwidth costs, but it is not a universal filter.
 - Category databases (the "which sites are bad" data) are a separate problem from enforcement: build/maintain our own lists, or license a categorization feed (paid - flagged in section F).
 
-### 5.4 iOS 26+ URL Filter: what it actually does and does not do
+### 5.4 iOS 26+ URL Filter: deployment modes, supervision, and full infrastructure
 
-Sources: Apple's URL filter API documentation (https://developer.apple.com/documentation/networkextension/url-filters.md), the Web content filter plugin DDM configuration page (https://support.apple.com/guide/deployment/web-content-filter-plugin-declarative-depcbacfcb0e/web), and a technical first-look analysis (https://textslashplain.com/2025/06/10/apple-url-filter-api/).
+Sources: Apple's URL filter API documentation (https://developer.apple.com/documentation/networkextension/url-filters.md), Apple's WWDC25 session 234 "Filter and tunnel network traffic with NetworkExtension" (https://developer.apple.com/videos/play/wwdc2025/234/), the Web content filter plugin DDM configuration page, iOS 27+ (https://support.apple.com/guide/deployment/web-content-filter-plugin-declarative-depcbacfcb0e/web), and a technical first-look analysis (https://textslashplain.com/2025/06/10/apple-url-filter-api/).
 
-**Coverage:**
+**Three deployment modes with three different supervision answers** - these must not be collapsed into one:
+
+| Mode | Supervision required? | Scope | Source |
+| --- | --- | --- | --- |
+| 1. Standalone consumer URL Filter app: user installs the app; the app enables and manages its own filter via `NEURLFilterManager` | **No - works on unmanaged devices** ("URL Filters are supported on both managed and unmanaged devices") | WebKit/URLSession traffic system-wide on that device | WWDC25 session 234 **[Verified - Apple]** |
+| 2. iOS 26 MDM-installed URL Filter configuration (Content Filter payload pushed by an MDM) | **Yes** - "MDM URL Filter configuration requires device supervision" | Managed (supervised) device | WWDC25 session 234 **[Verified - Apple]** |
+| 3. iOS 27+ DDM Web Content Filter Plugin configuration | **No** ("Requires supervision: No"; supports User Enrollment, Device Enrollment, ADE) - but on unsupervised devices and User Enrollment the filter is bound to **managed apps** via a Content filter UUID | Managed apps on unsupervised devices / User Enrollment; broader on supervised devices | iOS 27 DDM config page **[Verified - Apple]** |
+
+Apple's own sources differ by OS version and configuration mechanism: the WWDC25 session says the MDM-pushed URL Filter configuration requires supervision, while the iOS 27 DDM configuration page says supervision is not required. We preserve both statements and flag this explicitly as a **version/configuration difference** (iOS 26 configuration profile vs. iOS 27 DDM declaration), not a contradiction to be resolved by guessing. **[Verified - Apple]**
+
+**Coverage (all modes):**
 
 - The system examines URL requests **sent via WebKit and URLSession only**. **[Verified - Apple]** Any app or browser that does not use WebKit/URLSession is **not** filtered by default; it can only participate **voluntarily** by calling the `NEURLFilter` Participation API (`verdict(for:)`) and honoring the verdict itself. A bypass app simply won't call it. This is not universal, enforceable system-wide filtering. **[Verified - Apple]**
-- It filters URLs, not packets, and not non-HTTP(S) protocols. **[Verified - Apple]** (deployment guide capability table)
-- Supervision is **not** required: the Web content filter plugin DDM configuration (iOS 27+) lists "Requires supervision: No" and supports User Enrollment, Device Enrollment, and ADE. **[Verified - Apple]** However, on unsupervised devices and User Enrollment, the filter is bound to **managed apps** via a Content filter UUID - i.e. coverage is tied to management for the apps it protects. **[Verified - Apple]** (same page)
+- It filters URLs (HTTP/HTTPS requests), not packets, and not non-HTTP(S) protocols. **[Verified - Apple]** (WWDC25 session 234; deployment guide capability table)
 
-**Infrastructure requirements:**
+**Full infrastructure - the PIR server is NOT the only required backend component.** URL Filter relies on four technologies (WWDC25 session 234 **[Verified - Apple]**): Bloom filters, Private Information Retrieval, Privacy Pass, and Oblivious HTTP. The components and who operates them:
 
-- The developer must host a **PIR (Private Information Retrieval) server** holding the off-device URL database; Apple provides an open-source container tool and sample project for it, and the configuration is registered in the CloudKit Console (Identity & Trust page). **[Verified - Apple]**
-- On-device: a Bloom prefilter (built with Apple's Bloom filter tool) quickly allows URLs not in the block list; possible hits go to the PIR server over an **Apple-hosted Oblivious HTTP Relay**. **[Verified - Apple]**
-- Prefilter refresh interval: default 1 day, minimum 45 minutes - database updates cannot propagate faster than that. **[Verified - Apple]** (DDM config page)
-- A fail-closed option exists: block all URLs when the filter cannot reach a decision. **[Verified - Apple]** (same page)
+| Component | Who operates it | Apple approval needed? |
+| --- | --- | --- |
+| Bloom prefilter (built from our URL data set with Apple's Bloom filter tool; shipped in the app bundle or fetched periodically by the app extension) | KosherGuard (generated and delivered via the app or our server) | No |
+| PIR server (off-device URL database; Apple provides an open-source container tool and sample server; use case must be named `<app-bundle-id>.url.filtering`; the configuration is registered on the Identity & Trust page in CloudKit Console) | **KosherGuard hosts** | CloudKit Console registration **[Verified - Apple]** |
+| Privacy Pass Issuer (issues cryptographically blind-signed tokens so devices authenticate anonymously; a sample issuer ships with Apple's PIR sample project) | **KosherGuard hosts** | No separate approval documented |
+| OHTTP Gateway (decrypts and forwards oblivious requests to our PIR server - "the Oblivious HTTP Gateway will be hosted by you") | **KosherGuard hosts** | No separate approval documented |
+| OHTTP Relay (hides the client IP address from our gateway) | **Apple hosts** | **Yes - a capability we must apply for via the request form in Apple's documentation; Apple validates our server configuration for the relay before approval** |
+
+- The Apple-hosted OHTTP Relay capability **must be approved before any distribution build** (App Store, TestFlight, ad-hoc, developer-ID, or enterprise-signed). **Development-signed builds are exempt**, so building and testing can start immediately; approval gates distribution, not development. **[Verified - Apple]** (WWDC25 session 234)
+- The app also needs the `url-filter-provider` Network Extension entitlement - see section 10 on entitlement requests and approval. **[Verified - Apple]** (WWDC25 session 234)
+- Prefilter refresh interval: default 1 day, minimum 45 minutes - database updates cannot propagate to devices faster than that. **[Verified - Apple]** (DDM config page)
+- A fail-closed option exists: block all URLs when the filter cannot reach a decision (e.g. the PIR server is unreachable). **[Verified - Apple]** (same page)
 
 **Reporting and feedback limits:** **[Evidence]** (text/plain analysis, consistent with the API's documented privacy design)
 
@@ -194,7 +218,7 @@ Sources: Apple's URL filter API documentation (https://developer.apple.com/docum
 - Binary verdicts only: no "warn and override."
 - No mechanism in Apple clients to report a false positive back to the filter service.
 
-**Bottom line:** the iOS 26 URL Filter is a privacy-preserving **blocklist** engine for WebKit/URLSession traffic, not a universal content filter and not a reporting tool. It could complement the proxy/DNS layers (cheap first line for Safari/WebKit traffic) but cannot replace GenTech-style proxy filtering for arbitrary apps or provide category-based dynamic page analysis. **[Evidence]**
+**Bottom line:** the URL Filter is a privacy-preserving **blocklist** engine for WebKit/URLSession traffic, not a universal content filter and not a reporting tool. As a standalone app it needs no supervision and no MDM at all - but then it has no removal protection. With MDM it gains manageability, at the cost of supervision (iOS 26 MDM configuration) or managed-app scoping (iOS 27 DDM configuration on unsupervised devices). KosherGuard would have to operate a PIR server, a Privacy Pass Issuer, and an OHTTP Gateway, and would need Apple's OHTTP Relay capability approval before distribution. It could complement the proxy/DNS layers (cheap first line for Safari/WebKit traffic) but cannot replace GenTech-style proxy filtering for arbitrary apps or provide category-based dynamic page analysis. **[Evidence]**
 
 ---
 
@@ -256,7 +280,8 @@ These complement (not replace) on-device enforcement, because a managed iPhone r
 - **Selection by Apple as a third-party MDM developer** for any customer-facing MDM product (DPLA Attachment 10; section 3.4). **[Verified - Apple]**
 - MDM Vendor CSR Signing Certificate (request from the account; Apple Developer Program or Enterprise Program holders). **[Verified - Apple]** (https://developer.apple.com/help/account/certificates/mdm-vendor-csr-signing-certificate/)
 - Apple Push Certificates Portal access for the yearly push certificate (free). **[Verified - Apple]** (https://support.apple.com/guide/deployment/configure-devices-to-work-with-apns-dep2de55389a/web)
-- Apple Business organization (free signup; organization verification takes multiple business days and unverified organizations are deleted after 60 days). **[Verified - Apple]** (https://support.apple.com/guide/business/sign-up-and-verify-your-organization-axm402206497/web)
+- Apple Business organization (free, open to solo entrepreneurs per Apple's current FAQ; verification required - **our own enrollment is currently blocked by a user-reported "Not Qualified" decision and an existing-organization account conflict; unresolved, see 2.4**). **[Verified - Apple / User-reported]** (https://support.apple.com/guide/business/sign-up-and-verify-your-organization-axm402206497/web; https://business.apple.com/support/)
+- **URL Filter entitlements/capabilities (only for the optional URL Filter app route):** the `url-filter-provider` Network Extension entitlement and the Apple-hosted OHTTP Relay capability each require an Apple request and approval (request form referenced in Apple's documentation; Apple validates the developer's server configuration). Developer Program membership alone does not guarantee approval; approval is not needed for development-signed testing. **[Verified - Apple]** (WWDC25 session 234: https://developer.apple.com/videos/play/wwdc2025/234/)
 - Server with public HTTPS (TLS certificate; free via Let's Encrypt). **[Evidence]**
 - A Mac is optional: supervision can be achieved through ADE with devices added by Apple Configurator for iPhone; Apple Configurator for Mac (free) is only needed for direct manual supervision. **[Verified - Apple]** (supervision page; Configurator page)
 
@@ -273,7 +298,7 @@ These complement (not replace) on-device enforcement, because a managed iPhone r
 - No inbound connections to devices; APNs only. **[Verified - Apple]**
 - Non-HTTP apps bypass HTTP proxies. **[Verified - Apple]**
 - Host-only granularity for DNS-based filtering. **[Verified - Apple]**
-- URL Filter covers WebKit/URLSession only; other apps opt in voluntarily. **[Verified - Apple]**
+- URL Filter covers WebKit/URLSession only; other apps opt in voluntarily; supervision depends on deployment mode and OS version (standalone app: no; iOS 26 MDM configuration: yes; iOS 27 DDM configuration: no, but managed-app scoped when unsupervised - see 5.4). **[Verified - Apple]**
 - Strongest controls (app denial, non-removable enrollment, erase blocking, global proxy) all require supervision; ADE non-removability requires Apple Business. **[Verified - Apple]**
 - The 30-day provisional release for Configurator-added devices is an unavoidable Apple policy. **[Verified - Apple]**
 - Packet-level filtering requires a Network Extension app with Apple-granted entitlements (approval not guaranteed); packet filters are macOS-only in the iOS 27 DDM content-filter configuration. **[Verified - Apple]** (https://support.apple.com/guide/deployment/web-content-filter-plugin-declarative-depcbacfcb0e/web)
@@ -292,10 +317,11 @@ These complement (not replace) on-device enforcement, because a managed iPhone r
 | MDM vendor CSR signing certificate | Requires $99/year Developer Program | Requested from the developer account ("contact us") |
 | MDM APNs push certificate (per customer) | Free (identity.apple.com) | Customer's own certificate; yearly renewal, same topic; vendor must never hold customer keys |
 | Supervision | Free | Via ADE (Apple Business) or Configurator |
-| Apple Business organization | Free | Verification required; organization must be real |
+| Apple Business organization | Free (open to solo entrepreneurs per Apple's FAQ) | Verification required; **our enrollment currently blocked ("Not Qualified," user-reported) - unresolved, Apple Support review is the next step; see 2.4** |
 | Automated Device Enrollment | Free with Apple Business | Non-removable enrollment only here |
-| Apple Business built-in device management | Free (merged from Essentials, April 2026) | Apple's own MDM - a fallback platform, not ours (https://9to5mac.com/2026/03/24/apple-business-essentials-goes-free-as-apple-merges-enterprise-tools-into-apple-business/) **[Evidence]** |
-| Network Extension filter entitlements | Included in Developer Program | Apple approval required |
+| Apple Business built-in device management | Free (merged from Business Manager/Essentials/Connect, April 2026) | Apple's own MDM - a fallback platform, not ours **[Verified - Apple]** (https://www.apple.com/newsroom/2026/03/introducing-apple-business-a-new-all-in-one-platform-for-businesses-of-all-sizes/; https://business.apple.com/support/) |
+| Network Extension filter entitlements (incl. `url-filter-provider`) | No separate fee documented | **Requires an Apple request and approval; Developer Program membership does not guarantee approval** **[Verified - Apple]** (WWDC25 session 234) |
+| URL Filter OHTTP Relay capability | No fee (Apple hosts the relay) | Request form + Apple validation of our server configuration; required before any distribution build; development-signed builds exempt **[Verified - Apple]** (WWDC25 session 234) |
 | App Store distribution of any companion app | Developer Program | App Review applies |
 
 ---
@@ -304,7 +330,7 @@ These complement (not replace) on-device enforcement, because a managed iPhone r
 
 The architecture separates into an **authorization-independent filtering stack** and an **authorization-gated management stack**:
 
-1. **Filtering stack (no MDM authorization needed):** filtered DNS resolver (DoH/DoT) + policy engine; filtering proxy with PAC + optional TLS inspection; later, a URL-filter Network Extension app. All testable today on manually installed profiles on supervised test devices.
+1. **Filtering stack (no MDM authorization needed):** filtered DNS resolver (DoH/DoT) + policy engine; filtering proxy with PAC + optional TLS inspection; later, a URL-filter Network Extension app with its own backend trio - PIR server, Privacy Pass Issuer, and OHTTP Gateway operated by us, plus Apple's hosted OHTTP Relay, which requires capability approval (development-signed builds are exempt, so this is testable before approval). All testable today on manually installed profiles on supervised test devices.
 2. **Management stack (authorization-gated for customers, free for in-house):** MDM server (NanoMDM-derived or fresh) with enrollment (ACME/SCEP), APNs push, DDM policy delivery, Return to Service automation. In-house development and testing on organization-owned test devices is permitted without selection (A10 1.1); offering it to customers waits on selection.
 3. **Admin dashboard** over both stacks: devices, filter levels, app deny lists, enrollment codes, status.
 4. **Device base (target):** supervised iPhones added to Apple Business via Apple Configurator for iPhone, enrolled through ADE (non-removable).
@@ -334,7 +360,7 @@ Not reproducible at all (by anyone) on current iOS:
 ## C. Features requiring further investigation
 
 - The Apple third-party MDM developer selection process: criteria, timeline, realistic odds for a small new entrant. No public documentation; the only known channel is the developer-account "contact us" request for the vendor CSR signing certificate.
-- URL-filter Network Extension entitlement approval odds and PIR server operating requirements.
+- URL Filter approvals: likelihood and timeline for the `url-filter-provider` entitlement and the Apple-hosted OHTTP Relay capability (each requires an Apple request; membership does not guarantee approval), plus real-world operating requirements of the backend trio (PIR server, Privacy Pass Issuer, OHTTP Gateway).
 - Partnering options with already-selected MDM vendors (who holds which certificate, per-customer cert flow under A10 4.1, pricing).
 - Category-database sourcing: build vs. license (cost unknown until scoped).
 - Behavior parity testing against an actual GenTech-managed device (observable behaviors only, with the device owner's consent) - would confirm or kill the supervision hypothesis in 1.4.
@@ -345,7 +371,7 @@ Not reproducible at all (by anyone) on current iOS:
 
 Phase 0 - authorization track (start immediately, runs in parallel):
 
-1. Complete Apple Business organization verification (free; already possible now).
+1. Resolve the Apple Business organization enrollment problem (free): our prior attempt was marked "Not Qualified" and the Apple Account shows an existing-organization management conflict (user-reported, unresolved - see 2.4). Open an Apple Support review. Do not assume it succeeds; track it as a project risk alongside the MDM selection gate.
 2. Enroll in the Apple Developer Program ($99) **when we are ready to request MDM vendor access** - the request itself is the selection doorway; treat the outcome as a project gate. Document Apple's answer either way before any customer-facing build.
 
 Phase 1 - buildable and testable now (no customer devices, no selection needed):
@@ -359,7 +385,7 @@ Phase 2 - gated on selection:
 
 7. Customer enrollment flows (per-customer certificates under A10 4.1), ADE non-removable enrollment, production hardening.
 8. Return to Service / reset-recovery automation.
-9. URL-filter Network Extension app evaluation (entitlement request via the Developer Program).
+9. URL-filter Network Extension app evaluation: request the `url-filter-provider` entitlement and the Apple-hosted OHTTP Relay capability (each requires an Apple request and approval, which membership does not guarantee; development-signed builds can be built and tested before approval); stand up the PIR server + Privacy Pass Issuer + OHTTP Gateway backend trio on our server.
 
 ## E. Required equipment and accounts
 
@@ -367,7 +393,7 @@ Phase 2 - gated on selection:
 - An iPhone with iOS 16+ for Apple Configurator for iPhone (can be the owner's own phone); a Mac optional for Configurator for Mac.
 - Apple IDs: one for the Developer Program, one for Apple Business.
 - Server: any Linux host with a public IP and domain name.
-- A real organization identity for Apple Business verification (already in progress per project context).
+- A real organization identity for Apple Business verification (**currently blocked**: user-reported "Not Qualified" decision and existing-organization conflict; unresolved pending Apple Support review - see 2.4).
 
 ## F. Expected costs, including free alternatives (recalculated)
 
@@ -376,7 +402,9 @@ Phase 2 - gated on selection:
 | Apple Developer Program | $99/year **[Verified - Apple]** | Prerequisite to *request* vendor MDM access; **does not by itself authorize commercial MDM** (A10) |
 | Third-party MDM developer selection | No published fee | Binary risk; if refused, see alternatives below |
 | MDM APNs push certificate (per customer) | Free (identity.apple.com) | Customers obtain their own; vendor never holds customer keys (A10 4.1/4.2) |
-| Apple Business (incl. built-in device management since April 2026) | Free **[Evidence]** (9to5Mac report of Apple's announcement; verify on business.apple.com when signing up) | Apple's built-in MDM is itself a fallback platform (see below) |
+| Apple Business (incl. built-in device management since the April 2026 merge) | Free **[Verified - Apple]** (https://business.apple.com/support/; https://www.apple.com/newsroom/2026/03/introducing-apple-business-a-new-all-in-one-platform-for-businesses-of-all-sizes/) | Apple's built-in MDM is itself a fallback platform (see below); **our enrollment is currently blocked - user-reported "Not Qualified," unresolved, see 2.4** |
+| URL Filter backend trio (PIR server + Privacy Pass Issuer + OHTTP Gateway) | Server hosting only (can share the same host as the other services) | Apple ships a sample PIR server and Privacy Pass Issuer plus an open-source container tool **[Verified - Apple]** |
+| URL Filter OHTTP Relay capability | Free - Apple hosts the relay | Requires an Apple request and approval; membership does not guarantee approval **[Verified - Apple]** (WWDC25 session 234) |
 | Apple Configurator (iPhone/Mac) | Free | - |
 | Server hosting | Free tiers exist (e.g. Oracle Cloud Always Free) or low-cost VPS; verify current provider pricing before committing | Free tier |
 | Domain name | Typically roughly $10-15/year; verify at registrar | Free subdomains possible for development, own domain recommended for production |
@@ -428,6 +456,9 @@ Apple (fetched November 13, 2026):
 - https://developer.apple.com/documentation/devicemanagement
 - https://developer.apple.com/documentation/networkextension/url-filters.md
 - https://developer.apple.com/documentation/networkextension/filtering-traffic-by-url
+- https://developer.apple.com/videos/play/wwdc2025/234/ (WWDC25 session 234: deployment modes, supervision, OHTTP Relay capability, Privacy Pass Issuer)
+- https://business.apple.com/support/ (FAQ: solo entrepreneurs, free built-in device management)
+- https://www.apple.com/newsroom/2026/03/introducing-apple-business-a-new-all-in-one-platform-for-businesses-of-all-sizes/
 - https://github.com/apple/device-management/blob/release/mdm/profiles/com.apple.applicationaccess.yaml
 - https://github.com/apple/device-management/blob/release/mdm/profiles/com.apple.proxy.http.global.yaml
 - https://github.com/apple/device-management/blob/release/mdm/profiles/com.apple.webcontent-filter.yaml
