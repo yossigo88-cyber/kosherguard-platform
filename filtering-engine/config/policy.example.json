@@ -1,0 +1,21 @@
+{
+  "default_policy": "allow",
+  "allowlist": [
+    "important-override.example"
+  ],
+  "blocklist": [
+    "tracker.example.com",
+    "clickbait.example.net"
+  ],
+  "category_rules": {
+    "allow": [
+      "education",
+      "reference"
+    ],
+    "block": [
+      "adult",
+      "gambling",
+      "malware"
+    ]
+  }
+}
