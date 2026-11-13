@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "description": "KosherGuard website category database",
+    "dataset": "TEST DATA - NOT A COMPLETE WEBSITE DATABASE. This small dataset exists only for development and automated tests. Sensitive categories use reserved .example placeholder domains. Production use requires a properly licensed category feed or a substantially larger self-maintained dataset.",
+    "version": 1,
+    "license": "Entries are factual domain/category assignments compiled by the project; no proprietary or unlicensed dataset was copied."
+  },
+  "domains": {
+    "wikipedia.org": ["education", "reference"],
+    "khanacademy.org": ["education"],
+    "example.com": ["reference"],
+    "bbc.com": ["news"],
+    "reuters.com": ["news"],
+    "github.com": ["technology", "development"],
+    "python.org": ["technology", "development"],
+    "stackoverflow.com": ["technology", "forums"],
+    "amazon.com": ["shopping"],
+    "ebay.com": ["shopping", "auctions"],
+    "youtube.com": ["video", "entertainment"],
+    "netflix.com": ["video", "entertainment"],
+    "facebook.com": ["social"],
+    "instagram.com": ["social"],
+    "x.com": ["social", "news"],
+    "adult-site-1.example": ["adult"],
+    "adult-site-2.example": ["adult", "video"],
+    "casino-slots.example": ["gambling"],
+    "malware-test.example": ["malware"],
+    "mixed-content.example": ["adult", "gambling"]
+  }
+}
