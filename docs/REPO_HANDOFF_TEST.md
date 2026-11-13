@@ -6,7 +6,7 @@ This file records the initialization of the kosherguard-platform repository and 
 
 - **Owner:** yossigo88-cyber
 - **Full name:** yossigo88-cyber/kosherguard-platform
-- **Visibility:** Private
+- **Visibility:** Public (changed from Private by the owner on November 13, 2026, after initialization)
 - **Default branch:** main
 - **Initial commit SHA:** c9c65d570fcac3b0f0b5217287de98743ffb2404 ("Initial commit", November 13, 2026)
 
