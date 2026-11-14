@@ -9,6 +9,7 @@ over real UDP sockets; no internet access needed.
 
 import io
 import json
+import logging
 import socket
 import sys
 import threading
@@ -225,16 +226,57 @@ def test_shutdown_closes_workers_while_request_in_flight(slow_upstream):
         "slow", query("some-site.example", service.config.listen_port)))
     t.start()
     time.sleep(0.3)  # request in flight against the slow upstream
+    # Keep our own references: stop() prunes service._workers, so only
+    # these saved threads can prove every worker really terminated.
+    workers = list(service._workers)
+    assert len(workers) == 2
     started = time.monotonic()
-    service.stop()
+    survivors = service.stop()
     elapsed = time.monotonic() - started
     # Bounded wait: stop() lets the in-flight request (2s upstream delay)
     # finish and never hangs longer than the upstream-timeout bound.
     assert elapsed < SLOW_DELAY + 3
-    assert not any(w.is_alive() for w in service._workers)
+    # Clean shutdown: no survivors reported, and every worker thread we
+    # saved has actually terminated.
+    assert survivors == []
+    for w in workers:
+        assert not w.is_alive(), f"worker {w.name} still alive after stop()"
     assert service._sock.fileno() == -1  # socket closed
     t.join(timeout=5)
     assert not t.is_alive()
     # The in-flight request still received its response before shutdown
     # completed - clean, not dropped mid-flight.
     assert any(str(r.rdata) == UPSTREAM_A for r in results["slow"].rr)
+
+
+def test_stop_reports_workers_that_fail_to_terminate(slow_upstream, caplog):
+    """A worker stuck past the shutdown timeout must be reported, not
+    silently discarded: stop() returns it, keeps it referenced, and logs
+    the incomplete shutdown."""
+    service = build_service(slow_upstream.port, max_workers=1)
+    gate = threading.Event()
+
+    def stuck(_data):
+        gate.wait(30)  # stuck far past any shutdown timeout
+        return None
+
+    service.handle_packet = stuck
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(DNSRecord.question("blocked.example").pack(),
+                ("127.0.0.1", service.config.listen_port))
+    time.sleep(0.3)  # the single worker has the request and is stuck
+    service.config.upstream_timeout = 0.1  # shutdown join bound ~2.1s
+    try:
+        with caplog.at_level(logging.WARNING, logger="kosherguard.dns"):
+            survivors = service.stop()
+        # Reported accurately, not claimed clean.
+        assert len(survivors) == 1
+        assert survivors[0].is_alive()
+        assert service._workers == survivors  # still referenced, not discarded
+        assert any("shutdown incomplete" in r.getMessage()
+                   for r in caplog.records)
+    finally:
+        gate.set()  # release the stuck worker so nothing outlives the test
+        sock.close()
+    survivors[0].join(timeout=5)
+    assert not survivors[0].is_alive()
