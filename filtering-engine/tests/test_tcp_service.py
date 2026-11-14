@@ -210,11 +210,11 @@ def build_service(upstream_ports, log_stream=None, **config_overrides):
     if not isinstance(upstream_ports, list):
         upstream_ports = [upstream_ports]
     config_overrides.setdefault("tcp_idle_timeout", 2.0)
+    config_overrides.setdefault("upstream_timeout", 2.0)
     config = ServiceConfig(
         listen_host="127.0.0.1",
         listen_port=0,  # ephemeral
         upstreams=[("127.0.0.1", p) for p in upstream_ports],
-        upstream_timeout=2.0,
         **config_overrides,
     )
     service = DNSFilteringService(engine, config,
@@ -620,6 +620,213 @@ def test_truncated_udp_upstream_large_answer_complete_over_tcp_downstream():
         service.stop()
         up.stop()
 
+
+
+
+# -- per-message read deadline -------------------------------------------------
+
+def test_message_fragmented_across_reads_within_deadline_succeeds(upstream):
+    """Prefix and body each arrive in pieces; the complete frame lands
+    well within the shared per-message deadline, so it is answered."""
+    service = build_service(upstream.port, tcp_idle_timeout=3.0)
+    try:
+        sock = socket.create_connection(
+            ("127.0.0.1", service.config.listen_port), timeout=5)
+        try:
+            data = DNSRecord.question("blocked.example").pack()
+            framed = struct.pack("!H", len(data)) + data
+            # Prefix in two pieces, body in two pieces, small pauses.
+            sock.sendall(framed[:1])
+            time.sleep(0.2)
+            sock.sendall(framed[1:2])
+            time.sleep(0.2)
+            half = 2 + len(data) // 2
+            sock.sendall(framed[2:half])
+            time.sleep(0.2)
+            sock.sendall(framed[half:])
+            header = _read_exact(sock, 2, 5)
+            reply = DNSRecord.parse(
+                _read_exact(sock, struct.unpack("!H", header)[0], 5))
+            assert [str(r.rdata) for r in reply.rr] == ["0.0.0.0"]
+        finally:
+            sock.close()
+    finally:
+        service.stop()
+
+
+def test_prefix_and_body_each_fast_but_total_over_deadline_disconnects(upstream):
+    """The prefix takes less than tcp_idle_timeout and the body takes less
+    than tcp_idle_timeout, but together they exceed it: the connection
+    must be closed without an answer, because one deadline covers the
+    whole message."""
+    service = build_service(upstream.port, tcp_idle_timeout=1.0)
+    try:
+        sock = socket.create_connection(
+            ("127.0.0.1", service.config.listen_port), timeout=5)
+        try:
+            data = DNSRecord.question("blocked.example").pack()
+            sock.sendall(struct.pack("!H", len(data))[:1])
+            time.sleep(0.6)  # prefix complete at ~0.6s: under 1.0s alone
+            sock.sendall(struct.pack("!H", len(data))[1:])
+            time.sleep(0.6)  # body complete at ~1.2s: over the shared 1.0s
+            sock.sendall(data)
+            sock.settimeout(5)
+            assert sock.recv(64) == b""  # closed at the deadline, unanswered
+        finally:
+            sock.close()
+        # The service is healthy afterwards.
+        reply = tcp_query("blocked.example", service.config.listen_port)
+        assert [str(r.rdata) for r in reply.rr] == ["0.0.0.0"]
+    finally:
+        service.stop()
+
+
+def test_shutdown_budget_covers_one_message_deadline(upstream):
+    """The shutdown budget accounts for ONE tcp_idle_timeout, which is
+    the longest a worker can wait on one incomplete message now that the
+    length prefix and body share a single per-message deadline."""
+    service = build_service(upstream.port, upstream_timeout=0.5,
+                            tcp_idle_timeout=1.25)
+    try:
+        expected = 0.5 * len(service.config.upstreams) * 2 + 1.25 + 2.0
+        assert service._shutdown_budget() == expected
+    finally:
+        service.stop()
+
+
+# -- shutdown closes queued connections -----------------------------------------
+
+def test_queued_connection_closed_during_shutdown(upstream):
+    """One worker busy on a held connection, one connection waiting in
+    the queue: stop() must close BOTH client sockets, leave the queue
+    empty, and finish with no surviving TCP worker."""
+    service = build_service(upstream.port, tcp_workers=1, tcp_queued=1,
+                            tcp_idle_timeout=2.0, upstream_timeout=0.5)
+    held = socket.create_connection(
+        ("127.0.0.1", service.config.listen_port), timeout=5)
+    try:
+        held.sendall(b"\x00")  # partial frame: the one worker is busy reading
+        time.sleep(0.3)
+        queued = socket.create_connection(
+            ("127.0.0.1", service.config.listen_port), timeout=5)
+        time.sleep(0.3)  # queued connection is waiting in the queue
+        try:
+            survivors = service.stop()
+            assert survivors == []  # clean shutdown, honestly reported
+            for sock in (held, queued):
+                sock.settimeout(5)
+                assert sock.recv(64) == b""  # both closed by the service
+            assert service._tcp_conn_queue.qsize() == 0
+            assert not any(t.is_alive() and "tcp" in t.name
+                           for t in service._all_threads())
+        finally:
+            queued.close()
+    finally:
+        held.close()
+        service.stop()
+
+
+def test_accept_during_shutdown_never_enqueues_untracked_connection(upstream):
+    """Race guard: a connection accepted after _stopping is set is closed
+    immediately instead of being enqueued where nobody would drain it."""
+    service = build_service(upstream.port)
+    try:
+        service._stopping.set()  # shutdown begins while accept() runs
+        time.sleep(0.1)
+        sock = socket.create_connection(
+            ("127.0.0.1", service.config.listen_port), timeout=5)
+        try:
+            sock.settimeout(5)
+            assert sock.recv(64) == b""  # closed, never queued or served
+            assert service._tcp_conn_queue.qsize() == 0
+        finally:
+            sock.close()
+    finally:
+        service._stopping.clear()  # let stop() run its normal path
+        service.stop()
+
+
+# -- listener startup failure cleanup -------------------------------------------
+
+def test_udp_bind_failure_cleans_up(monkeypatch, upstream):
+    """A failing UDP bind must close the created socket, clear the
+    service references, and leave no threads running."""
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    blocker.bind(("127.0.0.1", 0))
+    port = blocker.getsockname()[1]
+    created = []
+    real_socket = socket.socket
+
+    def recording_socket(*args, **kwargs):
+        sock = real_socket(*args, **kwargs)
+        created.append(sock)
+        return sock
+
+    monkeypatch.setattr("dns_service.socket.socket", recording_socket)
+    try:
+        db = CategoryDB({})
+        engine = PolicyEngine({"default_policy": "allow"}, db)
+        config = ServiceConfig(listen_host="127.0.0.1", listen_port=port,
+                               upstreams=[("127.0.0.1", upstream.port)])
+        service = DNSFilteringService(engine, config,
+                                      DecisionLogger(io.StringIO()))
+        with pytest.raises(OSError):
+            service.start()
+        assert created, "the UDP socket was created before the bind failed"
+        assert created[0].fileno() == -1  # explicitly closed
+        assert service._sock is None
+        assert service._tcp_sock is None
+        assert not service._running.is_set()
+        assert not any(t.is_alive() for t in service._all_threads())
+    finally:
+        blocker.close()
+
+
+# -- UDP response-size guarantee -------------------------------------------------
+
+def test_max_udp_response_below_minimum_rejected(upstream):
+    """max_udp_response has a documented 512-byte minimum: below it the
+    truncation guarantee (header + question always fit) could not hold."""
+    with pytest.raises(ValueError):
+        build_service(upstream.port, max_udp_response=511)
+    with pytest.raises(ValueError):
+        build_service(upstream.port, max_udp_response=0)
+    service = build_service(upstream.port, max_udp_response=512)  # accepted
+    service.stop()
+
+
+def test_oversized_opt_dropped_to_fit_udp_limit():
+    """An OPT record too large to fit is dropped rather than sent
+    oversized: the UDP response never exceeds the effective limit and
+    always carries TC when anything was removed."""
+    up = FakeUpstream()
+    service = build_service(up.port)
+    try:
+        query = DNSRecord.question("some-site.example")
+        query.header.id = 0x2222
+        base = query.pack()
+        # Append an OPT RR advertising a 512-byte payload with ~600 bytes
+        # of option data: header+question+OPT alone exceed 512 bytes.
+        opt = struct.pack("!B H H I H", 0, 41, 512, 0, 600) + b"\x00" * 600
+        wire = base[:10] + struct.pack("!H", 1) + base[12:] + opt
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(5)
+        try:
+            sock.sendto(wire, ("127.0.0.1", service.config.listen_port))
+            packet, _ = sock.recvfrom(4096)
+        finally:
+            sock.close()
+        reply = DNSRecord.parse(packet)  # valid wire data, no cut records
+        assert len(packet) <= 512
+        assert reply.header.tc == 1
+        assert not any(rr.rtype == QTYPE.OPT for rr in reply.ar)
+        # Retrying over TCP yields the complete answer.
+        tcp_reply = tcp_query("some-site.example", service.config.listen_port)
+        assert tcp_reply.header.tc == 0
+        assert any(str(r.rdata) == UPSTREAM_A for r in tcp_reply.rr)
+    finally:
+        service.stop()
+        up.stop()
 
 # -- shutdown ---------------------------------------------------------
 
