@@ -185,9 +185,10 @@ updated. Only import data we have the rights to use.
   connection is a two-byte unsigned big-endian length followed by that
   many bytes of DNS message. Reads assemble complete messages across
   partial TCP deliveries; multiple messages on one connection are
-  answered in order; a zero or over-limit (> 65535) length or an
-  unrecoverably malformed message closes that connection safely and is
-  logged - it can never crash the service.
+  answered in order. The two-byte prefix can hold at most 65535 - exactly
+  the supported maximum - so the only invalid length on the wire is zero;
+  a zero length or an unrecoverably malformed message closes that
+  connection safely and is logged - it can never crash the service.
 - **Allowed domains** are forwarded to configurable upstream resolvers
   (tried in order; per-upstream timeout, default 3s) and the upstream
   answer is relayed. The original query - EDNS0 OPT record included - is
@@ -203,11 +204,16 @@ updated. Only import data we have the rights to use.
 - **EDNS0 and downstream UDP sizes**: a downstream UDP response is
   limited to the client's advertised EDNS0 UDP payload size, or 512
   bytes when the query carried no OPT record, additionally capped by the
-  configurable `max_udp_response` safety limit (default 4096). A
-  response that does not fit - including a large answer fetched via TCP
-  fallback - is truncated at whole-record boundaries (never mid-record),
-  the TC flag is set, and the OPT record is preserved, so the client can
-  retry over TCP and get the complete answer. Downstream TCP clients
+  configurable `max_udp_response` safety limit (default 4096; minimum
+  512 - a DNS header plus the echoed question always fits in 512 bytes,
+  which is what makes the guarantee below possible). A response that
+  does not fit - including a large answer fetched via TCP fallback - is
+  truncated at whole-record boundaries (never mid-record) and the TC
+  flag is always set when anything was removed, so the client can retry
+  over TCP and get the complete answer. The OPT record is preserved when
+  it fits; an OPT record so large that it alone prevents the response
+  from fitting is dropped (OPT is advisory) rather than sent oversized -
+  a UDP response never exceeds the effective limit. Downstream TCP clients
   always receive the complete response, up to the 65535-byte
   DNS-over-TCP maximum.
 - **Blocked domains** are answered locally. Default `sinkhole` mode:
@@ -234,9 +240,9 @@ updated. Only import data we have the rights to use.
 - The per-upstream timeout applies to each attempt, so worst-case
   latency for one query grows with the number of configured upstreams
   (timeout x upstreams, doubled when each answer is truncated).
-- `max_udp_response` caps downstream UDP answers even when the client
-  advertises more; affected clients retry over TCP and get the complete
-  answer.
+- `max_udp_response` (minimum 512) caps downstream UDP answers even
+  when the client advertises more; affected clients retry over TCP and
+  get the complete answer.
 
 ### Concurrency
 
@@ -264,9 +270,11 @@ TCP connections get the same bounded treatment: a fixed pool of
 bounded `tcp_queued` (default 64) queue; a connection that arrives at a
 full queue is closed safely and a `tcp_queue_full` event is logged.
 Per-connection guardrails keep one client from monopolizing a worker:
-`tcp_idle_timeout` (default 10s) bounds the total time to read each
-complete message (including the length prefix), so a client trickling
-bytes or going idle is dropped; `tcp_max_messages` (default 64) caps how
+`tcp_idle_timeout` (default 10s) is one absolute deadline for each
+complete message: the two-byte length prefix and the message body share
+it (it is never reset between them), so a client trickling bytes or
+going idle is dropped and one message can never take almost twice the
+timeout to arrive; `tcp_max_messages` (default 64) caps how
 many queries one connection may send before it is closed. A slow TCP
 client therefore occupies at most one worker and never delays unrelated
 UDP or TCP traffic.
@@ -283,12 +291,17 @@ timeout x number of upstreams x 2, covering a UDP attempt plus a TCP
 fallback per upstream) plus the connection read timeout and a 2s margin.
 Each thread is joined only for the time remaining before that shared
 deadline - the wait never multiplies by the worker or connection count.
-Idle or slow TCP connections cannot hold shutdown: after the deadline,
-any still-open tracked connection is force-closed as a backstop, and any
-worker or thread that survives the deadline is reported by name, kept
-referenced on the service, and returned in an accurate
-incomplete-shutdown result. An incomplete shutdown is never presented as
-clean.
+Every accepted connection is tracked from the moment it is accepted. At
+shutdown the accept loop stops first, then connections still waiting in
+the connection queue are drained and closed (they are not being served
+yet, so this cannot interrupt in-flight work), and a connection accepted
+just as shutdown begins is closed immediately rather than enqueued. Idle
+or slow TCP connections being served cannot hold shutdown: after the
+deadline, any still-open tracked connection is force-closed as a
+backstop, and any worker or thread that survives the deadline is
+reported by name, kept referenced on the service, and returned in an
+accurate incomplete-shutdown result. An incomplete shutdown is never
+presented as clean.
 
 ### What DNS filtering can and cannot block
 
@@ -395,9 +408,15 @@ SERVFAIL over TCP, EDNS0 preservation end to end, 512-byte truncation
 without an OPT record, complete responses within an advertised payload
 size, the `max_udp_response` cap, complete large answers to downstream
 TCP clients, and shared-deadline shutdown closing listeners, connections
-and workers.
+and workers. Regression coverage for the reliability corrections: one
+shared deadline per complete TCP message (a fragmented frame within the
+deadline succeeds; prefix-fast-plus-body-fast but over-deadline total is
+disconnected; the shutdown budget covers exactly one message deadline),
+queued connections drained and closed at shutdown, the accept/shutdown
+race guard, UDP bind-failure cleanup, the max_udp_response 512-byte
+minimum, and oversized-OPT truncation that never exceeds the limit.
 
-Latest local run: **90 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **98 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 
 ## Security notes
 
