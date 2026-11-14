@@ -39,8 +39,10 @@ filtering-engine/
     category_db.py           category database + import tool (CLI)
     dns_service.py           DNS filtering service (UDP) + structured logging
   tests/
-    test_policy_engine.py    precedence, lists, categories, unknowns, validation
+    test_policy_engine.py    precedence, lists, categories, unknowns
+    test_policy_validation.py  startup validation of the policy structure
     test_dns_service.py      real UDP tests: responses, upstream failure, malformed, logs
+    test_concurrency.py      worker pool: slow upstream, saturation, shutdown
     test_category_db_and_import.py  dataset, multi-category, import process
 ```
 
@@ -100,13 +102,34 @@ Notes:
 - The allowlist wins over the blocklist, so surgical exceptions are
   possible.
 - A blocked category beats an allowed category when a domain has both.
-- Putting the same category in both `allow` and `block` is rejected as a
-  configuration error, as is a `default_policy` that is not
-  `allow`/`block`.
 - Category lookup uses the most specific database entry covering the
   domain (a `safe.example.org` entry overrides `example.org` for its
   subdomains).
 - Domains are normalized (case, whitespace, trailing dot) before matching.
+
+**Startup validation.** The complete policy structure is validated
+before the service starts (`validate_policy()` in `policy_engine.py`;
+every `PolicyEngine` goes through it). Any of these is a hard
+configuration error (`PolicyConfigError`) that names the exact field -
+the service refuses to start rather than filter with a broken policy:
+
+- `default_policy` missing, not a string, or not `allow`/`block`.
+- `allowlist`/`blocklist` not a list (a bare string is rejected instead
+  of being silently iterated character by character - a silently ignored
+  block rule is an unintended allow, and vice versa).
+- A domain entry that is not a string, is empty/whitespace, or is not a
+  syntactically valid domain.
+- `category_rules` not an object, or containing keys other than
+  `allow`/`block`.
+- A category allow/block list that is not a list, or a category entry
+  that is not a string, is empty, or is not a valid category name
+  (`a-z0-9` and dashes, same syntax the category database enforces).
+- The same category in both `allow` and `block`.
+- Unknown top-level keys (typo protection; keys starting with `_` are
+  allowed for metadata).
+
+Valid entries are normalized (case, whitespace, trailing dot), so
+`"  WWW.Example.COM. "` in a list matches `www.example.com`.
 
 Every decision carries the action, the rule that fired, the matching
 category (if any), and a human-readable reason - this is what gets logged.
@@ -169,6 +192,33 @@ updated. Only import data we have the rights to use.
 - Current transport limitation: **UDP only**. TCP (needed for very large
   responses) is a documented future integration point, not present today.
 
+### Concurrency
+
+Requests are processed by a **bounded worker pool**, never one thread per
+request and never the single synchronous loop this stage started with:
+
+- `max_workers` (default 32) worker threads pull requests off a bounded
+  queue; `max_queued` (default 128) caps how many requests may wait.
+  Thread and memory use stay bounded no matter the load.
+- A slow or unreachable upstream occupies at most one worker, so it
+  cannot delay unrelated requests. Blocked-domain queries in particular
+  are decided locally with no network I/O and answer promptly even while
+  upstreams are stuck (covered by an automated test with a deliberately
+  delayed upstream).
+- **Saturation is safe**: when every worker is busy and the queue is
+  full, new packets are dropped and a `queue_full` event is written to
+  the structured log. Dropping is the standard UDP-overload answer -
+  clients retry - and it can never exhaust resources.
+- **Shutdown is clean**: `stop()` stops the receive loop, waits a
+  strictly bounded time (upstream timeout x number of upstreams, plus
+  margin) for in-flight requests to finish and send their responses,
+  joins every worker, and closes the socket. Requests still queued at
+  shutdown are dropped; clients retry.
+
+Both limits are configurable on the command line (`--max-workers`,
+`--max-queued`) or via `ServiceConfig` in code. Invalid values
+(non-integer, < 1) are rejected at startup.
+
 ### What DNS filtering can and cannot block
 
 DNS filtering controls access to **domains only**:
@@ -229,6 +279,7 @@ python src/dns_service.py \
     --listen 127.0.0.1:5353 \
     --upstream 1.1.1.1 \
     --block-mode sinkhole \
+    --max-workers 32 --max-queued 128 \
     --log decisions.jsonl
 ```
 
@@ -247,22 +298,28 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-The suite runs the real service over real UDP sockets against an in-test
-fake upstream resolver, so no internet access is needed and results are
+The suite runs the real service over real UDP sockets against in-test
+fake upstream resolvers, so no internet access is needed and results are
 deterministic. It covers: policy precedence, allowlists, blocklists,
 category rules, unknown domains, DNS responses (sinkhole A/AAAA,
 NXDOMAIN, forwarded answers, TXT), upstream failures (SERVFAIL),
-malformed requests (FORMERR + service survival), import merging and
-validation, and the structure and privacy properties of the decision log.
+malformed requests (FORMERR + service survival), the full policy
+validation matrix (invalid types, malformed domains/categories, empty
+entries, unknown keys), bounded concurrency (a deliberately delayed
+upstream does not delay unrelated or blocked requests, concurrent slow
+requests run in parallel, saturation drops safely and logs it, shutdown
+is clean), import merging and validation, and the structure and privacy
+properties of the decision log.
 
-Latest local run: **41 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **67 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 
 ## Security notes
 
 - No secrets or credentials exist anywhere in this stage; the upstream
   resolver is the only external dependency.
-- Policy and database files are validated on load; invalid configuration
-  fails fast with a clear error instead of silently mis-filtering.
+- Policy and database files are fully validated on load; invalid
+  configuration fails fast with a clear error naming the field instead
+  of silently mis-filtering. See "Startup validation" above.
 - The sinkhole answers point at `0.0.0.0`/`::`, not at a server we run -
   blocked devices go nowhere, and there is no block-page attack surface.
 
