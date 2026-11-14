@@ -210,9 +210,10 @@ request and never the single synchronous loop this stage started with:
   the structured log. Dropping is the standard UDP-overload answer -
   clients retry - and it can never exhaust resources.
 - **Shutdown is clean, and honestly reported**: `stop()` stops the
-  receive loop, waits a strictly bounded time (upstream timeout x number
-  of upstreams, plus margin) for in-flight requests to finish and send
-  their responses, joins every worker, and closes the socket. Requests
+  receive loop, then waits one overall monotonic deadline (upstream
+  timeout x number of upstreams, plus margin) shared by all workers -
+  the total wait never multiplies by the worker count - for in-flight
+  requests to finish and send their responses, then closes the socket. Requests
   still queued at shutdown are dropped; clients retry. If any worker is
   still running after that bound, `stop()` returns it, keeps it
   referenced on the service, and logs a `shutdown incomplete` error
@@ -314,7 +315,7 @@ requests run in parallel, saturation drops safely and logs it, shutdown
 is clean), import merging and validation, and the structure and privacy
 properties of the decision log.
 
-Latest local run: **67 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **69 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 
 ## Security notes
 
