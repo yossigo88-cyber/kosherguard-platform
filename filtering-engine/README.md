@@ -209,11 +209,14 @@ request and never the single synchronous loop this stage started with:
   full, new packets are dropped and a `queue_full` event is written to
   the structured log. Dropping is the standard UDP-overload answer -
   clients retry - and it can never exhaust resources.
-- **Shutdown is clean**: `stop()` stops the receive loop, waits a
-  strictly bounded time (upstream timeout x number of upstreams, plus
-  margin) for in-flight requests to finish and send their responses,
-  joins every worker, and closes the socket. Requests still queued at
-  shutdown are dropped; clients retry.
+- **Shutdown is clean, and honestly reported**: `stop()` stops the
+  receive loop, waits a strictly bounded time (upstream timeout x number
+  of upstreams, plus margin) for in-flight requests to finish and send
+  their responses, joins every worker, and closes the socket. Requests
+  still queued at shutdown are dropped; clients retry. If any worker is
+  still running after that bound, `stop()` returns it, keeps it
+  referenced on the service, and logs a `shutdown incomplete` error
+  naming it - an incomplete shutdown is never presented as clean.
 
 Both limits are configurable on the command line (`--max-workers`,
 `--max-queued`) or via `ServiceConfig` in code. Invalid values
