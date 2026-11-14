@@ -20,8 +20,11 @@ unrelated requests - locally decided (blocked) queries in particular are
 answered without any network I/O. When every worker is busy and the queue
 is full, new packets are dropped and a `queue_full` event is logged;
 dropping is the standard UDP-overload answer (clients retry) and keeps
-memory and thread use strictly bounded. Shutdown closes the socket,
-stops the receive loop, and stops every worker.
+memory and thread use strictly bounded. Shutdown stops the receive loop,
+waits a bounded time for every worker to finish and stop, then closes
+the socket; any worker still running after that bound is logged by name
+and kept referenced, so an incomplete shutdown is never reported as
+clean.
 
 Scope, stated plainly: DNS filtering controls access to *domains*. It
 cannot block individual URLs, pages, or paths, and it cannot see or filter
@@ -285,11 +288,17 @@ class DNSFilteringService:
                 except OSError:
                     log.warning("could not send response to client")
 
-    def stop(self) -> None:
-        """Shut down cleanly: stop receiving, wait (bounded) for in-flight
+    def stop(self) -> List[threading.Thread]:
+        """Shut down: stop receiving, wait (bounded) for in-flight
         requests to finish and send their responses, stop every worker,
         then close the socket. Requests still queued at shutdown are
-        dropped (clients retry, per UDP)."""
+        dropped (clients retry, per UDP).
+
+        Returns the list of worker threads that were still alive after
+        the shutdown timeout - empty on a clean shutdown. Surviving
+        workers are logged by name and kept in self._workers, so an
+        incomplete shutdown is reported accurately instead of being
+        silently discarded and presented as clean."""
         self._running.clear()
         self._stopping.set()
         if self._thread is not None:
@@ -303,9 +312,20 @@ class DNSFilteringService:
         )
         for worker in self._workers:
             worker.join(timeout=join_timeout)
-        self._workers = []
+        survivors = [w for w in self._workers if w.is_alive()]
+        if survivors:
+            log.error(
+                "shutdown incomplete: %d worker(s) still running after the "
+                "%.1fs timeout: %s",
+                len(survivors), join_timeout,
+                ", ".join(w.name for w in survivors),
+            )
+        # Keep an accurate record: only workers that actually stopped are
+        # discarded; survivors stay referenced and visible.
+        self._workers = survivors
         if self._sock is not None:
             self._sock.close()
+        return survivors
 
 
 def main(argv: Optional[list] = None) -> int:
