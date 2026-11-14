@@ -20,17 +20,21 @@ prefixed with a two-byte unsigned big-endian length. TCP and UDP listen
 on the same configured port; with port 0 the UDP socket binds first and
 TCP takes its assigned port. If either listener fails to start, the
 other is closed again - the service never runs half-started. Accepted
-connections go to a fixed-size worker pool through a bounded queue; a
-connection that arrives at a full queue is closed and logged. Per-read,
-per-message, idle, and message-count limits keep one client from
-occupying a worker indefinitely.
+connections are tracked from the moment they are accepted and go to a
+fixed-size worker pool through a bounded queue; a connection that
+arrives at a full queue is closed and logged. Each complete message
+(length prefix plus body) must arrive within one shared deadline of
+tcp_idle_timeout, and a per-connection message count limit keeps one
+client from occupying a worker indefinitely.
 
 Downstream response sizes: UDP clients get at most their advertised
 EDNS0 payload size (512 bytes without an OPT record), further capped by
 the configurable max_udp_response safety limit. Oversized UDP responses
 are truncated at DNS-record boundaries with the TC flag set - never cut
-mid-record - with the OPT record preserved. TCP clients always get the
-complete response (up to the protocol's 65535-byte frame limit).
+mid-record - with the OPT record preserved when it fits (an OPT record
+that itself cannot fit is dropped, never sent oversized). TCP clients
+always get the complete response (up to the protocol's 65535-byte frame
+limit).
 
 Concurrency: incoming requests are handled by bounded worker pools
 (separate pools for UDP requests and TCP connections; configurable
@@ -44,10 +48,11 @@ Shutdown: one overall monotonic deadline is shared by the receive
 thread, accept thread, and all workers of both pools; every join only
 gets the time remaining, so the total wait never multiplies by the
 number of threads or connections. In-flight requests get a bounded
-opportunity to finish; idle or slow TCP connections are then closed to
-unblock their workers. Threads still alive at the deadline are logged by
-name, kept referenced, and returned - an incomplete shutdown is never
-reported as clean.
+opportunity to finish; connections still waiting in the accept queue
+are drained and closed, and idle or slow active connections are then
+closed to unblock their workers. Threads still alive at the deadline are
+logged by name, kept referenced, and returned - an incomplete shutdown
+is never reported as clean.
 
 Scope, stated plainly: DNS filtering controls access to *domains*. It
 cannot block individual URLs, pages, or paths, and it cannot see or filter
@@ -147,10 +152,18 @@ class DNSFilteringService:
         if self.config.block_mode not in ("sinkhole", "nxdomain"):
             raise ValueError(f"unknown block_mode: {self.config.block_mode!r}")
         for name in ("max_workers", "max_queued", "tcp_workers", "tcp_queued",
-                     "tcp_max_messages", "max_udp_response"):
+                     "tcp_max_messages"):
             value = getattr(self.config, name)
             if not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        # 512 is the classic DNS UDP message limit: a header plus the
+        # echoed question always fits in it, which is what makes the
+        # truncation guarantee below possible.
+        value = self.config.max_udp_response
+        if not isinstance(value, int) or value < DNS_CLASSIC_UDP_SIZE:
+            raise ValueError(
+                f"max_udp_response must be an integer >= {DNS_CLASSIC_UDP_SIZE}, "
+                f"got {value!r}")
         for name in ("upstream_timeout", "tcp_idle_timeout"):
             value = getattr(self.config, name)
             if not isinstance(value, (int, float)) or value <= 0:
@@ -307,8 +320,21 @@ class DNSFilteringService:
             elif reply.auth:
                 reply.auth.pop()
                 removed = True
+            elif reply.ar:
+                # Only the OPT record is left and it does not fit. OPT is
+                # advisory: drop it so the response fits, rather than
+                # returning an oversized message. The client retrying
+                # over TCP gets the complete response.
+                reply.ar.pop()
+                removed = True
             else:
-                break  # header+question+OPT alone exceed the limit
+                # Header plus question alone exceed the limit. max_size
+                # is always >= 512 and a legal DNS message header plus
+                # question is far smaller, so this cannot happen in
+                # practice; set TC so the client retries over TCP rather
+                # than trusting an oversized UDP message.
+                reply.header.tc = 1
+                break
         if removed:
             reply.header.tc = 1
         return reply
@@ -358,25 +384,30 @@ class DNSFilteringService:
         fails, everything started so far is torn down again."""
         if self._running.is_set():
             raise RuntimeError("service already running")
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind((self.config.listen_host, self.config.listen_port))
-        # Lets the receive loop notice shutdown without closing the socket
-        # out from under workers that are still sending responses.
-        self._sock.settimeout(0.5)
-        self.config.listen_port = self._sock.getsockname()[1]  # resolves port 0
         try:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._sock.bind((self.config.listen_host, self.config.listen_port))
+            # Lets the receive loop notice shutdown without closing the
+            # socket out from under workers still sending responses.
+            self._sock.settimeout(0.5)
+            self.config.listen_port = self._sock.getsockname()[1]  # resolves port 0
             self._tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._tcp_sock.bind((self.config.listen_host, self.config.listen_port))
             self._tcp_sock.listen(TCP_LISTEN_BACKLOG)
             self._tcp_sock.settimeout(0.5)
         except Exception:
-            # Never leave a partially running service.
-            self._sock.close()
+            # Any listener-setup failure (UDP bind included) closes every
+            # socket created so far and clears the references: the
+            # service is never left partially started.
+            for sock in (self._sock, self._tcp_sock):
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
             self._sock = None
-            if self._tcp_sock is not None:
-                self._tcp_sock.close()
-                self._tcp_sock = None
+            self._tcp_sock = None
             raise
         try:
             self._queue = queue.Queue(maxsize=self.config.max_queued)
@@ -482,6 +513,16 @@ class DNSFilteringService:
                 continue
             except OSError:
                 break
+            # Account for the connection from the moment it is accepted,
+            # so shutdown can always find and close it - whether it is
+            # waiting in the queue or being served by a worker.
+            with self._conns_lock:
+                self._active_conns.add(conn)
+            if self._stopping.is_set():
+                # Accepted just as shutdown began: never enqueue a
+                # connection nobody will drain.
+                self._close_tracked_conn(conn)
+                continue
             try:
                 self._tcp_conn_queue.put_nowait(conn)
             except queue.Full:
@@ -489,10 +530,7 @@ class DNSFilteringService:
                            "outcome": "connection_closed",
                            "reason": "all TCP workers busy and connection "
                                      "queue full"})
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+                self._close_tracked_conn(conn)
 
     def _tcp_worker(self) -> None:
         """One bounded TCP worker: serves accepted connections until
@@ -502,35 +540,56 @@ class DNSFilteringService:
                 conn = self._tcp_conn_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            with self._conns_lock:
-                self._active_conns.add(conn)
             try:
                 self._serve_tcp_conn(conn)
             except Exception:
                 log.exception("unexpected error serving TCP connection")
             finally:
-                with self._conns_lock:
-                    self._active_conns.discard(conn)
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+                self._close_tracked_conn(conn)
+
+    def _close_tracked_conn(self, conn: socket.socket) -> None:
+        """Close one tracked connection and drop it from the active set."""
+        with self._conns_lock:
+            self._active_conns.discard(conn)
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    def _drain_queued_conns(self) -> None:
+        """Close every accepted connection still waiting in the TCP
+        connection queue. Queued connections are not being served, so
+        closing them at shutdown cannot interrupt in-flight work."""
+        if self._tcp_conn_queue is None:
+            return
+        while True:
+            try:
+                conn = self._tcp_conn_queue.get_nowait()
+            except queue.Empty:
+                return
+            self._close_tracked_conn(conn)
 
     def _serve_tcp_conn(self, conn: socket.socket) -> None:
         """Serve one connection: length-prefixed messages in order, until
         the client closes, the read/idle timeout expires, the message
         limit is reached, or shutdown closes the connection."""
         for _ in range(self.config.tcp_max_messages):
-            header = self._recv_exact(conn, 2)
+            # One absolute deadline per complete message: the two-byte
+            # length prefix and the message body share it, so one message
+            # can never take almost twice tcp_idle_timeout to arrive.
+            deadline = time.monotonic() + self.config.tcp_idle_timeout
+            header = self._recv_exact(conn, 2, deadline)
             if header is None:
                 return
             length = int.from_bytes(header, "big")
-            if length == 0 or length > DNS_TCP_MAX_MESSAGE:
+            # A two-byte prefix can hold at most 65535, which is exactly
+            # the supported maximum; zero is the only invalid length.
+            if length == 0:
                 self._log({"event": "tcp_invalid_length",
                            "outcome": "connection_closed",
                            "length": length})
                 return
-            data = self._recv_exact(conn, length)
+            data = self._recv_exact(conn, length, deadline)
             if data is None:
                 return  # client gone, idle, or never finished the message
             response = self.handle_packet(data)
@@ -542,13 +601,14 @@ class DNSFilteringService:
                 return
             conn.sendall(len(response).to_bytes(2, "big") + response)
 
-    def _recv_exact(self, conn: socket.socket, n: int) -> Optional[bytes]:
-        """Read exactly n bytes, tolerating partial delivery. The whole
-        read (not each chunk) must finish within tcp_idle_timeout, so a
-        client trickling bytes cannot hold the worker. Returns None on
-        timeout, close, or error."""
+    def _recv_exact(self, conn: socket.socket, n: int,
+                    deadline: float) -> Optional[bytes]:
+        """Read exactly n bytes, tolerating partial delivery, finishing
+        before the caller's absolute monotonic deadline. One deadline
+        covers a complete message (length prefix plus body), so a client
+        trickling bytes cannot hold the worker. Returns None on timeout,
+        close, or error."""
         buf = bytearray()
-        deadline = time.monotonic() + self.config.tcp_idle_timeout
         while len(buf) < n:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -571,6 +631,17 @@ class DNSFilteringService:
                 conn.close()
             except OSError:
                 pass
+
+    def _shutdown_budget(self) -> float:
+        """The one overall shutdown budget: the maximum upstream work
+        (each upstream may get a UDP attempt plus a TCP fallback), plus
+        ONE tcp_idle_timeout - the longest a TCP worker can spend waiting
+        for a single incomplete message, because the length prefix and
+        body share one per-message deadline - plus a margin."""
+        upstream_budget = (
+            self.config.upstream_timeout * max(1, len(self.config.upstreams)) * 2
+        )
+        return upstream_budget + self.config.tcp_idle_timeout + 2.0
 
     def _all_threads(self) -> List[threading.Thread]:
         return ([t for t in (self._thread, self._accept_thread) if t is not None]
@@ -599,10 +670,7 @@ class DNSFilteringService:
         clean."""
         self._running.clear()
         self._stopping.set()
-        upstream_budget = (
-            self.config.upstream_timeout * max(1, len(self.config.upstreams)) * 2
-        )  # each upstream may get a UDP attempt plus a TCP fallback
-        shutdown_budget = upstream_budget + self.config.tcp_idle_timeout + 2.0
+        shutdown_budget = self._shutdown_budget()
         deadline = time.monotonic() + shutdown_budget
 
         def remaining() -> float:
@@ -614,13 +682,18 @@ class DNSFilteringService:
         if self._accept_thread is not None:
             self._accept_thread.join(timeout=remaining())
 
-        # 2. Bounded opportunity for in-flight requests to finish.
+        # 2. Close accepted connections still waiting in the queue: the
+        #    accept thread has stopped, so nothing new can be enqueued,
+        #    and queued connections are not being served yet.
+        self._drain_queued_conns()
+
+        # 3. Bounded opportunity for in-flight requests to finish.
         for worker in self._workers:
             worker.join(timeout=remaining())
         for worker in self._tcp_workers:
             worker.join(timeout=remaining())
 
-        # 3. Force-unblock whatever is left: closing active connections
+        # 4. Force-unblock whatever is left: closing active connections
         #    breaks idle or slow TCP reads so their workers can exit.
         alive = [t for t in self._all_threads() if t.is_alive()]
         if alive:
@@ -628,7 +701,7 @@ class DNSFilteringService:
             for t in alive:
                 t.join(timeout=remaining())
 
-        # 4. Close both listeners.
+        # 5. Close both listeners.
         for sock in (self._sock, self._tcp_sock):
             if sock is not None:
                 try:
