@@ -294,8 +294,11 @@ class DNSFilteringService:
         then close the socket. Requests still queued at shutdown are
         dropped (clients retry, per UDP).
 
+        All workers share one overall monotonic deadline, so the total
+        wait never multiplies by the worker count.
+
         Returns the list of worker threads that were still alive after
-        the shutdown timeout - empty on a clean shutdown. Surviving
+        the shutdown deadline - empty on a clean shutdown. Surviving
         workers are logged by name and kept in self._workers, so an
         incomplete shutdown is reported accurately instead of being
         silently discarded and presented as clean."""
@@ -304,20 +307,23 @@ class DNSFilteringService:
         if self._thread is not None:
             self._thread.join(timeout=2)
         # A worker's slowest in-flight request is bounded by trying every
-        # upstream once with the configured timeout; wait at most that
-        # long per worker, never indefinitely.
-        join_timeout = (
+        # upstream once with the configured timeout. All workers share one
+        # overall monotonic deadline of that length (plus margin): each
+        # join gets only the time remaining, so the total shutdown wait
+        # never grows with the number of workers.
+        shutdown_budget = (
             self.config.upstream_timeout * max(1, len(self.config.upstreams))
             + 2.0
         )
+        deadline = time.monotonic() + shutdown_budget
         for worker in self._workers:
-            worker.join(timeout=join_timeout)
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
         survivors = [w for w in self._workers if w.is_alive()]
         if survivors:
             log.error(
                 "shutdown incomplete: %d worker(s) still running after the "
-                "%.1fs timeout: %s",
-                len(survivors), join_timeout,
+                "%.1fs overall deadline: %s",
+                len(survivors), shutdown_budget,
                 ", ".join(w.name for w in survivors),
             )
         # Keep an accurate record: only workers that actually stopped are
