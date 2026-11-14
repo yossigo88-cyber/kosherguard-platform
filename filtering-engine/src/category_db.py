@@ -38,17 +38,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, Set, Tuple
 
-from policy_engine import normalize_domain
-
-DOMAIN_RE = re.compile(
-    r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
-)
-CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+# Domain and category syntax come from policy_engine so the policy
+# validator and the database validator can never disagree.
+from policy_engine import CATEGORY_RE, DOMAIN_RE, normalize_domain
 
 
 class CategoryDBError(ValueError):
