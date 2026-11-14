@@ -280,3 +280,41 @@ def test_stop_reports_workers_that_fail_to_terminate(slow_upstream, caplog):
         sock.close()
     survivors[0].join(timeout=5)
     assert not survivors[0].is_alive()
+
+
+def test_shutdown_deadline_is_overall_not_per_worker(slow_upstream):
+    """With every worker stuck, stop() must finish within ONE overall
+    deadline, not one timeout per worker (4 workers x ~2.1s would take
+    ~8.4s if the waits multiplied)."""
+    worker_count = 4
+    service = build_service(slow_upstream.port, max_workers=worker_count)
+    gate = threading.Event()
+
+    def stuck(_data):
+        gate.wait(60)  # stuck far past any shutdown deadline
+        return None
+
+    service.handle_packet = stuck
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    for i in range(worker_count):
+        sock.sendto(DNSRecord.question(f"stuck-{i}.example").pack(),
+                    ("127.0.0.1", service.config.listen_port))
+    time.sleep(0.3)  # all four workers have a request and are stuck
+    service.config.upstream_timeout = 0.1  # overall shutdown budget ~2.1s
+    started = time.monotonic()
+    survivors = service.stop()
+    elapsed = time.monotonic() - started
+    try:
+        assert len(survivors) == worker_count
+        # Per-worker timeouts would take worker_count x ~2.1s; a single
+        # overall deadline must finish in little more than one budget.
+        assert elapsed < 2 * 2.1, (
+            f"shutdown took {elapsed:.2f}s with {worker_count} stuck "
+            f"workers; the wait multiplied by worker count"
+        )
+    finally:
+        gate.set()  # release the stuck workers so nothing outlives the test
+        sock.close()
+    for w in survivors:
+        w.join(timeout=5)
+        assert not w.is_alive()
