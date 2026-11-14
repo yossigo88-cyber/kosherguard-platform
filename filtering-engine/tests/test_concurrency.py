@@ -256,7 +256,7 @@ def test_stop_reports_workers_that_fail_to_terminate(slow_upstream, caplog):
     service = build_service(slow_upstream.port, max_workers=1)
     gate = threading.Event()
 
-    def stuck(_data):
+    def stuck(_data, **_kw):
         gate.wait(30)  # stuck far past any shutdown timeout
         return None
 
@@ -265,7 +265,8 @@ def test_stop_reports_workers_that_fail_to_terminate(slow_upstream, caplog):
     sock.sendto(DNSRecord.question("blocked.example").pack(),
                 ("127.0.0.1", service.config.listen_port))
     time.sleep(0.3)  # the single worker has the request and is stuck
-    service.config.upstream_timeout = 0.1  # shutdown join bound ~2.1s
+    service.config.upstream_timeout = 0.1
+    service.config.tcp_idle_timeout = 0.1  # overall shutdown budget ~2.3s
     try:
         with caplog.at_level(logging.WARNING, logger="kosherguard.dns"):
             survivors = service.stop()
@@ -290,7 +291,7 @@ def test_shutdown_deadline_is_overall_not_per_worker(slow_upstream):
     service = build_service(slow_upstream.port, max_workers=worker_count)
     gate = threading.Event()
 
-    def stuck(_data):
+    def stuck(_data, **_kw):
         gate.wait(60)  # stuck far past any shutdown deadline
         return None
 
@@ -300,15 +301,16 @@ def test_shutdown_deadline_is_overall_not_per_worker(slow_upstream):
         sock.sendto(DNSRecord.question(f"stuck-{i}.example").pack(),
                     ("127.0.0.1", service.config.listen_port))
     time.sleep(0.3)  # all four workers have a request and are stuck
-    service.config.upstream_timeout = 0.1  # overall shutdown budget ~2.1s
+    service.config.upstream_timeout = 0.1
+    service.config.tcp_idle_timeout = 0.1  # overall shutdown budget ~2.3s
     started = time.monotonic()
     survivors = service.stop()
     elapsed = time.monotonic() - started
     try:
         assert len(survivors) == worker_count
-        # Per-worker timeouts would take worker_count x ~2.1s; a single
+        # Per-worker timeouts would take worker_count x ~2.3s; a single
         # overall deadline must finish in little more than one budget.
-        assert elapsed < 2 * 2.1, (
+        assert elapsed < 2 * 2.3, (
             f"shutdown took {elapsed:.2f}s with {worker_count} stuck "
             f"workers; the wait multiplied by worker count"
         )
