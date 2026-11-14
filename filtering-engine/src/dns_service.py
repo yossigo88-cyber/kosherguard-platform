@@ -13,6 +13,16 @@ engine:
   input.
 - When every upstream fails (timeout or error), the client gets SERVFAIL.
 
+Concurrency: incoming requests are handled by a bounded worker pool
+(`max_workers` threads, `max_queued` pending slots). A slow or
+unreachable upstream occupies at most one worker, so it cannot delay
+unrelated requests - locally decided (blocked) queries in particular are
+answered without any network I/O. When every worker is busy and the queue
+is full, new packets are dropped and a `queue_full` event is logged;
+dropping is the standard UDP-overload answer (clients retry) and keeps
+memory and thread use strictly bounded. Shutdown closes the socket,
+stops the receive loop, and stops every worker.
+
 Scope, stated plainly: DNS filtering controls access to *domains*. It
 cannot block individual URLs, pages, or paths, and it cannot see or filter
 the contents of encrypted HTTPS traffic. See README.md.
@@ -25,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import socket
 import threading
 import time
@@ -72,6 +83,10 @@ class ServiceConfig:
     upstream_timeout: float = 3.0  # seconds per upstream attempt
     block_mode: str = "sinkhole"  # "sinkhole" or "nxdomain"
     blocked_ttl: int = 60
+    # Bounded concurrency: how many requests are processed in parallel and
+    # how many may wait for a worker before new packets are dropped.
+    max_workers: int = 32
+    max_queued: int = 128
 
 
 class DNSFilteringService:
@@ -87,10 +102,23 @@ class DNSFilteringService:
         self.config = config or ServiceConfig()
         if self.config.block_mode not in ("sinkhole", "nxdomain"):
             raise ValueError(f"unknown block_mode: {self.config.block_mode!r}")
+        for name in ("max_workers", "max_queued"):
+            value = getattr(self.config, name)
+            if not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if not isinstance(self.config.upstream_timeout, (int, float)) \
+                or self.config.upstream_timeout <= 0:
+            raise ValueError(
+                f"upstream_timeout must be a positive number, "
+                f"got {self.config.upstream_timeout!r}"
+            )
         self.decisions = decision_logger
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
+        self._stopping = threading.Event()
+        self._queue: Optional[queue.Queue] = None
+        self._workers: List[threading.Thread] = []
 
     # -- packet handling (pure, separately testable) -----------------------
 
@@ -192,25 +220,60 @@ class DNSFilteringService:
     # -- socket server ------------------------------------------------------
 
     def start(self) -> None:
-        """Bind the UDP socket and serve in a background thread."""
+        """Bind the UDP socket, start the bounded worker pool and serve in
+        a background thread."""
         if self._running.is_set():
             raise RuntimeError("service already running")
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind((self.config.listen_host, self.config.listen_port))
+        # Lets the receive loop notice shutdown without closing the socket
+        # out from under workers that are still sending responses.
+        self._sock.settimeout(0.5)
         self.config.listen_port = self._sock.getsockname()[1]  # resolves port 0
+        self._queue = queue.Queue(maxsize=self.config.max_queued)
+        self._stopping.clear()
+        self._workers = [
+            threading.Thread(target=self._worker, name=f"dns-worker-{i + 1}",
+                             daemon=True)
+            for i in range(self.config.max_workers)
+        ]
+        for worker in self._workers:
+            worker.start()
         self._running.set()
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
-        log.info("DNS filtering service listening on %s:%s (upstream: %s)",
+        log.info("DNS filtering service listening on %s:%s (upstream: %s, "
+                 "workers: %d, queue: %d)",
                  self.config.listen_host, self.config.listen_port,
-                 ", ".join(h for h, _ in self.config.upstreams))
+                 ", ".join(h for h, _ in self.config.upstreams),
+                 self.config.max_workers, self.config.max_queued)
 
     def _serve(self) -> None:
+        """Receive packets and hand them to the worker pool. The queue is
+        bounded: when all workers are busy and the queue is full, the
+        packet is dropped and logged (UDP clients retry)."""
         while self._running.is_set():
             try:
                 data, client = self._sock.recvfrom(4096)
+            except socket.timeout:
+                continue  # periodic wake-up so shutdown is noticed
             except OSError:
                 break
+            try:
+                self._queue.put_nowait((data, client))
+            except queue.Full:
+                self._log({"event": "queue_full", "outcome": "dropped",
+                           "reason": "all workers busy and request queue full"})
+
+    def _worker(self) -> None:
+        """One bounded worker: processes queued requests until shutdown.
+        Its own request finishes even after stop() begins; requests still
+        queued at shutdown are dropped (clients retry, per UDP)."""
+        while not self._stopping.is_set():
+            try:
+                data, client = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
             try:
                 response = self.handle_packet(data)
             except Exception:
@@ -223,11 +286,26 @@ class DNSFilteringService:
                     log.warning("could not send response to client")
 
     def stop(self) -> None:
+        """Shut down cleanly: stop receiving, wait (bounded) for in-flight
+        requests to finish and send their responses, stop every worker,
+        then close the socket. Requests still queued at shutdown are
+        dropped (clients retry, per UDP)."""
         self._running.clear()
-        if self._sock is not None:
-            self._sock.close()
+        self._stopping.set()
         if self._thread is not None:
             self._thread.join(timeout=2)
+        # A worker's slowest in-flight request is bounded by trying every
+        # upstream once with the configured timeout; wait at most that
+        # long per worker, never indefinitely.
+        join_timeout = (
+            self.config.upstream_timeout * max(1, len(self.config.upstreams))
+            + 2.0
+        )
+        for worker in self._workers:
+            worker.join(timeout=join_timeout)
+        self._workers = []
+        if self._sock is not None:
+            self._sock.close()
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -243,6 +321,11 @@ def main(argv: Optional[list] = None) -> int:
                         help="upstream resolver host[:port]; repeatable")
     parser.add_argument("--block-mode", choices=["sinkhole", "nxdomain"],
                         default="sinkhole")
+    parser.add_argument("--max-workers", type=int, default=32,
+                        help="bounded worker pool size (default: 32)")
+    parser.add_argument("--max-queued", type=int, default=128,
+                        help="max requests waiting for a worker before new "
+                             "packets are dropped (default: 128)")
     parser.add_argument("--log", help="decision log file (JSON lines); default: stderr")
     args = parser.parse_args(argv)
 
@@ -260,7 +343,9 @@ def main(argv: Optional[list] = None) -> int:
             upstreams.append((h, int(p) if p else 53))
     config = ServiceConfig(listen_host=host, listen_port=int(port or 5353),
                            upstreams=upstreams or ServiceConfig().upstreams,
-                           block_mode=args.block_mode)
+                           block_mode=args.block_mode,
+                           max_workers=args.max_workers,
+                           max_queued=args.max_queued)
 
     import sys
     stream = open(args.log, "a", encoding="utf-8") if args.log else sys.stderr
