@@ -175,11 +175,41 @@ updated. Only import data we have the rights to use.
 
 ## DNS filtering service
 
-- Listens on UDP (`127.0.0.1:5353` by default for local development; port
-  53 requires privileges in production).
+- Listens on **UDP and TCP** on the same configured port
+  (`127.0.0.1:5353` by default for local development; port 53 requires
+  privileges in production). UDP is bound first; TCP is then bound to the
+  same numeric port (with port `0`, the port the kernel assigned to UDP).
+  If either listener fails to start, everything started so far is torn
+  down again - the service never runs half-configured.
+- **DNS over TCP framing** follows RFC 1035: each message on a TCP
+  connection is a two-byte unsigned big-endian length followed by that
+  many bytes of DNS message. Reads assemble complete messages across
+  partial TCP deliveries; multiple messages on one connection are
+  answered in order; a zero or over-limit (> 65535) length or an
+  unrecoverably malformed message closes that connection safely and is
+  logged - it can never crash the service.
 - **Allowed domains** are forwarded to configurable upstream resolvers
   (tried in order; per-upstream timeout, default 3s) and the upstream
-  answer is relayed.
+  answer is relayed. The original query - EDNS0 OPT record included - is
+  forwarded unchanged.
+- **Upstream TCP fallback**: if an upstream's UDP answer has the
+  truncation (TC) flag set, the same query is retried over TCP to *that
+  same upstream*, and the complete TCP answer is used. If the TCP retry
+  fails, the next configured upstream gets the normal UDP attempt plus
+  its own truncation check; if every upstream fails, the client gets
+  SERVFAIL. The structured log records the transport actually used
+  (`udp` or `tcp`) and every `tcp_fallback_failed` event. Queries are
+  never sent over TCP unless a UDP answer arrived truncated.
+- **EDNS0 and downstream UDP sizes**: a downstream UDP response is
+  limited to the client's advertised EDNS0 UDP payload size, or 512
+  bytes when the query carried no OPT record, additionally capped by the
+  configurable `max_udp_response` safety limit (default 4096). A
+  response that does not fit - including a large answer fetched via TCP
+  fallback - is truncated at whole-record boundaries (never mid-record),
+  the TC flag is set, and the OPT record is preserved, so the client can
+  retry over TCP and get the complete answer. Downstream TCP clients
+  always receive the complete response, up to the 65535-byte
+  DNS-over-TCP maximum.
 - **Blocked domains** are answered locally. Default `sinkhole` mode:
   A -> `0.0.0.0`, AAAA -> `::` (TTL 60s). `nxdomain` mode answers NXDOMAIN
   instead. Non-A/AAAA query types for blocked domains get NXDOMAIN either
@@ -189,8 +219,24 @@ updated. Only import data we have the rights to use.
 - **Malformed packets**: a FORMERR response is returned when a transaction
   ID can be recovered; otherwise the packet is dropped. Bad input can
   never crash the service.
-- Current transport limitation: **UDP only**. TCP (needed for very large
-  responses) is a documented future integration point, not present today.
+
+### Remaining transport limitations
+
+- Classic DNS only: no DNS-over-HTTPS or DNS-over-TLS (out of scope for
+  this stage), so DNS traffic is visible to - and can be redirected by -
+  the local network, as before.
+- Upstream answers are trusted as received; there is no DNSSEC
+  validation.
+- Upstream TCP fallback happens only when a UDP answer arrives with TC
+  set; an upstream that silently drops large UDP answers instead of
+  truncating them is indistinguishable from a timeout and fails over to
+  the next upstream.
+- The per-upstream timeout applies to each attempt, so worst-case
+  latency for one query grows with the number of configured upstreams
+  (timeout x upstreams, doubled when each answer is truncated).
+- `max_udp_response` caps downstream UDP answers even when the client
+  advertises more; affected clients retry over TCP and get the complete
+  answer.
 
 ### Concurrency
 
@@ -209,19 +255,40 @@ request and never the single synchronous loop this stage started with:
   full, new packets are dropped and a `queue_full` event is written to
   the structured log. Dropping is the standard UDP-overload answer -
   clients retry - and it can never exhaust resources.
-- **Shutdown is clean, and honestly reported**: `stop()` stops the
-  receive loop, then waits one overall monotonic deadline (upstream
-  timeout x number of upstreams, plus margin) shared by all workers -
-  the total wait never multiplies by the worker count - for in-flight
-  requests to finish and send their responses, then closes the socket. Requests
-  still queued at shutdown are dropped; clients retry. If any worker is
-  still running after that bound, `stop()` returns it, keeps it
-  referenced on the service, and logs a `shutdown incomplete` error
-  naming it - an incomplete shutdown is never presented as clean.
+- Requests still queued at shutdown are dropped; clients retry. See the
+  shutdown paragraph below for the shared-deadline behavior across both
+  transports.
 
-Both limits are configurable on the command line (`--max-workers`,
-`--max-queued`) or via `ServiceConfig` in code. Invalid values
-(non-integer, < 1) are rejected at startup.
+TCP connections get the same bounded treatment: a fixed pool of
+`tcp_workers` (default 16) threads serves accepted connections from a
+bounded `tcp_queued` (default 64) queue; a connection that arrives at a
+full queue is closed safely and a `tcp_queue_full` event is logged.
+Per-connection guardrails keep one client from monopolizing a worker:
+`tcp_idle_timeout` (default 10s) bounds the total time to read each
+complete message (including the length prefix), so a client trickling
+bytes or going idle is dropped; `tcp_max_messages` (default 64) caps how
+many queries one connection may send before it is closed. A slow TCP
+client therefore occupies at most one worker and never delays unrelated
+UDP or TCP traffic.
+
+All limits are configurable on the command line (`--max-workers`,
+`--max-queued`, `--tcp-workers`, `--tcp-queued`, `--tcp-idle-timeout`,
+`--tcp-max-messages`, `--max-udp-response`) or via `ServiceConfig` in
+code. Invalid values (non-integer, < 1) are rejected at startup.
+
+**Shutdown across both transports** uses one overall monotonic deadline
+shared by the receive loop, the accept loop, all UDP workers, and all
+TCP workers: the budget is the worst-case upstream work (upstream
+timeout x number of upstreams x 2, covering a UDP attempt plus a TCP
+fallback per upstream) plus the connection read timeout and a 2s margin.
+Each thread is joined only for the time remaining before that shared
+deadline - the wait never multiplies by the worker or connection count.
+Idle or slow TCP connections cannot hold shutdown: after the deadline,
+any still-open tracked connection is force-closed as a backstop, and any
+worker or thread that survives the deadline is reported by name, kept
+referenced on the service, and returned in an accurate
+incomplete-shutdown result. An incomplete shutdown is never presented as
+clean.
 
 ### What DNS filtering can and cannot block
 
@@ -284,6 +351,9 @@ python src/dns_service.py \
     --upstream 1.1.1.1 \
     --block-mode sinkhole \
     --max-workers 32 --max-queued 128 \
+    --tcp-workers 16 --tcp-queued 64 \
+    --tcp-idle-timeout 10 --tcp-max-messages 64 \
+    --max-udp-response 4096 \
     --log decisions.jsonl
 ```
 
@@ -292,6 +362,7 @@ Then, from another shell:
 ```bash
 dig @127.0.0.1 -p 5353 example.com        # allowed: real answer
 dig @127.0.0.1 -p 5353 tracker.example.com # blocked: 0.0.0.0
+dig @127.0.0.1 -p 5353 +tcp example.com    # same service over TCP
 ```
 
 ## Running the tests (repeatable procedure)
@@ -302,20 +373,31 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-The suite runs the real service over real UDP sockets against in-test
-fake upstream resolvers, so no internet access is needed and results are
-deterministic. It covers: policy precedence, allowlists, blocklists,
-category rules, unknown domains, DNS responses (sinkhole A/AAAA,
-NXDOMAIN, forwarded answers, TXT), upstream failures (SERVFAIL),
+The suite runs the real service over real UDP and TCP sockets against
+in-test fake upstream resolvers, so no internet access is needed and
+results are deterministic. It covers: policy precedence, allowlists,
+blocklists, category rules, unknown domains, DNS responses (sinkhole
+A/AAAA, NXDOMAIN, forwarded answers, TXT), upstream failures (SERVFAIL),
 malformed requests (FORMERR + service survival), the full policy
 validation matrix (invalid types, malformed domains/categories, empty
 entries, unknown keys), bounded concurrency (a deliberately delayed
 upstream does not delay unrelated or blocked requests, concurrent slow
 requests run in parallel, saturation drops safely and logs it, shutdown
 is clean), import merging and validation, and the structure and privacy
-properties of the decision log.
+properties of the decision log. Stage 4 adds: blocked and allowed
+answers over TCP, ordered multi-message connections, partial (trickled)
+frame delivery, malformed/zero/oversized length handling, slow-client
+isolation, the bounded TCP pool and full-queue close + log, idle-timeout
+and per-connection message limits, port-0 binding both transports to one
+port, listener-failure cleanup, upstream TC-triggered TCP fallback with
+logged transports, fallback failure moving to the next upstream,
+SERVFAIL over TCP, EDNS0 preservation end to end, 512-byte truncation
+without an OPT record, complete responses within an advertised payload
+size, the `max_udp_response` cap, complete large answers to downstream
+TCP clients, and shared-deadline shutdown closing listeners, connections
+and workers.
 
-Latest local run: **69 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **90 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 
 ## Security notes
 
@@ -334,7 +416,8 @@ Listed for orientation only; none of this exists today:
 - Dashboard ingestion of the JSON decision log.
 - Per-device or per-group policies (the engine already takes any policy
   object; keying policies by client identity is future work).
-- DNS over HTTPS/TLS listeners, and TCP DNS for large responses.
+- DNS over HTTPS/TLS listeners (deliberately out of scope: the
+  service speaks classic DNS on UDP and TCP only).
 - Policy hot-reload without restart.
 - A production-scale, properly licensed category feed.
 - Integration with the managed-device layers (proxy, MDM, URL Filter
