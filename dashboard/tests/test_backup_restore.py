@@ -10,6 +10,7 @@ files) are verified to fail without touching the destination.
 
 import hashlib
 import os
+import stat
 import subprocess
 import threading
 from pathlib import Path
@@ -101,7 +102,7 @@ def test_backup_restore_round_trip(tmp_path):
         stop_server(srv, thread)
 
     # Restore over the existing (mutated) database.
-    result = run_script(RESTORE_SH, backups[0], data_dir, "--force")
+    result = run_script(RESTORE_SH, backups[0], data_dir, "--force", "--service-stopped")
     assert result.returncode == 0, result.stderr
 
     # Serve the restored directory and verify EVERYTHING matches the
@@ -163,7 +164,7 @@ def test_restore_refuses_corrupt_backup_and_keeps_destination(tmp_path):
 
     garbage = tmp_path / "garbage.db"
     garbage.write_bytes(b"this is not a sqlite database at all" * 100)
-    result = run_script(RESTORE_SH, garbage, data_dir, "--force")
+    result = run_script(RESTORE_SH, garbage, data_dir, "--force", "--service-stopped")
     assert result.returncode != 0
     assert "restore:" in result.stderr
     # The existing database is byte-for-byte untouched.
@@ -180,7 +181,7 @@ def test_restore_refuses_overwrite_without_force(tmp_path):
 
     backup = tmp_path / "some-backup.db"
     backup.write_bytes(db_path.read_bytes())
-    result = run_script(RESTORE_SH, backup, data_dir)  # no --force
+    result = run_script(RESTORE_SH, backup, data_dir, "--service-stopped")  # no --force
     assert result.returncode != 0
     assert "--force" in result.stderr
     assert sha256(db_path) == before
@@ -210,3 +211,95 @@ def test_backup_rotation_keeps_newest(tmp_path):
         assert result.returncode == 0, result.stderr
     backups = sorted((data_dir / "backups").glob("dashboard-*.db"))
     assert len(backups) == 2  # the oldest was rotated out
+
+
+def test_restore_requires_service_stopped_confirmation(tmp_path):
+    """--force alone must NOT imply the service is stopped: the script
+    refuses, and the existing database stays byte-for-byte unchanged."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db_path = data_dir / "dashboard.db"
+    srv, thread, _ = start_server(db_path)
+    stop_server(srv, thread)
+    before = sha256(db_path)
+
+    backup = tmp_path / "some-backup.db"
+    backup.write_bytes(db_path.read_bytes())
+    result = run_script(RESTORE_SH, backup, data_dir, "--force")
+    assert result.returncode != 0
+    assert "--service-stopped" in result.stderr
+    assert sha256(db_path) == before
+
+
+def test_failed_backup_leaves_nothing_behind(tmp_path):
+    """A failed backup leaves no partial file and nothing that looks
+    like a valid completed backup."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "dashboard.db").write_bytes(b"not a database" * 1000)
+    result = run_script(BACKUP_SH, data_dir)
+    assert result.returncode != 0
+    backup_dir = data_dir / "backups"
+    leftovers = list(backup_dir.iterdir()) if backup_dir.exists() else []
+    assert leftovers == []
+
+
+@pytest.mark.parametrize("keep", ["0", "-3", "abc", "2.5", "14x"])
+def test_rotation_rejects_invalid_keep(tmp_path, keep):
+    """Invalid KEEP values fail safely: no new backup is taken and the
+    existing backup is not deleted."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    srv, thread, _ = start_server(data_dir / "dashboard.db")
+    stop_server(srv, thread)
+
+    result = run_script(BACKUP_SH, data_dir)
+    assert result.returncode == 0, result.stderr
+    existing = sorted((data_dir / "backups").glob("dashboard-*.db"))
+    assert len(existing) == 1
+
+    result = run_script(BACKUP_SH, data_dir, env_extra={"KEEP": keep})
+    assert result.returncode != 0
+    assert "KEEP" in result.stderr
+    assert sorted((data_dir / "backups").glob("dashboard-*.db")) == existing
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Unix permission bits")
+def test_backup_files_and_directories_are_private(tmp_path):
+    """The backup dir is forced to 0700 (even a pre-existing
+    world-readable one), the data dir is private, and the backup file
+    is 0600."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    os.chmod(data_dir, 0o755)
+    backup_dir = data_dir / "backups"
+    backup_dir.mkdir()
+    os.chmod(backup_dir, 0o755)  # pre-existing world-readable
+    srv, thread, _ = start_server(data_dir / "dashboard.db")
+    stop_server(srv, thread)
+
+    result = run_script(BACKUP_SH, data_dir)
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(os.stat(backup_dir).st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(data_dir).st_mode) == 0o700
+    backups = list(backup_dir.glob("dashboard-*.db"))
+    assert len(backups) == 1
+    assert stat.S_IMODE(os.stat(backups[0]).st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Unix permission bits")
+def test_restored_database_is_private(tmp_path):
+    """A restored database is 0600, even when the file it replaced was
+    world-readable."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db_path = data_dir / "dashboard.db"
+    srv, thread, _ = start_server(db_path)
+    stop_server(srv, thread)
+
+    backup = tmp_path / "some-backup.db"
+    backup.write_bytes(db_path.read_bytes())
+    os.chmod(db_path, 0o644)  # world-readable destination
+    result = run_script(RESTORE_SH, backup, data_dir, "--force", "--service-stopped")
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(os.stat(db_path).st_mode) == 0o600
