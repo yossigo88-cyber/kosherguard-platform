@@ -4,7 +4,21 @@
 # Makes a CONSISTENT copy of the dashboard SQLite database while the
 # server may still be running (SQLite online backup API - no locking
 # hacks, no copying a half-written file), verifies the copy with
-# PRAGMA integrity_check, and rotates old backups.
+# PRAGMA integrity_check BEFORE it is published, and rotates old
+# backups.
+#
+# Safety properties:
+#   - The copy is written to a temporary file whose name never matches
+#     the dashboard-*.db backup pattern, and renamed to its final name
+#     only after the integrity check passes: a failed run never leaves
+#     a partial file that looks like a valid completed backup.
+#   - Everything created here is private: the backup directory is
+#     forced to 0700 (including a pre-existing world-readable one) and
+#     backup files are 0600. Backups contain the full dashboard
+#     database - session tokens and password hashes included.
+#   - KEEP is validated as a positive integer BEFORE anything happens;
+#     an invalid value (zero, negative, non-numeric) fails safely
+#     without taking or deleting any backup.
 #
 # Usage:
 #   bash deploy/backup.sh [DATA_DIR] [BACKUP_DIR]
@@ -21,12 +35,35 @@ BACKUP_DIR="${2:-$DATA_DIR/backups}"
 KEEP="${KEEP:-14}"
 DB="$DATA_DIR/dashboard.db"
 
+# Everything this script creates is owner-only.
+umask 077
+
+# Validate KEEP before taking or deleting anything: an invalid value
+# must fail safely and never delete existing backups.
+case "$KEEP" in
+    ''|*[!0-9]*)
+        echo "backup: KEEP must be a positive integer, got '$KEEP'" >&2
+        exit 1
+        ;;
+esac
+if [ "$KEEP" -lt 1 ]; then
+    echo "backup: KEEP must be a positive integer, got '$KEEP'" >&2
+    exit 1
+fi
+
 if [ ! -f "$DB" ]; then
     echo "backup: database not found: $DB" >&2
     exit 1
 fi
 
 mkdir -p "$BACKUP_DIR"
+# Private directories only - including pre-existing ones that were
+# left world-readable.
+chmod 0700 "$BACKUP_DIR"
+if [ -O "$DATA_DIR" ]; then
+    chmod 0700 "$DATA_DIR"
+fi
+
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 DEST="$BACKUP_DIR/dashboard-$STAMP.db"
 if [ -e "$DEST" ]; then
@@ -34,7 +71,13 @@ if [ -e "$DEST" ]; then
     DEST="$BACKUP_DIR/dashboard-$STAMP-$$.db"
 fi
 
-python3 - "$DB" "$DEST" <<'PY'
+# Write to a temporary name that never matches dashboard-*.db, then
+# publish by rename only after verification. The trap removes the
+# temporary file if any step fails.
+TMP="$BACKUP_DIR/.dashboard-$STAMP.tmp.$$"
+trap 'rm -f "$TMP"' EXIT
+
+python3 - "$DB" "$TMP" <<'PY'
 import os
 import sqlite3
 import sys
@@ -57,6 +100,9 @@ if result != "ok":
     sys.exit(1)
 PY
 
+chmod 0600 "$TMP"
+mv "$TMP" "$DEST"
+trap - EXIT
 echo "backup: wrote $DEST"
 
 # Rotation: keep the newest $KEEP backups, delete the rest.
