@@ -357,3 +357,118 @@ def test_status_reports_disk_and_engine(client, pub_root):
     # No engine has reported yet: unknown, not guessed.
     assert body["engine"] is None
     assert body["engine_matches_active_revision"] is None
+
+
+# -- selected-policy invariant through every mutation path ----------------
+# Regression tests for the independent-review correction: the invariant
+# was previously enforced only in set_policy_enabled() and delete_policy();
+# update_policy() and rollback_policy() could disable the selected policy.
+
+def _full_payload(name, enabled=True, blocklist=None):
+    return {
+        "name": name,
+        "description": "",
+        "default_policy": "allow",
+        "enabled": enabled,
+        "allowlist": [],
+        "blocklist": blocklist if blocklist is not None else ["bad.test"],
+        "category_allow": [],
+        "category_block": [],
+    }
+
+
+def test_update_selected_policy_with_enabled_false_rejected(client):
+    """The update route cannot bypass the invariant with enabled=false."""
+    policy = make_policy(client)
+    pid = policy["id"]
+    status, _ = client.post(f"/api/policies/{pid}/select")
+    assert status == 200
+    status, body = client.put(
+        f"/api/policies/{pid}", _full_payload("family", enabled=False))
+    assert status == 409
+    assert "selected for publication" in body["error"]
+    # The policy is untouched: still enabled, still selected.
+    status, fetched = client.get(f"/api/policies/{pid}")
+    assert fetched["enabled"] is True
+    status, state = client.get("/api/config/status")
+    assert state["selected_policy"]["id"] == pid
+
+
+def test_rollback_selected_policy_to_disabled_version_rejected(client):
+    """A rollback that would restore enabled=false is refused too."""
+    policy = make_policy(client)
+    pid = policy["id"]
+    # Version 2: disabled (before any selection, so allowed).
+    status, _ = client.post(f"/api/policies/{pid}/enabled", {"enabled": False})
+    assert status == 200
+    # Version 3: re-enabled.
+    status, _ = client.post(f"/api/policies/{pid}/enabled", {"enabled": True})
+    assert status == 200
+    status, _ = client.post(f"/api/policies/{pid}/select")
+    assert status == 200
+    status, body = client.post(f"/api/policies/{pid}/rollback", {"version": 2})
+    assert status == 409
+    assert "selected for publication" in body["error"]
+    status, fetched = client.get(f"/api/policies/{pid}")
+    assert fetched["enabled"] is True
+    status, state = client.get("/api/config/status")
+    assert state["selected_policy"]["id"] == pid
+
+
+def test_selected_policy_normal_update_and_rollback_still_work(client):
+    """The invariant blocks only disabling: ordinary updates and
+    rollbacks that leave the selected policy enabled keep working."""
+    policy = make_policy(client)
+    pid = policy["id"]
+    status, _ = client.post(f"/api/policies/{pid}/select")
+    assert status == 200
+    status, updated = client.put(
+        f"/api/policies/{pid}",
+        _full_payload("family", blocklist=["bad.test", "worse.test"]))
+    assert status == 200, updated
+    assert updated["blocklist"] == ["bad.test", "worse.test"]
+    status, rolled = client.post(f"/api/policies/{pid}/rollback", {"version": 1})
+    assert status == 200, rolled
+    status, fetched = client.get(f"/api/policies/{pid}")
+    assert fetched["blocklist"] == ["bad.test"]
+    assert fetched["enabled"] is True
+    status, state = client.get("/api/config/status")
+    assert state["selected_policy"]["id"] == pid
+
+
+def test_concurrent_disable_and_select_never_leave_selected_disabled(client):
+    """Real concurrent requests: the check and the mutation it guards
+    are atomic, so no interleaving can leave the selected policy
+    disabled."""
+    policy_a = make_policy(client, name="a")
+    policy_b = make_policy(client, name="b")
+    a, b = policy_a["id"], policy_b["id"]
+    status, _ = client.post(f"/api/policies/{a}/select")
+    assert status == 200
+    results = []
+
+    def disable_a():
+        status, _ = client.post(f"/api/policies/{a}/enabled", {"enabled": False})
+        results.append(("disable", status))
+
+    def select_b():
+        status, _ = client.post(f"/api/policies/{b}/select")
+        results.append(("select", status))
+
+    threads = []
+    for _ in range(5):
+        threads.append(threading.Thread(target=disable_a))
+        threads.append(threading.Thread(target=select_b))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    # Every request got a clean answer (200 or 409), never a 500.
+    assert len(results) == 10
+    assert all(status in (200, 409) for _, status in results)
+    # The invariant holds no matter how the requests interleaved:
+    # whatever is selected now is enabled.
+    status, state = client.get("/api/config/status")
+    selected = state["selected_policy"]["id"]
+    status, fetched = client.get(f"/api/policies/{selected}")
+    assert fetched["enabled"] is True
