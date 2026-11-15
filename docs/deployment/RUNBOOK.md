@@ -45,14 +45,27 @@ backed up by `deploy/backup.sh` on a schedule.
 sudo useradd --system --home /var/lib/kosherguard --shell /usr/sbin/nologin kosherguard
 sudo mkdir -p /var/lib/kosherguard
 sudo chown kosherguard:kosherguard /var/lib/kosherguard
+sudo chmod 0700 /var/lib/kosherguard
 ```
+
+The state directory and everything in it stays private to the service
+user: the database holds session tokens and password hashes. The
+systemd unit also creates it with mode 0700 (`StateDirectoryMode`)
+when it does not exist.
 
 ### 2. Install the code
 
 ```bash
 sudo mkdir -p /opt/kosherguard
-sudo git clone https://github.com/yossigo88-cyber/kosherguard-platform /opt/kosherguard
+sudo git clone --branch stage-9b-deployment-preparation \
+    https://github.com/yossigo88-cyber/kosherguard-platform /opt/kosherguard
 ```
+
+The `--branch stage-9b-deployment-preparation` is required: the
+deployment files this runbook installs live on that branch. Cloning
+without it checks out the repository's default branch, which does not
+contain the Stage 9B deployment files, and would produce an
+installation without the files this runbook tells you to install.
 
 ### 3. Create the secrets file
 
@@ -125,20 +138,31 @@ sudo -u kosherguard crontab -e
 ```
 
 Backups land in `/var/lib/kosherguard/backups/` and are rotated (keep
-14 by default; `KEEP=` environment). A backup on the same machine is
-not enough for real recovery: copy the backups somewhere else you own
-(on another machine: `scp`/`rsync` over SSH, or Tailscale between your
-own machines).
+14 by default; `KEEP=` environment). `backup.sh` forces the backup
+directory to 0700 and every backup file to 0600 (a backup is the full
+database, session tokens and password hashes included), writes to a
+temporary file and publishes it only after an integrity check passes,
+and validates `KEEP` as a positive integer before rotating - an
+invalid value fails without taking or deleting any backup. A backup
+on the same machine is not enough for real recovery: copy the backups
+somewhere else you own (on another machine: `scp`/`rsync` over SSH,
+or Tailscale between your own machines).
 
 ### 7. Test a restore BEFORE you need it
 
 ```bash
 sudo systemctl stop kosherguard-dashboard
 sudo -u kosherguard bash /opt/kosherguard/deploy/restore.sh \
-    /var/lib/kosherguard/backups/LATEST-FILE.db /var/lib/kosherguard --force
+    /var/lib/kosherguard/backups/LATEST-FILE.db /var/lib/kosherguard \
+    --force --service-stopped
 sudo systemctl start kosherguard-dashboard
 curl -s http://127.0.0.1:8080/api/health   # expect: {"status":"ok"}
 ```
+
+`restore.sh` refuses to run without `--service-stopped`, an explicit
+confirmation that the dashboard service has been stopped. `--force`
+only covers overwriting the existing database; it does not imply the
+service is stopped. The restored database file is owner-only (0600).
 
 Sign in and confirm your data is the backup-time state. The automated
 test suite (`dashboard/tests/test_backup_restore.py`) performs this
@@ -148,10 +172,15 @@ to the scripts.
 ## Updating
 
 ```bash
-cd /opt/kosherguard && sudo git pull
+cd /opt/kosherguard
+sudo git fetch origin
+sudo git pull origin stage-9b-deployment-preparation
 sudo systemctl restart kosherguard-dashboard
 curl -s http://127.0.0.1:8080/api/health
 ```
+
+Always name the branch explicitly on update; do not rely on the
+repository's default branch.
 
 Back up before updating.
 
