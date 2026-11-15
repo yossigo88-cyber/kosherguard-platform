@@ -4,7 +4,7 @@ KosherGuard is a complete iPhone filtering and management platform: a central se
 
 ## Status
 
-Initial repository setup. Documentation only - no application code yet. Development begins after this charter stage is approved.
+Stage 5 (full testing and verification) is complete for the core filtering engine. What exists today is the backend filtering core in [filtering-engine/](filtering-engine/README.md): the central policy engine, the DNS filtering service (UDP and TCP), the website category database, structured decision logging, and a 113-test automated suite. The administrator dashboard, device enrollment, push-triggered policy updates, iPhone management, and reset recovery described in the [project charter](docs/PROJECT_CHARTER.md) are not built yet. Nothing in this repository currently filters or manages an iPhone; there is no Apple commercial MDM authorization and no real-device test environment (see the [technical investigation](docs/GENTECH_TECHNICAL_INVESTIGATION.md)).
 
 ## Documents
 
