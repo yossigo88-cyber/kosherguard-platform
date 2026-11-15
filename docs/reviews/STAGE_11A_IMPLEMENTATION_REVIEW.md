@@ -352,6 +352,40 @@ committed tree is verified separately after the commits land (a fresh
 clone of the committed branch, both suites re-run), and that result is
 reported with the final SHA.
 
+**Final committed-tree validation (post-commit):** after all 14
+commits landed, a brand-new
+`git clone --branch stage-9b-deployment-preparation` of the COMMITTED
+branch (HEAD `5377d2b4d3ec0c92960060b603aee8655a9b4119`, confirmed
+against the GitHub API) was checked: all 14 changed/added files are
+byte-identical to the tested working tree (`cmp` per file), and every
+committed blob SHA returned by the GitHub contents API matched the
+locally computed `git hash-object` of the tested file (14/14). Both
+suites were then re-run on the clone with these exact invocations and
+results:
+
+- `python3 -m pytest filtering-engine/tests -q` (from
+  `filtering-engine/`) -> **209 passed**, 3 benign warnings (57.99s).
+- `python3 -m pytest dashboard/tests/test_devices.py dashboard/tests/test_device_assignment.py -q`
+  (from the repo root) -> **90 passed** (47.85s); the new Stage 11A
+  suites.
+- `python3 -m pytest dashboard/tests --ignore=dashboard/tests/test_devices.py --ignore=dashboard/tests/test_device_assignment.py -q`
+  (from the repo root) -> **165 passed** (105.44s); the entire
+  pre-existing dashboard suite.
+
+Dashboard total: **255 passed** (90 + 165, two invocations; this
+environment's suite-level 120 s execution cap requires split runs).
+The tested code SHA is `5377d2b4d3ec0c92960060b603aee8655a9b4119`;
+the only later commit updates this report itself and changes no code,
+test, schema, or documentation-of-record file.
+
+**Note on `engine_bridge.py` scope:** its only change is import
+re-exports of the two new engine modules so the dashboard can import
+them through the existing bridge path. It adds no function that reads
+the registry, and it changes no published payload, no publication
+generation, and no runtime engine behavior. Publication-path wiring
+remains Stage 11D and engine lookup wiring remains Stage 11C; both are
+untouched.
+
 **Deviations and judgment calls (complete list):**
 
 1. The combined CHECK table-constraint is positioned after the column
