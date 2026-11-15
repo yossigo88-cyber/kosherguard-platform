@@ -10,6 +10,7 @@ files) are verified to fail without touching the destination.
 
 import hashlib
 import os
+import sqlite3
 import stat
 import subprocess
 import threading
@@ -169,6 +170,8 @@ def test_restore_refuses_corrupt_backup_and_keeps_destination(tmp_path):
     assert "restore:" in result.stderr
     # The existing database is byte-for-byte untouched.
     assert sha256(db_path) == before
+    # No temporary restore file is left behind.
+    assert list(data_dir.glob(".dashboard.db.restore-in-progress*")) == []
 
 
 def test_restore_refuses_overwrite_without_force(tmp_path):
@@ -303,3 +306,61 @@ def test_restored_database_is_private(tmp_path):
     result = run_script(RESTORE_SH, backup, data_dir, "--force", "--service-stopped")
     assert result.returncode == 0, result.stderr
     assert stat.S_IMODE(os.stat(db_path).st_mode) == 0o600
+
+
+def test_successful_restore_leaves_no_temporary_file(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db_path = data_dir / "dashboard.db"
+    srv, thread, _ = start_server(db_path)
+    stop_server(srv, thread)
+
+    backup = tmp_path / "some-backup.db"
+    backup.write_bytes(db_path.read_bytes())
+    result = run_script(RESTORE_SH, backup, data_dir, "--force", "--service-stopped")
+    assert result.returncode == 0, result.stderr
+    assert list(data_dir.glob(".dashboard.db.restore-in-progress*")) == []
+
+
+def test_concurrent_backups_do_not_collide(tmp_path):
+    """Genuinely concurrent backups: real backup.sh subprocesses started
+    at the same time against the same database and backup directory.
+    Every process must succeed, every completed backup must have its own
+    unique filename (nothing overwritten), every backup must pass a
+    SQLite integrity check, permissions must stay 0700/0600, and no
+    partial or temporary file may be left behind."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    srv, thread, _ = start_server(data_dir / "dashboard.db")
+    stop_server(srv, thread)
+
+    count = 8
+    procs = [
+        subprocess.Popen(
+            ["bash", str(BACKUP_SH), str(data_dir)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(count)
+    ]
+    for proc in procs:
+        _, err = proc.communicate(timeout=120)
+        assert proc.returncode == 0, err
+
+    backup_dir = data_dir / "backups"
+    backups = sorted(backup_dir.glob("dashboard-*.db"))
+    assert len(backups) == count
+    assert len({b.name for b in backups}) == count  # none overwritten
+    for backup in backups:
+        assert backup.stat().st_size > 0  # nothing partially written
+        if os.name == "posix":
+            assert stat.S_IMODE(os.stat(backup).st_mode) == 0o600
+        conn = sqlite3.connect(backup)
+        try:
+            result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            conn.close()
+        assert result == "ok"
+    # Nothing but completed backups remains (no temp files).
+    others = [p for p in backup_dir.iterdir() if p not in backups]
+    assert others == []
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(backup_dir).st_mode) == 0o700
