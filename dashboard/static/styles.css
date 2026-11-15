@@ -399,3 +399,104 @@ tr:hover td { background: #f8fbfc; }
   .content { padding: 1rem 0.9rem 3rem; }
   .modal .two-col { grid-template-columns: 1fr; }
 }
+
+/* ---------- Stage 11B: devices registry interface ---------- */
+
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
+
+.btn:disabled { opacity: 0.55; cursor: default; }
+.btn:disabled:hover { background: var(--surface); }
+.btn-primary:disabled:hover { background: var(--accent); }
+.btn-danger:disabled:hover { background: var(--danger); }
+
+.page-head { flex-wrap: wrap; }
+.page-head .badge { align-self: center; }
+
+.binding-hint {
+  border-left: 3px solid var(--accent);
+  padding-left: 0.6rem;
+  font-weight: 600;
+}
+
+.binding-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.binding-row select { max-width: 150px; flex-shrink: 0; }
+.binding-row input { flex: 1; min-width: 0; }
+.binding-row .btn { flex-shrink: 0; }
+
+.card h4 { margin: 1rem 0 0.35rem; font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+
+.eff-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.eff-cell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.8rem 0.9rem;
+  background: #fbfcfe;
+  min-width: 0;
+}
+
+.eff-cell h4 { margin: 0 0 0.15rem; font-size: 0.9rem; color: var(--text); }
+.eff-cell p { margin: 0.15rem 0 0.4rem; }
+
+.card { margin-bottom: 1.2rem; }
+.card .table-wrap { box-shadow: none; }
+
+@media (max-width: 900px) {
+  .eff-grid { grid-template-columns: 1fr; }
+
+  /* Tables become stacked cards; each cell is labeled, nothing overflows. */
+  .responsive-table thead { display: none; }
+  .responsive-table,
+  .responsive-table tbody,
+  .responsive-table tr,
+  .responsive-table td { display: block; width: 100%; }
+  .responsive-table tr { border-bottom: 2px solid var(--border); padding: 0.45rem 0; }
+  .responsive-table tr:last-child { border-bottom: none; }
+  .responsive-table td {
+    border-bottom: none;
+    padding: 0.28rem 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+  }
+  .responsive-table td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .responsive-table td.row-actions { justify-content: flex-end; }
+  .responsive-table td.row-actions::before { content: ""; }
+  .responsive-table td > * { min-width: 0; overflow-wrap: anywhere; }
+}
+
+/* Width utilities (Stage 11B forms use classes, not inline styles, so the
+   strict style-src CSP never blocks them). */
+.w-240 { max-width: 240px; }
+.w-170 { max-width: 170px; }
+.w-150 { max-width: 150px; }
+.actions-start { justify-content: flex-start; }
+
+@media (max-width: 480px) {
+  /* Narrow phones: keep the topbar inside the viewport. The username is
+     hidden (Sign out stays); the signed-in user is still shown on the
+     Settings page. */
+  .topbar { padding: 0.65rem 0.55rem; gap: 0.5rem; }
+  .topbar-user { gap: 0.45rem; }
+  #current-user { display: none; }
+  .content { padding-left: 0.7rem; padding-right: 0.7rem; }
+}
