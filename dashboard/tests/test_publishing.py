@@ -519,3 +519,28 @@ def test_publisher_manifest_descriptor_unaffected_by_pathname_swap(
     with os.fdopen(fd, "rb") as fh:
         data = json.loads(fh.read().decode("utf-8"))
     assert data["revision"] == original["revision"]
+
+
+def test_publisher_safe_open_fails_closed_without_nofollow(
+        client, server, pub_root, monkeypatch):
+    """Simulating a platform without O_NOFOLLOW (via monkeypatch only):
+    the publisher helper fails closed UNCONDITIONALLY, whether the
+    manifest path is absent or present, and never consults
+    os.path.lexists()."""
+    # Publish first: publishing itself uses the safe open and needs
+    # the real O_NOFOLLOW support. Only then simulate the unsupported
+    # platform.
+    policy = make_policy(client)
+    select_and_publish(client, policy["id"])
+    gen_dir = pub_root / "generations" / "1"
+    monkeypatch.delattr(os, "O_NOFOLLOW")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("lexists must not be consulted")
+
+    monkeypatch.setattr(os.path, "lexists", boom)
+    with pytest.raises(publishing.PublicationError):  # PRESENT
+        publishing._safe_open_manifest_nofollow(gen_dir / "manifest.json")
+    os.unlink(gen_dir / "manifest.json")
+    with pytest.raises(publishing.PublicationError):  # ABSENT
+        publishing._safe_open_manifest_nofollow(gen_dir / "manifest.json")
