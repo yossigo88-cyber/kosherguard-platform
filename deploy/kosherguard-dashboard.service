@@ -34,12 +34,17 @@ ExecStart=/usr/bin/python3 /opt/kosherguard/dashboard/src/server.py --host 127.0
 Restart=on-failure
 RestartSec=5
 
-# Hardening: the dashboard needs only its state directory.
+# Hardening: the dashboard needs only its state directory. UMask=0077
+# keeps every file the server creates owner-only - the database holds
+# session tokens and password hashes. The state directory itself is
+# created by systemd with mode 0700.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 StateDirectory=kosherguard
+StateDirectoryMode=0700
+UMask=0077
 ReadWritePaths=/var/lib/kosherguard
 
 [Install]
