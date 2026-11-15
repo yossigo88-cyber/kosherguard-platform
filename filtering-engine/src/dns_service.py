@@ -218,10 +218,18 @@ def load_validated_engine(policy_path, categories_path):
         "categories_sha256": _sha256(categories_bytes),
     }
     manifest_path = Path(policy_path).parent / "manifest.json"
-    if manifest_path.is_file():
-        # A manifest that exists but is invalid is NEVER ignored: no
-        # silent fallback to unverified loading. Only a configuration
-        # with no manifest at all loads unverified (legacy layout).
+    if os.path.lexists(manifest_path):
+        # lexists, not is_file: a manifest path that EXISTS as anything
+        # other than a regular readable file (a directory, a broken
+        # symlink, an unreadable entry) is a present-but-invalid
+        # manifest and must be rejected, never silently treated as "no
+        # manifest". Only a genuinely absent manifest path loads
+        # unverified (the legacy pre-publication layout).
+        if not manifest_path.is_file():
+            raise PolicyConfigError(
+                f"generation manifest {manifest_path} exists but is not "
+                "a regular readable file (directory, broken symlink, or "
+                "unusable entry); refusing to load")
         try:
             manifest = json.loads(manifest_path.read_text("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
