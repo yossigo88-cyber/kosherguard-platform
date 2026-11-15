@@ -10,6 +10,7 @@ malformed requests, non-A query types, and structured decision logs.
 import io
 import json
 import socket
+import struct
 import sys
 import threading
 from pathlib import Path
@@ -71,6 +72,8 @@ def upstream():
 
 
 def build_service(upstream_port, policy=None, block_mode="sinkhole", log_stream=None):
+    upstream_ports = (upstream_port if isinstance(upstream_port, list)
+                      else [upstream_port])
     db = CategoryDB({"adult-site.example": ["adult"]})
     engine = PolicyEngine(policy or {
         "default_policy": "allow",
@@ -81,7 +84,7 @@ def build_service(upstream_port, policy=None, block_mode="sinkhole", log_stream=
     config = ServiceConfig(
         listen_host="127.0.0.1",
         listen_port=0,  # ephemeral
-        upstreams=[("127.0.0.1", upstream_port)],
+        upstreams=[("127.0.0.1", p) for p in upstream_ports],
         upstream_timeout=1.0,
         block_mode=block_mode,
     )
@@ -240,3 +243,132 @@ def test_decision_log_fields_and_privacy(upstream):
     # Privacy: no client address anywhere in the log stream.
     assert "client" not in stream.getvalue()
     assert "127.0.0.1:" not in stream.getvalue()
+
+
+# -- multiple upstreams ----------------------------------------------------
+
+def test_first_upstream_dead_fails_over_to_second(upstream):
+    # Port 9 (discard) is closed: the first upstream attempt always
+    # times out; the next upstream must get the query and answer it.
+    service = build_service([9, upstream.port])
+    try:
+        reply = query("some-site.example", service.config.listen_port)
+        assert reply.header.rcode == RCODE.NOERROR
+        assert any(str(r.rdata) == UPSTREAM_A for r in reply.rr)
+    finally:
+        service.stop()
+
+
+# -- malformed requests ------------------------------------------------------
+
+def test_tiny_malformed_packet_dropped_and_service_survives(upstream):
+    stream = io.StringIO()
+    service = build_service(upstream.port, log_stream=stream)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(1.0)
+        try:
+            # One byte: not even a transaction ID is recoverable, so the
+            # packet is dropped with no response (never a crash).
+            sock.sendto(b"\x12", ("127.0.0.1", service.config.listen_port))
+            with pytest.raises(socket.timeout):
+                sock.recvfrom(4096)
+        finally:
+            sock.close()
+        # The service is still alive and correct afterwards.
+        ok = query("some-site.example", service.config.listen_port)
+        assert ok.header.rcode == RCODE.NOERROR
+        events = [json.loads(x) for x in stream.getvalue().splitlines()
+                  if x.strip()]
+        assert any(e.get("event") == "malformed_query"
+                   and e.get("outcome") == "dropped_or_formerr"
+                   for e in events)
+    finally:
+        service.stop()
+
+
+def test_questionless_packet_refused_and_service_survives(upstream):
+    """A parseable header with qdcount=0 carries no question to answer.
+    dnslib supplies an empty (root-name) question, which normalizes to
+    an empty domain, so the service answers REFUSED via the unusable-
+    query-name path - an explicit error response, never a crash or a
+    silently mis-filtered answer."""
+    stream = io.StringIO()
+    service = build_service(upstream.port, log_stream=stream)
+    try:
+        wire = struct.pack("!HHHHHH", 0xBEEF, 0, 0, 0, 0, 0)  # header, no question
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(3)
+        try:
+            sock.sendto(wire, ("127.0.0.1", service.config.listen_port))
+            data, _ = sock.recvfrom(4096)
+        finally:
+            sock.close()
+        reply = DNSRecord.parse(data)
+        assert reply.header.id == 0xBEEF
+        assert reply.header.rcode == RCODE.REFUSED
+        # The service is still alive and correct afterwards.
+        ok = query("some-site.example", service.config.listen_port)
+        assert ok.header.rcode == RCODE.NOERROR
+        events = [json.loads(x) for x in stream.getvalue().splitlines()
+                  if x.strip()]
+        assert any(e.get("outcome") == "answered_refused" for e in events)
+    finally:
+        service.stop()
+
+
+def test_root_domain_query_refused(upstream):
+    """The root name normalizes to an empty domain, which cannot be
+    filtered: REFUSED, and the decision log records it honestly."""
+    stream = io.StringIO()
+    service = build_service(upstream.port, log_stream=stream)
+    try:
+        reply = query(".", service.config.listen_port)
+        assert reply.header.rcode == RCODE.REFUSED
+        events = [json.loads(x) for x in stream.getvalue().splitlines()
+                  if x.strip()]
+        refused = next(e for e in events
+                       if e.get("outcome") == "answered_refused")
+        assert refused["event"] == "dns_query"
+    finally:
+        service.stop()
+
+
+# -- blocked domains: other query types --------------------------------------
+
+def test_blocked_domain_other_qtypes_nxdomain_in_sinkhole_mode(upstream):
+    # In sinkhole mode only A/AAAA queries get sinkhole answers; other
+    # query types for blocked domains get NXDOMAIN.
+    service = build_service(upstream.port)  # sinkhole mode
+    try:
+        reply = query("blocked.example", service.config.listen_port,
+                      qtype="TXT")
+        assert reply.header.rcode == RCODE.NXDOMAIN
+        assert not reply.rr
+    finally:
+        service.stop()
+
+
+# -- logging failures ----------------------------------------------------------
+
+class RaisingStream:
+    """A decision-log stream whose writes always fail (full disk, lost
+    file, closed handle)."""
+
+    def write(self, _s):
+        raise OSError("log write failed")
+
+    def flush(self):
+        raise OSError("log write failed")
+
+
+def test_logging_failure_does_not_crash_request_processing(upstream):
+    # Every log write fails; the service must still answer correctly.
+    service = build_service(upstream.port, log_stream=RaisingStream())
+    try:
+        blocked = query("blocked.example", service.config.listen_port)
+        assert [str(r.rdata) for r in blocked.rr] == ["0.0.0.0"]
+        allowed = query("some-site.example", service.config.listen_port)
+        assert any(str(r.rdata) == UPSTREAM_A for r in allowed.rr)
+    finally:
+        service.stop()
