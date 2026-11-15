@@ -20,8 +20,9 @@
 #                        dashboard service has been stopped
 #     --force            overwrite an existing dashboard.db without asking
 #
-# Failure behavior: any failed check exits non-zero and the existing
-# dashboard.db (if any) is left byte-for-byte untouched.
+# Failure behavior: any failed check exits non-zero, the existing
+# dashboard.db (if any) is left byte-for-byte untouched, and the
+# temporary restore file is always removed (EXIT trap).
 set -euo pipefail
 
 usage() {
@@ -53,7 +54,6 @@ done
 [ -n "$BACKUP" ] || usage
 DATA_DIR="${DATA_DIR:-/var/lib/kosherguard}"
 DEST="$DATA_DIR/dashboard.db"
-TMP="$DATA_DIR/.dashboard.db.restore-in-progress"
 
 # The restored database holds password hashes and session tokens:
 # keep it owner-only.
@@ -75,7 +75,14 @@ if [ -e "$DEST" ] && [ "$FORCE" != "1" ]; then
     exit 1
 fi
 
-rm -f "$TMP"
+# Stage the restore in a safely created, uniquely named temporary file
+# inside the data directory (same filesystem as the destination, so the
+# final rename is atomic; the unique name never conflicts with another
+# restore attempt). The EXIT trap removes it on every failure path; it
+# is cleared only after the atomic rename succeeds.
+TMP="$(mktemp "$DATA_DIR/.dashboard.db.restore-in-progress.XXXXXXXX")"
+trap 'rm -f "$TMP"' EXIT
+
 cp "$BACKUP" "$TMP"
 chmod 0600 "$TMP"
 
@@ -118,6 +125,7 @@ PY
 # Atomic rename into place; the existing database stays untouched
 # until this moment.
 mv -f "$TMP" "$DEST"
+trap - EXIT
 chmod 0600 "$DEST"
 echo "restore: installed $BACKUP as $DEST"
 echo "restore: now start the service again (systemctl start kosherguard-dashboard)"
