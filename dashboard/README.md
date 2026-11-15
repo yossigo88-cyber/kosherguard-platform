@@ -30,7 +30,7 @@ dashboard/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 157 pytest tests against a real running server
+  tests/              - 252 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -198,13 +198,36 @@ URL database).
   history; `POST /api/policies/<id>/rollback {"version": n}` rolls the
   draft back to a prior version by creating a new version.
 
+## Device registry (Stage 11A)
+
+Stage 11A adds the administrative device registry and its authenticated
+API: registry entries (which may represent one device OR a network/
+group such as "Home Wi-Fi"), network/group bindings (exact IPv4
+addresses and canonical IPv6 /64 prefixes - routing hints, never device
+identity), and per-entry policy assignment. The mandatory tighten-only
+rule (the filtering engine's feasible-signature comparator, re-exported
+through `engine_bridge.py`) refuses any assignment not proven at least
+as restrictive as the default policy, checked inside the same write
+transaction at assignment time and when the default-policy selection
+changes. The `token_hash` association kind exists in the schema as a
+reserved credential kind only; Stage 11A issues, stores, and
+authenticates no device tokens. Every entry honestly reports
+`management_status: unmanaged` (no Apple MDM authorization exists).
+Assignments are saved dashboard state only: they are not part of
+published generations (Stage 11D) and are never presented as enforced.
+Endpoints: `GET/POST /api/devices`, `GET/PUT /api/devices/<id>`,
+`POST /api/devices/<id>/state`, `POST/DELETE
+/api/devices/<id>/associations[/<aid>]`,
+`POST /api/devices/<id>/assign-policy`,
+`GET /api/devices/<id>/effective-policy`, `GET /api/devices/<id>/audit`.
+
 ## Testing
 
 ```bash
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-157 tests run the real server on an ephemeral localhost port with a
+252 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
