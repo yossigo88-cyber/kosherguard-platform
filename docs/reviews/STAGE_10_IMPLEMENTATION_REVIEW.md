@@ -912,3 +912,107 @@ summary message.
   no new GitHub permissions or OAuth scopes.
 - Stage 11 has not started. No commits squashed or rewritten.
 - Stage 10 is NOT claimed approved; independent review decides.
+
+## 19. Unsupported-platform fail-closed correction (2026-11-15)
+
+Independent review found that the descriptor-based safe open (section
+18) still had one path that was not fail-closed: when the platform
+lacks `os.O_NOFOLLOW`, both helpers first called
+`os.path.lexists(manifest_path)` - rejecting when it returned true,
+but returning None (engine legacy mode) when it returned false. That
+is not fail-closed: the manifest could appear between the lexists()
+call and the caller continuing, so the check cannot guarantee the
+path remains absent.
+
+### Fix
+
+When `O_NOFOLLOW` is unavailable, both helpers now fail closed
+UNCONDITIONALLY, with no lexists() call anywhere in the branch:
+
+- `dns_service._safe_open_manifest` raises PolicyConfigError whenever
+  it is invoked without O_NOFOLLOW - whether the manifest path looks
+  absent or present. It never returns None on such a platform.
+- `publishing._safe_open_manifest_nofollow` raises PublicationError
+  whenever it is invoked without O_NOFOLLOW.
+- The lexists() fallback is removed from both unsupported-platform
+  branches; no os.path.lexists() call remains in either manifest
+  reader.
+
+Documented limitation, now explicit in both docstrings: legacy
+no-manifest loading is unavailable on platforms that cannot provide
+the required safe-open primitive. On platforms WITH O_NOFOLLOW,
+behavior is unchanged: a genuinely absent manifest still returns None
+(engine legacy mode preserved), every present non-regular entry is
+rejected, and all hash, metadata, file-type, descriptor, and
+last-known-good checks are untouched.
+
+### Tests (O_NOFOLLOW simulated away by monkeypatch only - the real OS
+capability is never altered)
+
+- `test_safe_open_fails_closed_without_nofollow` (engine): with
+  O_NOFOLLOW monkeypatch-deleted, the helper raises PolicyConfigError
+  when the manifest path is ABSENT and when it is PRESENT, with
+  os.path.lexists rigged to explode - proving the unsupported-platform
+  branch never consults it.
+- `test_publisher_safe_open_fails_closed_without_nofollow`
+  (dashboard): the same for the publisher helper (PublicationError,
+  present and absent; a generation is published first, with real
+  O_NOFOLLOW support, before the simulation begins).
+- All existing tests re-verified unchanged: legacy no-manifest
+  loading, valid accepted, symlink/broken symlink/directory/FIFO
+  rejected without hanging, descriptor-pinning, publisher missing and
+  symlink manifest rejection, last-known-good on UDP and TCP.
+
+### Commits
+
+1. `8909bf0092f3a84fcfdbeae9e57565f4f82222bc` - engine: fail closed
+   unconditionally when O_NOFOLLOW is unavailable (no lexists
+   fallback) (filtering-engine/src/dns_service.py)
+2. `2d21adfecce585794e5584e1dde9e3618cb90223` - publisher: fail
+   closed unconditionally when O_NOFOLLOW is unavailable (no lexists
+   fallback) (dashboard/src/publishing.py)
+3. `bc519e805f53fdf217ef452b1b9330f2353f3a49` - test: engine
+   safe-open fails closed without O_NOFOLLOW, absent and present, no
+   lexists (filtering-engine/tests/test_reload.py)
+4. `35bf7f2087a495e6b39934cd876272049997e03f` - test: publisher
+   safe-open fails closed without O_NOFOLLOW, absent and present, no
+   lexists (dashboard/tests/test_publishing.py)
+5. This document's own update commit follows; its SHA and the final
+   branch HEAD are in the final summary message.
+
+Post-commit byte-identity check: all four files on the branch are
+byte-identical to the tested tree (no editor whitespace repair needed
+this round).
+
+### Exact test commands and results (working tree, same content committed)
+
+- `python3 -m pytest filtering-engine/tests/test_reload.py -q` ->
+  27 passed in 8.26s (26 + 1 new)
+- `python3 -m pytest dashboard/tests/test_publishing.py -q` ->
+  24 passed in 14.14s (23 + 1 new)
+- `python3 -m pytest filtering-engine/tests -q` -> 146 passed in
+  57.89s (145 + 1 new); first run, no failures, no retries
+- `python3 -m pytest dashboard/tests -q` -> 165 passed in 105.00s
+  (164 + 1 new); first run, no failures
+- `node --check dashboard/static/app.js` -> clean
+- `bash -n deploy/backup.sh deploy/restore.sh` -> clean
+
+Disclosed test-authoring iteration (pre-commit, never committed): the
+first draft of the publisher test published a generation while
+O_NOFOLLOW was still simulated away, so the publish itself failed
+with the new PublicationError; the test now publishes first and
+simulates the unsupported platform afterwards. This was a test-order
+bug, not a code failure.
+
+Fresh-clone verification of the final committed branch (byte-identity
+of all changed files plus both full suites) is reported in the final
+summary message.
+
+### Confirmations
+
+- main remains untouched at
+  `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`.
+- Nothing merged, nothing deployed, no services provisioned, no costs,
+  no new GitHub permissions or OAuth scopes.
+- Stage 11 has not started. No commits squashed or rewritten.
+- Stage 10 is NOT claimed approved; independent review decides.
