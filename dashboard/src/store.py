@@ -44,10 +44,14 @@ from contextlib import contextmanager
 
 import db as db_module
 from engine_bridge import (
+    BindingValidationError,
     CategoryDB,
     CategoryDBError,
     PolicyConfigError,
     PolicyEngine,
+    at_least_as_restrictive,
+    canonicalize_binding,
+    identity_class_for_kind,
     validate_category,
     validate_domain,
     validate_policy,
@@ -57,6 +61,19 @@ from util import utcnow
 
 MAX_NAME_LEN = 80
 MAX_DESCRIPTION_LEN = 1000
+MAX_NOTES_LEN = 1000
+
+# Stage 11A device registry constants. A registry entry may represent one
+# device OR a network/group (for example "Home Wi-Fi"); device_type is
+# free text from a suggested set, and router/network entries are labeled
+# as network/group entries in every API response so a shared binding is
+# never presented as one physical device.
+DEVICE_STATES = ("active", "inactive", "disabled", "removed")
+SUGGESTED_DEVICE_TYPES = (
+    "iphone", "ipad", "android", "mac", "windows", "linux",
+    "router", "network", "other",
+)
+GROUP_DEVICE_TYPES = ("router", "network")
 
 
 @contextmanager
@@ -148,17 +165,25 @@ class Store:
             def one(sql):
                 return conn.execute(sql).fetchone()[0]
 
-            return {
+            by_state = {
+                state: one(
+                    f"SELECT COUNT(*) FROM devices WHERE state = '{state}'")
+                for state in DEVICE_STATES
+            }
+            result = {
                 "policies": one("SELECT COUNT(*) FROM policies"),
                 "enabled_policies": one("SELECT COUNT(*) FROM policies WHERE enabled = 1"),
                 "categories": one("SELECT COUNT(*) FROM categories"),
                 "enabled_categories": one("SELECT COUNT(*) FROM categories WHERE enabled = 1"),
                 "domains": one("SELECT COUNT(*) FROM domains"),
                 "audit_events": one("SELECT COUNT(*) FROM audit_log"),
-                # No device enrollment exists (Apple MDM prerequisites are
-                # missing); this is a real count, not a placeholder.
-                "devices": 0,
+                # Real Stage 11A registry counts (administrative records,
+                # not enrolled/managed devices - management_status is
+                # 'unmanaged' for every row).
+                "devices": sum(by_state.values()),
+                "devices_by_state": by_state,
             }
+            return result
         finally:
             conn.close()
 
@@ -894,6 +919,33 @@ class Store:
             raise StoreError(
                 f"cannot {verb} the policy selected for publication; "
                 "select a different policy for publication first", 409)
+        # Stage 11A: the selected-for-publication invariant is extended,
+        # not duplicated (plan 4.2): a policy referenced by an ACTIVE
+        # device assignment cannot be disabled or deleted either.
+        row = conn.execute(
+            "SELECT d.name FROM device_policy_assignments a"
+            " JOIN devices d ON d.id = a.device_id"
+            " WHERE a.policy_id = ? AND a.active = 1 LIMIT 1",
+            (policy_id,),
+        ).fetchone()
+        if row is not None:
+            raise StoreError(
+                f"cannot {verb} this policy; it is actively assigned to "
+                f"registry entry {row['name']!r}; unassign it first", 409)
+        if verb == "delete":
+            # Assignment history rows are never deleted while the device
+            # exists and carry a foreign key to policies, so a policy with
+            # ANY assignment history cannot be hard-deleted either; the
+            # history must keep naming a real policy row.
+            historical = conn.execute(
+                "SELECT COUNT(*) FROM device_policy_assignments WHERE policy_id = ?",
+                (policy_id,),
+            ).fetchone()[0]
+            if historical:
+                raise StoreError(
+                    "cannot delete this policy; it is referenced by device "
+                    "assignment history, which is preserved (unassign and "
+                    "remove the referencing registry entries first)", 409)
 
     def select_policy_for_publication(self, admin: str, policy_id: int) -> dict:
         """Explicitly designate the policy whose configuration will be
@@ -923,6 +975,14 @@ class Store:
                     raise StoreError(
                         f"policy {row['name']!r} is disabled; only an enabled policy "
                         "can be selected for publication", 409)
+                # Stage 11A tighten-only enforcement point 2 (plan 4.5):
+                # changing the default changes the baseline every network
+                # binding is measured against. Every active assignment is
+                # re-proven against the NEW default inside this same write
+                # transaction; any violation refuses the whole selection
+                # change, so a default-policy change can never silently
+                # make an existing binding less restrictive.
+                self._recheck_tighten_only_locked(conn, policy_id, row["name"])
                 conn.execute(
                     "INSERT INTO publication_state"
                     " (id, selected_policy_id, selected_by, selected_at, active_revision)"
@@ -938,6 +998,672 @@ class Store:
                     conn, admin, "config.select",
                     f"selected policy {row['name']!r} (id {policy_id}) for publication")
             return self.config_status()
+        finally:
+            conn.close()
+
+    # -- device registry (Stage 11A) ---------------------------------------
+
+    @staticmethod
+    def _entry_kind(device_type: str) -> str:
+        """Whether a registry entry represents one device or a network/
+        group (for example "Home Wi-Fi"). Surfaced in every device API
+        response so a shared binding is never presented as one device."""
+        return "network_or_group" if device_type in GROUP_DEVICE_TYPES else "device"
+
+    def _device_row(self, conn: sqlite3.Connection, device_id: int) -> sqlite3.Row:
+        row = conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
+        if row is None:
+            raise StoreError(f"device {device_id} does not exist", 404)
+        return row
+
+    @staticmethod
+    def _association_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            # network_binding = a routing hint, never a device identity.
+            "identity_class": row["identity_class"],
+            "value": row["value"],
+            "created_at": row["created_at"],
+            "retired_at": row["retired_at"],
+        }
+
+    def _assignment_dict(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+        policy = conn.execute(
+            "SELECT name FROM policies WHERE id = ?", (row["policy_id"],)).fetchone()
+        version_row = conn.execute(
+            "SELECT MAX(version) FROM policy_versions WHERE policy_id = ?",
+            (row["policy_id"],),
+        ).fetchone()
+        return {
+            "id": row["id"],
+            "device_id": row["device_id"],
+            "policy_id": row["policy_id"],
+            "policy_name": policy["name"] if policy else None,
+            "policy_version_at_assignment": row["policy_version_at_assignment"],
+            "policy_current_version": (version_row[0] or 0) if policy else None,
+            "assigned_by": row["assigned_by"],
+            "assigned_at": row["assigned_at"],
+            "active": bool(row["active"]),
+        }
+
+    def _device_dict(self, conn: sqlite3.Connection, row: sqlite3.Row,
+                     detail: bool) -> dict:
+        live_counts = conn.execute(
+            "SELECT kind, COUNT(*) AS n FROM device_associations"
+            " WHERE device_id = ? AND retired_at IS NULL GROUP BY kind",
+            (row["id"],),
+        ).fetchall()
+        live_total = sum(r["n"] for r in live_counts)
+        assignment_row = conn.execute(
+            "SELECT * FROM device_policy_assignments"
+            " WHERE device_id = ? AND active = 1",
+            (row["id"],),
+        ).fetchone()
+        result = {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "device_type": row["device_type"],
+            # Explicit device-vs-network/group distinction (owner decision
+            # 2): a registry entry may represent a network/group such as
+            # "Home Wi-Fi"; bindings then apply one policy to the group.
+            "entry_kind": self._entry_kind(row["device_type"]),
+            "os": row["os"],
+            "state": row["state"],
+            # Honest labeling (Stage 6 constraint): nothing is enrolled or
+            # managed; no Apple MDM authorization exists.
+            "management_status": row["management_status"],
+            "created_at": row["created_at"],
+            "registered_at": row["registered_at"],
+            "updated_at": row["updated_at"],
+            # Last-seen reporting is Stage 11E; this stays null in 11A and
+            # never claims observation.
+            "last_seen_at": row["last_seen_at"],
+            "notes": row["notes"],
+            "live_associations": live_total,
+            "live_associations_by_kind": {r["kind"]: r["n"] for r in live_counts},
+            "active_assignment": (
+                self._assignment_dict(conn, assignment_row)
+                if assignment_row else None
+            ),
+        }
+        if detail:
+            assoc_rows = conn.execute(
+                "SELECT * FROM device_associations WHERE device_id = ?"
+                " ORDER BY id",
+                (row["id"],),
+            ).fetchall()
+            result["associations"] = [
+                self._association_dict(r) for r in assoc_rows]
+            history_rows = conn.execute(
+                "SELECT * FROM device_policy_assignments WHERE device_id = ?"
+                " ORDER BY id DESC",
+                (row["id"],),
+            ).fetchall()
+            result["assignment_history"] = [
+                self._assignment_dict(conn, r) for r in history_rows]
+        return result
+
+    def registered_device_count(self) -> int:
+        """Honest registry count for /api/config: administrative records,
+        not connected or enrolled devices."""
+        conn = self._conn()
+        try:
+            return conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
+        finally:
+            conn.close()
+
+    def list_devices(self, search=None, state=None) -> list:
+        if state is not None and state not in DEVICE_STATES:
+            raise StoreError(
+                f"state must be one of {list(DEVICE_STATES)}, got {state!r}")
+        conn = self._conn()
+        try:
+            rows = conn.execute("SELECT * FROM devices ORDER BY name").fetchall()
+            result = [self._device_dict(conn, r, detail=False) for r in rows]
+            if state is not None:
+                result = [d for d in result if d["state"] == state]
+            if search:
+                needle = search.strip().lower()
+                result = [
+                    d for d in result
+                    if needle in d["name"].lower()
+                    or needle in d["description"].lower()
+                ]
+            return result
+        finally:
+            conn.close()
+
+    def get_device(self, device_id: int) -> dict:
+        conn = self._conn()
+        try:
+            return self._device_dict(conn, self._device_row(conn, device_id), detail=True)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _validate_device_fields(data: dict) -> dict:
+        if not isinstance(data, dict):
+            raise StoreError("request body must be a JSON object")
+        name = _check_text(data.get("name"), "name", MAX_NAME_LEN)
+        description = _check_text(
+            data.get("description", ""), "description", MAX_DESCRIPTION_LEN,
+            required=False)
+        device_type = _check_text(
+            data.get("device_type", "other"), "device_type", MAX_NAME_LEN,
+            required=False).lower() or "other"
+        os_name = _check_text(
+            data.get("os", ""), "os", MAX_NAME_LEN, required=False)
+        notes = _check_text(
+            data.get("notes", ""), "notes", MAX_NOTES_LEN, required=False)
+        return {
+            "name": name, "description": description,
+            "device_type": device_type, "os": os_name, "notes": notes,
+        }
+
+    @staticmethod
+    def _validate_binding_payload(binding, index_label: str) -> tuple:
+        if not isinstance(binding, dict):
+            raise StoreError(f"{index_label}: each binding must be an object")
+        if "identity_class" in binding:
+            # identity_class is ALWAYS derived server-side from kind; a
+            # client can never upgrade a binding to a credential.
+            raise StoreError(
+                f"{index_label}.identity_class: must not be supplied; "
+                "it is derived from kind (ipv4/ipv6_prefix bindings are "
+                "always network bindings, never device identity)")
+        kind = binding.get("kind")
+        try:
+            identity_class_for_kind(kind)
+        except BindingValidationError as exc:
+            raise StoreError(f"{index_label}.{exc}")
+        if kind not in ("ipv4", "ipv6_prefix"):
+            raise StoreError(
+                f"{index_label}.kind: {kind!r} is a reserved credential kind; "
+                "Stage 11A registers network/group bindings only (kinds "
+                "'ipv4' and 'ipv6_prefix') and never issues, stores, or "
+                "authenticates device tokens")
+        try:
+            canonical = canonicalize_binding(kind, binding.get("value"))
+        except BindingValidationError as exc:
+            raise StoreError(f"{index_label}.{exc}")
+        return kind, canonical
+
+    def _insert_association_locked(self, conn: sqlite3.Connection, admin: str,
+                                   device_row, kind: str, canonical: str) -> dict:
+        if device_row["state"] == "removed":
+            raise StoreError(
+                f"registry entry {device_row['name']!r} is removed; "
+                "it cannot receive new bindings", 409)
+        identity_class = identity_class_for_kind(kind)
+        now = utcnow()
+        try:
+            cur = conn.execute(
+                "INSERT INTO device_associations"
+                " (device_id, kind, identity_class, value, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (device_row["id"], kind, identity_class, canonical, now),
+            )
+        except sqlite3.IntegrityError:
+            # The partial unique index on (kind, value) for live rows IS
+            # the canonical duplicate check: two spellings of one network
+            # collide here, never silently coexist.
+            raise StoreError(
+                f"{kind} binding {canonical!r} is already registered to a "
+                "registry entry (canonical duplicate)", 409)
+        self.audit(
+            conn, admin, "device.binding.add",
+            f"device '{device_row['name']}' (id {device_row['id']}): added "
+            f"{kind} network binding {canonical!r} (a routing hint, not "
+            "device identity)")
+        row = conn.execute(
+            "SELECT * FROM device_associations WHERE id = ?",
+            (cur.lastrowid,)).fetchone()
+        return self._association_dict(row)
+
+    def _engine_doc_for_policy(self, conn: sqlite3.Connection, policy_id: int):
+        row = conn.execute(
+            "SELECT * FROM policies WHERE id = ?", (policy_id,)).fetchone()
+        if row is None:
+            return None, None
+        policy = self._policy_dict(conn, row, detail=True)
+        return self._engine_dict_from_fields(policy), policy
+
+    def _selected_default_policy(self, conn: sqlite3.Connection):
+        state = self._publication_state(conn)
+        if not state or state["selected_policy_id"] is None:
+            return None
+        return conn.execute(
+            "SELECT * FROM policies WHERE id = ?",
+            (state["selected_policy_id"],),
+        ).fetchone()
+
+    def _prove_tighten_only(self, conn: sqlite3.Connection,
+                            candidate_policy_id: int,
+                            baseline_policy_id: int) -> None:
+        """Raise StoreError(409) unless the candidate policy is proven at
+        least as restrictive as the baseline (default) policy."""
+        candidate_doc, candidate = self._engine_doc_for_policy(conn, candidate_policy_id)
+        baseline_doc, baseline = self._engine_doc_for_policy(conn, baseline_policy_id)
+        if candidate is None or baseline is None:
+            raise StoreError("policy no longer exists", 404)
+        verdict = at_least_as_restrictive(candidate_doc, baseline_doc)
+        if not verdict.allowed:
+            raise StoreError(
+                f"policy {candidate['name']!r} cannot be used for a "
+                "network/group binding: the mandatory tighten-only rule "
+                "requires a policy at least as restrictive as the default "
+                f"policy {baseline['name']!r}. {verdict.reason}", 409)
+
+    def _recheck_tighten_only_locked(self, conn: sqlite3.Connection,
+                                     new_default_id: int, new_default_name: str) -> None:
+        """Enforcement point 2 (plan 4.5): re-prove EVERY active assignment
+        against a new default policy, inside the selection write
+        transaction. Any violation refuses the whole selection change."""
+        rows = conn.execute(
+            "SELECT a.*, d.name AS device_name FROM device_policy_assignments a"
+            " JOIN devices d ON d.id = a.device_id WHERE a.active = 1"
+        ).fetchall()
+        violations = []
+        for row in rows:
+            if row["policy_id"] == new_default_id:
+                continue  # assigning the default to itself is trivially safe
+            candidate_doc, candidate = self._engine_doc_for_policy(conn, row["policy_id"])
+            baseline_doc, baseline = self._engine_doc_for_policy(conn, new_default_id)
+            verdict = at_least_as_restrictive(candidate_doc, baseline_doc)
+            if not verdict.allowed:
+                violations.append(
+                    f"registry entry {row['device_name']!r} is assigned policy "
+                    f"{candidate['name']!r}: {verdict.reason}")
+        if violations:
+            raise StoreError(
+                f"cannot select policy {new_default_name!r} as the default: "
+                "it would make existing network-binding assignments less "
+                "restrictive than the default (tighten-only rule). "
+                + " | ".join(violations), 409)
+
+    def _assign_policy_locked(self, conn: sqlite3.Connection, admin: str,
+                              device_row, policy_id: int) -> dict:
+        """Transactional assignment (plan 4.1): deactivate the current
+        assignment row, insert a new one, in the same write transaction
+        that verifies the target policy exists, is enabled, and passes the
+        mandatory tighten-only comparison against the current default
+        policy's current version (plan 4.5 enforcement point 1)."""
+        if device_row["state"] == "removed":
+            raise StoreError(
+                f"registry entry {device_row['name']!r} is removed; "
+                "it cannot receive policy assignments", 409)
+        policy = conn.execute(
+            "SELECT * FROM policies WHERE id = ?", (policy_id,)).fetchone()
+        if policy is None:
+            raise StoreError(f"policy {policy_id} does not exist", 404)
+        if not policy["enabled"]:
+            raise StoreError(
+                f"policy {policy['name']!r} is disabled; only an enabled "
+                "policy can be assigned", 409)
+        baseline = self._selected_default_policy(conn)
+        if baseline is None:
+            # Tighten-only has no baseline without a selected default;
+            # failing safe is mandatory - never guess.
+            raise StoreError(
+                "no policy is selected for publication as the default "
+                "policy, so the mandatory tighten-only comparison has no "
+                "baseline; select a default policy first", 409)
+        self._prove_tighten_only(conn, policy_id, baseline["id"])
+        policy_dict = self._policy_dict(conn, policy, detail=False)
+        now = utcnow()
+        conn.execute(
+            "UPDATE device_policy_assignments SET active = 0"
+            " WHERE device_id = ? AND active = 1",
+            (device_row["id"],),
+        )
+        cur = conn.execute(
+            "INSERT INTO device_policy_assignments"
+            " (device_id, policy_id, policy_version_at_assignment, assigned_by,"
+            "  assigned_at, active) VALUES (?, ?, ?, ?, ?, 1)",
+            (device_row["id"], policy_id, policy_dict["current_version"],
+             admin, now),
+        )
+        self.audit(
+            conn, admin, "device.policy.assign",
+            f"device '{device_row['name']}' (id {device_row['id']}): "
+            f"assigned policy '{policy['name']}' (id {policy_id}, version "
+            f"{policy_dict['current_version']} at assignment) to "
+            f"{self._entry_kind(device_row['device_type'])}")
+        row = conn.execute(
+            "SELECT * FROM device_policy_assignments WHERE id = ?",
+            (cur.lastrowid,)).fetchone()
+        return self._assignment_dict(conn, row)
+
+    def register_device(self, admin: str, data: dict) -> dict:
+        if "management_status" in data:
+            raise StoreError(
+                "management_status cannot be set: every registry entry is "
+                "unmanaged in Stage 11A (no Apple MDM authorization exists)", 400)
+        if "state" in data:
+            raise StoreError(
+                "state cannot be set at registration; new registry entries "
+                "start active and change through the device state endpoint", 400)
+        fields = self._validate_device_fields(data)
+        raw_bindings = data.get("bindings", [])
+        if not isinstance(raw_bindings, list):
+            raise StoreError("bindings must be a list of {kind, value} objects")
+        bindings = [
+            self._validate_binding_payload(b, f"bindings[{i}]")
+            for i, b in enumerate(raw_bindings)
+        ]
+        policy_id = data.get("policy_id")
+        if policy_id is not None and (not isinstance(policy_id, int)
+                                      or isinstance(policy_id, bool) or policy_id < 1):
+            raise StoreError("policy_id must be a positive integer or null")
+        conn = self._conn()
+        try:
+            with _write_txn(conn):
+                if conn.execute(
+                        "SELECT 1 FROM devices WHERE name = ?",
+                        (fields["name"],)).fetchone():
+                    raise StoreError(
+                        f"a registry entry named {fields['name']!r} already "
+                        "exists", 409)
+                now = utcnow()
+                cur = conn.execute(
+                    "INSERT INTO devices"
+                    " (name, description, device_type, os, state,"
+                    "  management_status, notes, created_at, registered_at,"
+                    "  updated_at)"
+                    " VALUES (?, ?, ?, ?, 'active', 'unmanaged', ?, ?, ?, ?)",
+                    (
+                        fields["name"], fields["description"],
+                        fields["device_type"], fields["os"], fields["notes"],
+                        now, now, now,
+                    ),
+                )
+                device_row = self._device_row(conn, cur.lastrowid)
+                for kind, canonical in bindings:
+                    self._insert_association_locked(
+                        conn, admin, device_row, kind, canonical)
+                if policy_id is not None:
+                    self._assign_policy_locked(conn, admin, device_row, policy_id)
+                self.audit(
+                    conn, admin, "device.create",
+                    f"device '{fields['name']}' (id {device_row['id']}): "
+                    f"registered {self._entry_kind(fields['device_type'])} "
+                    f"(type {fields['device_type']!r}, "
+                    f"{len(bindings)} binding(s), "
+                    + (f"assigned policy id {policy_id}, " if policy_id else "")
+                    + "management_status unmanaged)")
+            return self.get_device(device_row["id"])
+        finally:
+            conn.close()
+
+    def update_device(self, admin: str, device_id: int, data: dict) -> dict:
+        if "management_status" in data:
+            raise StoreError(
+                "management_status cannot be set: every registry entry is "
+                "unmanaged in Stage 11A (no Apple MDM authorization exists)", 400)
+        if "state" in data:
+            raise StoreError(
+                "state changes go through the device state endpoint, not "
+                "the edit endpoint", 400)
+        fields = self._validate_device_fields(data)
+        conn = self._conn()
+        try:
+            with _write_txn(conn):
+                device_row = self._device_row(conn, device_id)
+                clash = conn.execute(
+                    "SELECT 1 FROM devices WHERE name = ? AND id != ?",
+                    (fields["name"], device_id)).fetchone()
+                if clash:
+                    raise StoreError(
+                        f"a registry entry named {fields['name']!r} already "
+                        "exists", 409)
+                conn.execute(
+                    "UPDATE devices SET name = ?, description = ?, device_type = ?,"
+                    " os = ?, notes = ?, updated_at = ? WHERE id = ?",
+                    (
+                        fields["name"], fields["description"],
+                        fields["device_type"], fields["os"], fields["notes"],
+                        utcnow(), device_id,
+                    ),
+                )
+                self.audit(
+                    conn, admin, "device.update",
+                    f"device '{fields['name']}' (id {device_id}): updated "
+                    "name/description/type/os/notes")
+            return self.get_device(device_id)
+        finally:
+            conn.close()
+
+    def set_device_state(self, admin: str, device_id: int, state) -> dict:
+        if state not in DEVICE_STATES:
+            raise StoreError(
+                f"state must be one of {list(DEVICE_STATES)}, got {state!r}")
+        conn = self._conn()
+        try:
+            with _write_txn(conn):
+                device_row = self._device_row(conn, device_id)
+                old = device_row["state"]
+                if old == state:
+                    raise StoreError(
+                        f"registry entry {device_row['name']!r} is already "
+                        f"in state {state!r}", 409)
+                now = utcnow()
+                conn.execute(
+                    "UPDATE devices SET state = ?, updated_at = ? WHERE id = ?",
+                    (state, now, device_id),
+                )
+                detail = (
+                    f"device '{device_row['name']}' (id {device_id}): state "
+                    f"{old} -> {state}")
+                if state == "removed":
+                    # Soft removal, atomic: retire every live binding and
+                    # deactivate the active assignment. Records and history
+                    # are kept; nothing is hard-deleted (plan 2.1).
+                    retired = conn.execute(
+                        "UPDATE device_associations SET retired_at = ?"
+                        " WHERE device_id = ? AND retired_at IS NULL",
+                        (now, device_id),
+                    ).rowcount
+                    deactivated = conn.execute(
+                        "UPDATE device_policy_assignments SET active = 0"
+                        " WHERE device_id = ? AND active = 1",
+                        (device_id,),
+                    ).rowcount
+                    detail += (
+                        f"; retired {retired} binding(s) and deactivated "
+                        f"{deactivated} assignment(s)")
+                self.audit(conn, admin, "device.state", detail)
+            return self.get_device(device_id)
+        finally:
+            conn.close()
+
+    def add_association(self, admin: str, device_id: int, data: dict) -> dict:
+        kind, canonical = self._validate_binding_payload(data, "binding")
+        conn = self._conn()
+        try:
+            with _write_txn(conn):
+                device_row = self._device_row(conn, device_id)
+                return self._insert_association_locked(
+                    conn, admin, device_row, kind, canonical)
+        finally:
+            conn.close()
+
+    def retire_association(self, admin: str, device_id: int, association_id: int) -> dict:
+        conn = self._conn()
+        try:
+            with _write_txn(conn):
+                device_row = self._device_row(conn, device_id)
+                row = conn.execute(
+                    "SELECT * FROM device_associations WHERE id = ? AND device_id = ?",
+                    (association_id, device_id)).fetchone()
+                if row is None:
+                    raise StoreError(
+                        f"association {association_id} does not exist on "
+                        f"registry entry {device_row['name']!r}", 404)
+                if row["retired_at"] is not None:
+                    raise StoreError(
+                        f"association {association_id} is already retired", 409)
+                conn.execute(
+                    "UPDATE device_associations SET retired_at = ? WHERE id = ?",
+                    (utcnow(), association_id),
+                )
+                self.audit(
+                    conn, admin, "device.binding.retire",
+                    f"device '{device_row['name']}' (id {device_id}): retired "
+                    f"{row['kind']} network binding {row['value']!r}")
+                row = conn.execute(
+                    "SELECT * FROM device_associations WHERE id = ?",
+                    (association_id,)).fetchone()
+                return self._association_dict(row)
+        finally:
+            conn.close()
+
+    def assign_policy(self, admin: str, device_id: int, policy_id) -> dict:
+        conn = self._conn()
+        try:
+            with _write_txn(conn):
+                device_row = self._device_row(conn, device_id)
+                if policy_id is None:
+                    current = conn.execute(
+                        "SELECT * FROM device_policy_assignments"
+                        " WHERE device_id = ? AND active = 1",
+                        (device_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise StoreError(
+                            f"registry entry {device_row['name']!r} has no "
+                            "active assignment to remove", 409)
+                    conn.execute(
+                        "UPDATE device_policy_assignments SET active = 0"
+                        " WHERE id = ?",
+                        (current["id"],),
+                    )
+                    self.audit(
+                        conn, admin, "device.policy.unassign",
+                        f"device '{device_row['name']}' (id {device_id}): "
+                        f"unassigned policy id {current['policy_id']}; the "
+                        "default policy applies")
+                    return {"unassigned": True, "device_id": device_id}
+                if not isinstance(policy_id, int) or isinstance(policy_id, bool) \
+                        or policy_id < 1:
+                    raise StoreError("policy_id must be a positive integer or null")
+                return self._assign_policy_locked(
+                    conn, admin, device_row, policy_id)
+        finally:
+            conn.close()
+
+    def list_device_audit(self, device_id: int, limit: int = 200) -> list:
+        """Per-device audit history: the filtered read of audit_log for
+        this device. Every device mutation's detail begins with
+        "device '<name>' (id <id>):", so the id anchor makes the filter
+        exact even across renames."""
+        limit = min(max(int(limit), 1), 1000)
+        conn = self._conn()
+        try:
+            self._device_row(conn, device_id)  # 404 for unknown devices
+            rows = conn.execute(
+                "SELECT id, admin, action, detail, created_at FROM audit_log"
+                " WHERE action LIKE 'device.%' AND detail LIKE ?"
+                " ORDER BY id DESC LIMIT ?",
+                (f"%(id {device_id}):%", limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def effective_policy(self, device_id: int) -> dict:
+        """The assigned/published/enforced view (plan 4.6), kept honestly
+        distinct. Stage 11A scope: assignments are saved in the dashboard
+        database only - they are NOT part of published generations (that
+        is Stage 11D), and no engine loads them (Stage 11C). So an
+        assignment is reported as assigned-only, published is null with
+        the reason, and enforcement is reported exactly as the Stage 10
+        engine-status comparison reports the published generation - when
+        no engine is connected (the current staging truth) that is
+        "unavailable", never "active"."""
+        conn = self._conn()
+        try:
+            device_row = self._device_row(conn, device_id)
+            assignment_row = conn.execute(
+                "SELECT * FROM device_policy_assignments"
+                " WHERE device_id = ? AND active = 1",
+                (device_id,),
+            ).fetchone()
+            assigned = (
+                self._assignment_dict(conn, assignment_row)
+                if assignment_row else "default")
+            baseline = self._selected_default_policy(conn)
+            default = None
+            if baseline is not None:
+                policy = self._policy_dict(conn, baseline, detail=False)
+                default = {
+                    "policy_id": policy["id"],
+                    "policy_name": policy["name"],
+                    "current_version": policy["current_version"],
+                }
+            # An assignment only APPLIES to live traffic for an active
+            # device; inactive/disabled/removed entries are served the
+            # default policy (plan 2.1). And in Stage 11A nothing is
+            # published yet either way.
+            applies = assignment_row is not None and device_row["state"] == "active"
+            state = self._publication_state(conn)
+            active_revision = None
+            if state and state["active_revision"] is not None:
+                rev = conn.execute(
+                    "SELECT revision, generation, status FROM config_revisions"
+                    " WHERE revision = ?",
+                    (state["active_revision"],),
+                ).fetchone()
+                if rev is not None:
+                    active_revision = dict(rev)
+            engine = self.engine_status()
+            if engine is None:
+                # No engine connected (the current staging truth): reported
+                # as unavailable, never as active.
+                enforced = "unavailable"
+            elif active_revision is None:
+                enforced = "unavailable"
+            elif engine.get("last_error"):
+                enforced = "rejected"
+            else:
+                rev_row = conn.execute(
+                    "SELECT policy_sha256, categories_sha256 FROM config_revisions"
+                    " WHERE revision = ?",
+                    (active_revision["revision"],),
+                ).fetchone()
+                if (rev_row
+                        and engine.get("policy_sha256") == rev_row["policy_sha256"]
+                        and engine.get("categories_sha256") == rev_row["categories_sha256"]):
+                    enforced = {
+                        "revision": active_revision["revision"],
+                        "generation": active_revision["generation"],
+                        "confirmed_at": engine.get("loaded_at"),
+                        "covers": "the default policy only; device "
+                                  "assignments are not published in Stage 11A",
+                    }
+                else:
+                    enforced = "stale"
+            return {
+                "device_id": device_row["id"],
+                "device_name": device_row["name"],
+                "device_state": device_row["state"],
+                "entry_kind": self._entry_kind(device_row["device_type"]),
+                "assigned": assigned,
+                "assigned_applies_to_live_queries": applies,
+                "default_policy": default,
+                "published": None,
+                "published_note": (
+                    "device assignments are not part of published "
+                    "configuration generations until Stage 11D; a saved "
+                    "assignment changes nothing an engine does"),
+                "enforced": enforced,
+                "enforced_note": (
+                    "enforcement is only ever reported from a connected "
+                    "engine's own status output; with no engine connected "
+                    "it is unavailable, and a saved assignment is never "
+                    "presented as enforced"),
+            }
         finally:
             conn.close()
 
