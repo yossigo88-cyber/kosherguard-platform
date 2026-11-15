@@ -472,3 +472,20 @@ def test_concurrent_disable_and_select_never_leave_selected_disabled(client):
     selected = state["selected_policy"]["id"]
     status, fetched = client.get(f"/api/policies/{selected}")
     assert fetched["enabled"] is True
+
+
+# -- publisher manifest file type: publisher and engine agree -------------
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="POSIX symlinks")
+def test_publisher_rejects_symlink_manifest(client, server, pub_root):
+    """verify_generation() rejects a manifest.json that is a symlink,
+    including a symlink to an existing, valid regular manifest file -
+    the same rule the engine enforces."""
+    policy = make_policy(client)
+    select_and_publish(client, policy["id"])
+    gen_dir = pub_root / "generations" / "1"
+    os.rename(gen_dir / "manifest.json", gen_dir / "manifest.real")
+    os.symlink("manifest.real", gen_dir / "manifest.json")
+    assert (gen_dir / "manifest.json").is_file()  # follows the link
+    with pytest.raises(publishing.PublicationError):
+        server.store.publisher.verify_generation(gen_dir)
