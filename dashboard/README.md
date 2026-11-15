@@ -28,7 +28,7 @@ dashboard/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 114 pytest tests against a real running server
+  tests/              - 120 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -183,7 +183,7 @@ URL database).
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-114 tests run the real server on an ephemeral localhost port with a
+120 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
@@ -198,29 +198,39 @@ header timeouts, strict Content-Length validation (negative, malformed,
 and oversized values, with connection-close behavior), the total
 request deadline (slow-trickle clients in both the header and body
 phases, killed and their slot released), and the cookie deployment
-guard (localhost default, explicit deployment opt-in, refusal cases).
-No sleeps are used for synchronization; the server socket is bound
-before the test client connects.
+guard (localhost default, explicit deployment opt-in, refusal cases),
+and the deployment scripts: `deploy/backup.sh` and `deploy/restore.sh`
+run as real subprocesses - a full round trip (back up a live server,
+mutate, restore, restart, and verify every kind of data through the
+API), corrupt-backup refusal, overwrite refusal, missing files, and
+rotation. No sleeps are used for synchronization; the server socket is
+bound before the test client connects.
 
-## Deployment (future, not done)
+## Deployment (prepared, not done)
 
-Nothing here is deployed. When the project is ready, a free deployment
-path is an always-free VM tier (for example Oracle Cloud Always Free)
-behind a TLS-terminating reverse proxy such as Caddy; the app needs
-only `python3` and write access to its database file. Before any real
-deployment: put the server behind HTTPS with `KG_SECURE_COOKIES=1`
-(enforced: a proxied or non-loopback configuration refuses to start
-without it), set `KG_TRUSTED_PROXIES` to the proxy address, set a
-strong `KG_ADMIN_PASSWORD` (12+ characters), and keep the bind address
-on `127.0.0.1` behind the proxy.
+Nothing here is deployed. Stage 9B prepared the deployment assets:
 
-Stage 9A hardened the application, but it does NOT make the dashboard
-production-ready on its own. Still missing before public deployment:
-TLS termination at a hardened reverse proxy (the standard-library
-server must not face the internet directly even with the new limits),
-automated database backups with a tested restore, process supervision
-and log management, and a deployment runbook. The connection bounds
-above reduce abuse impact; they do not replace a proxy.
+- `docs/deployment/RUNBOOK.md` - prerequisites and step-by-step
+  instructions for a single small server: the dashboard bound to
+  `127.0.0.1:8080`, Caddy terminating HTTPS in front of it.
+- `docs/deployment/PRELAUNCH_CHECKLIST.md` - security, configuration,
+  backups, and operational readiness checks before going live.
+- `deploy/Caddyfile.example` - reverse-proxy configuration matching
+  `KG_TRUSTED_PROXIES` and `KG_SECURE_COOKIES=1` (the server refuses to
+  start in this shape without it).
+- `deploy/kosherguard-dashboard.service` - systemd unit (auto-restart,
+  unprivileged user, sandboxing directives). Reviewed but NOT yet
+  tested on a live system.
+- `deploy/backup.sh` / `deploy/restore.sh` - consistent online SQLite
+  backups with integrity check and rotation, and a verified atomic
+  restore. Both are exercised by automated tests, including failure
+  cases, but have NOT run on a production server.
+
+This is preparation, not a production-ready deployment: the unit,
+proxy config, and backup schedule still need to be verified on a real
+server against the checklist. The standard-library server must never
+face the internet directly; keep it behind the proxy. The connection
+bounds above reduce abuse impact; they do not replace a proxy.
 
 ## Known limitations
 
