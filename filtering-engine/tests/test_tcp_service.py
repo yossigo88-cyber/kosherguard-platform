@@ -828,6 +828,47 @@ def test_oversized_opt_dropped_to_fit_udp_limit():
         service.stop()
         up.stop()
 
+
+
+def test_worker_closes_connection_dequeued_after_shutdown_began(upstream):
+    """Race regression: a worker is already waiting inside
+    _tcp_conn_queue.get() when shutdown sets _stopping; the get then
+    returns a queued connection. That connection was never genuinely
+    served, so the worker must close it without calling
+    _serve_tcp_conn()."""
+    service = build_service(upstream.port, tcp_workers=1, tcp_queued=4)
+    served = []
+    real_serve = service._serve_tcp_conn
+
+    def spy(conn):
+        served.append(conn)
+        return real_serve(conn)
+
+    service._serve_tcp_conn = spy
+    try:
+        time.sleep(0.3)  # the one worker is parked inside queue.get
+        # Simulate the race window deterministically with a socketpair:
+        # the server end plays the accepted, tracked, still-queued
+        # connection; shutdown begins, and only then does the waiting
+        # worker's get() return it.
+        server_end, client_end = socket.socketpair()
+        with service._conns_lock:
+            service._active_conns.add(server_end)
+        service._stopping.set()
+        service._tcp_conn_queue.put_nowait(server_end)
+        try:
+            time.sleep(0.5)  # several get() cycles
+            assert served == []  # never served after shutdown began
+            client_end.settimeout(5)
+            assert client_end.recv(64) == b""  # closed by the worker
+            assert service._tcp_conn_queue.qsize() == 0
+        finally:
+            client_end.close()
+    finally:
+        service._stopping.clear()  # let stop() run its normal path
+        survivors = service.stop()
+    assert survivors == []  # clean shutdown, no surviving worker
+
 # -- shutdown ---------------------------------------------------------
 
 def test_shutdown_closes_listeners_connections_and_workers(upstream):
