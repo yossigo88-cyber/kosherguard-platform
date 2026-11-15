@@ -529,7 +529,14 @@ unexpected skips.
 5. `34e934702935d3351347051b2bf518da441c51b3` - Stage 10 review fix:
    regression tests for the selected-policy invariant
    (dashboard/tests/test_publishing.py)
-6. This document's own update commit follows; its SHA and the final
+6. `4763287f3890d1a107b3a46d1b61ad1aa1962808` - Stage 10 review fix:
+   repair whitespace mangled by the editor fill
+   (dashboard/src/publishing.py). Editorial repair only: the web
+   editor's auto-indent re-indented one closing brace during commit 2's
+   form fill (syntactically valid, behavior-identical, caught by the
+   post-commit byte-identity check against the tested tree); this
+   commit restores the exact tested bytes. No functional change.
+7. This document's own update commit follows; its SHA and the final
    branch HEAD are reported in the final summary message (a file cannot
    contain its own commit SHA).
 
