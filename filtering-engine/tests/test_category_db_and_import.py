@@ -12,7 +12,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from category_db import CategoryDB, CategoryDBError, main as db_tool_main
+from category_db import (
+    CategoryDB,
+    CategoryDBError,
+    main as db_tool_main,
+    validate_domain,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET = ROOT / "data" / "categories.test.json"
@@ -148,6 +153,66 @@ def test_import_same_domain_twice_unions_in_one_file():
     ])
     assert (added, updated) == (1, 1)
     assert db.categories_for("brand-new.example") == {"news", "education"}
+
+
+# -- type validation (non-string values must be hard errors) ---------------------
+
+def test_non_string_category_rejected():
+    # A non-string category must be a clear CategoryDBError, never an
+    # unhandled AttributeError from calling .strip() on it.
+    with pytest.raises(CategoryDBError, match="category must be a string"):
+        CategoryDB({"ok.example": [123]})
+
+
+def test_load_rejects_non_string_category(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"domains": {"ok.example": ["news", 5]}}',
+                   encoding="utf-8")
+    with pytest.raises(CategoryDBError, match="category must be a string"):
+        CategoryDB.load(bad)
+
+
+def test_import_rejects_non_string_category_with_line_number():
+    db = CategoryDB.load(DATASET)
+    before = db.to_dict()
+    with pytest.raises(CategoryDBError) as exc:
+        db.merge_records([
+            {"domain": "fine.example", "categories": ["news"]},
+            {"domain": "other.example", "categories": [7]},
+        ])
+    assert "line 2" in str(exc.value)
+    assert "category must be a string" in str(exc.value)
+    assert db.to_dict() == before  # atomicity preserved
+
+
+def test_import_cli_rejects_non_string_category_cleanly(tmp_path, capsys):
+    records = tmp_path / "bad.jsonl"
+    records.write_text(
+        '{"domain": "fine.example", "categories": ["news"]}\n'
+        '{"domain": "other.example", "categories": [7]}\n',
+        encoding="utf-8")
+    out = tmp_path / "merged.json"
+    rc = db_tool_main([str(DATASET), "import", str(records), "--out", str(out)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "line 2" in err
+    assert "category must be a string" in err
+    assert "Traceback" not in err  # clean error, no unhandled traceback
+    assert not out.exists()  # no partially updated database written
+
+
+def test_non_string_domain_rejected():
+    with pytest.raises(CategoryDBError, match="domain must be a string"):
+        validate_domain(123)
+    # In an import record: rejected with its line number, never silently
+    # stringified, and the database is left unchanged.
+    db = CategoryDB.load(DATASET)
+    before = db.to_dict()
+    with pytest.raises(CategoryDBError) as exc:
+        db.merge_records([{"domain": 42, "categories": ["news"]}])
+    assert "line 1" in str(exc.value)
+    assert "domain must be a string" in str(exc.value)
+    assert db.to_dict() == before
 
 
 def test_failed_import_leaves_database_unchanged():
