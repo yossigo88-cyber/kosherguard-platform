@@ -376,6 +376,28 @@ Then, from another shell:
 dig @127.0.0.1 -p 5353 example.com        # allowed: real answer
 dig @127.0.0.1 -p 5353 tracker.example.com # blocked: 0.0.0.0
 dig @127.0.0.1 -p 5353 +tcp example.com    # same service over TCP
+
+## Hot reload (Stage 10)
+
+The running service never modifies its policy engine in place. A reload
+builds a complete replacement engine from the configuration files -
+validating both documents and, when a dashboard-published generation
+`manifest.json` is present, verifying their SHA-256 hashes against it -
+and only then swaps one immutable reference. Each query reads that
+reference once, so in-flight queries finish against the previous
+engine; a rejected reload keeps the last valid configuration serving
+and logs the rejection.
+
+- `kill -HUP <pid>` (or `systemctl reload kosherguard-engine`) reloads
+  immediately. The signal handler only sets a flag; all file I/O and
+  validation happen in the service's normal flow.
+- `--watch SECONDS` polls the configuration paths and reloads when they
+  change (used with the dashboard's publication directory, where
+  `current` is an atomically switched symlink).
+- `--status-file PATH` atomically writes the active configuration
+  identity (hashes, generation, revision, reload count, last error)
+  after every load attempt, so the dashboard can show what the engine
+  is actually enforcing.
 ```
 
 ## Running the tests (repeatable procedure)
@@ -432,7 +454,8 @@ domain records in one import file; import atomicity (a malformed
 record leaves the database unchanged); and concurrency tests
 synchronized on real events and conditions instead of fixed sleeps.
 
-Latest local run: **119 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **129 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Stage 10 added 10 reload tests: successful reload changing real UDP and TCP answers, rejection of invalid/missing/corrupted configurations with the last valid one kept, in-flight query safety across 40 real reloads, status-file accuracy, and real-subprocess SIGHUP and --watch reloads.
 
 ## Security notes
 
