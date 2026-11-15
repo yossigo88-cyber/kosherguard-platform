@@ -1,6 +1,6 @@
 # KosherGuard Platform
 
-KosherGuard is a complete iPhone filtering and management platform: a central server, an administrator dashboard, website and category filtering, supported app restrictions, device enrollment, push-triggered policy updates, and recovery after device resets.
+KosherGuard is an iPhone filtering and management platform under development. The intended platform is a central server, an administrator dashboard, website and category filtering, supported app restrictions, device enrollment, push-triggered policy updates, and recovery after device resets. What exists in this repository today is the backend filtering engine only (see Status below).
 
 ## Status
 
