@@ -553,3 +553,48 @@ def test_manifest_path_directory_reload_keeps_last_known_good(service):
     assert svc.reload_count == 0
     assert answer_a(query_udp(port, "blocked-one.test")) == "0.0.0.0"
     assert answer_a(query_tcp(port, "blocked-one.test")) == "0.0.0.0"
+
+
+# -- manifest path file type: the path itself must be a regular file ------
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="POSIX symlinks")
+def test_manifest_symlink_to_valid_file_rejected(tmp_path):
+    """A manifest.json that is a symlink to an EXISTING, VALID regular
+    manifest file is still rejected: Path.is_file() follows symlinks and
+    would accept it; lstat+S_ISREG examines the path itself."""
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    _write_manifest(gen)
+    os.rename(gen / "manifest.json", gen / "manifest.real")
+    os.symlink(gen / "manifest.real", gen / "manifest.json")
+    assert (gen / "manifest.json").is_file()  # the old check would pass
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs")
+def test_manifest_fifo_rejected(tmp_path):
+    """Other non-regular entries (a FIFO) are rejected too."""
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    os.mkfifo(gen / "manifest.json")
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="POSIX symlinks")
+def test_manifest_symlink_reload_keeps_last_known_good(service):
+    """A running service rejects a reload whose manifest path is a
+    symlink to a valid file, and keeps answering UDP and TCP with the
+    last valid configuration."""
+    svc, policy_path, categories_path = service
+    port = svc.config.listen_port
+    gen = Path(policy_path).parent
+    write_config(gen, POLICY_V2, CATEGORIES)
+    real = gen / "manifest.real"
+    real.write_text(json.dumps({"revision": 1, "generation": "1"}), encoding="utf-8")
+    os.symlink(real, gen / "manifest.json")
+    assert svc.reload_from_paths(policy_path, categories_path, trigger="test") is False
+    assert svc.reload_count == 0
+    assert answer_a(query_udp(port, "blocked-one.test")) == "0.0.0.0"
+    assert answer_a(query_tcp(port, "blocked-one.test")) == "0.0.0.0"
