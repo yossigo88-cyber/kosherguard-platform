@@ -1,0 +1,41 @@
+# KosherGuard Stage 10.5 - private staging dashboard on the Render free tier.
+#
+# One free web service that deploys the branch
+# stage-9b-deployment-preparation ONLY. main is never deployed.
+# No paid services, disks, databases, or domains.
+#
+# The dashboard is a dependency-free Python standard-library web app
+# (dashboard/src/server.py) with SQLite storage, session
+# authentication, pbkdf2 password hashing, a login rate limiter,
+# CSRF header enforcement, and HttpOnly + SameSite=Strict cookies.
+# The admin password lives only in the Render environment (generated
+# by Render on first deploy; view or override it under the service's
+# Environment tab). It is never committed.
+services:
+  - type: web
+    name: kosherguard-staging-dashboard
+    runtime: python
+    plan: free
+    branch: stage-9b-deployment-preparation
+    # The application is Python-standard-library only: there is no
+    # requirements.txt and nothing to build.
+    buildCommand: "true"
+    startCommand: python3 dashboard/src/server.py --host 0.0.0.0 --port $PORT
+    # Public minimal health check: reports only process/database
+    # liveness, never configuration or secrets.
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.7
+      - key: KG_ADMIN_USERNAME
+        value: admin
+      - key: KG_ADMIN_PASSWORD
+        # Render generates a strong random value on first deploy;
+        # it satisfies the server's minimum-length rule and is never
+        # stored in the repository.
+        generateValue: true
+      - key: KG_SECURE_COOKIES
+        # Mandatory for the non-loopback bind: the server refuses to
+        # start on 0.0.0.0 with Secure cookies disabled.
+        value: "1"
