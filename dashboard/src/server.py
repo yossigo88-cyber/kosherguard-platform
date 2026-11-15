@@ -529,8 +529,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "environment": "development",
                     "devices_connected": False,
                     "mdm_operational": False,
+                    # Stage 11A: administrative registry records only - not
+                    # connected, enrolled, or managed devices.
+                    "devices_registered": store.registered_device_count(),
                     "note": "Development application. No Apple MDM connection, "
-                            "no enrolled devices, no remote policy push.",
+                            "no enrolled devices, no remote policy push. The "
+                            "device registry holds administrative records and "
+                            "network/group bindings only.",
                 })
                 return
 
@@ -575,6 +580,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/audit":
                 limit = q("limit") or 200
                 self._json(200, {"entries": store.list_audit(limit)})
+                return
+
+            m_dev = re.fullmatch(
+                r"/api/devices(?:/(\d+)(?:/(state|associations|effective-policy"
+                r"|assign-policy|audit)(?:/(\d+))?)?)?",
+                path)
+            if m_dev and path.startswith("/api/devices"):
+                self._handle_devices(method, m_dev, q, store, admin, conn)
                 return
 
             self._error(404, "not found")
@@ -783,6 +796,69 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 store.delete_domain(admin["username"], domain)
                 self._json(200, {"ok": True})
                 return
+        self._error(404, "not found")
+
+    def _handle_devices(self, method, m, q, store, admin, conn) -> None:
+        """Stage 11A device-registry endpoints.
+
+        All routes sit behind the shared session check (self._admin ran
+        before dispatch reached here) and every mutation already required
+        the X-KosherGuard-Request header. Registry entries may represent
+        one device OR a network/group ("Home Wi-Fi"); associations are
+        network bindings - routing hints, never device identity.
+        """
+        device_id, sub, sub_id = m.group(1), m.group(2), m.group(3)
+        if device_id is None:
+            if method == "GET":
+                state = q("state")
+                self._json(200, {
+                    "devices": store.list_devices(q("search"), state),
+                    "note": "Registry entries are administrative records "
+                            "(management_status unmanaged); network bindings "
+                            "are routing hints, not authenticated device "
+                            "identity.",
+                })
+                return
+            if method == "POST":
+                self._json(201, store.register_device(
+                    admin["username"], self._body()))
+                return
+        elif sub is None:
+            if method == "GET":
+                self._json(200, store.get_device(int(device_id)))
+                return
+            if method == "PUT":
+                self._json(200, store.update_device(
+                    admin["username"], int(device_id), self._body()))
+                return
+        elif sub == "state" and method == "POST":
+            self._json(200, store.set_device_state(
+                admin["username"], int(device_id), self._body().get("state")))
+            return
+        elif sub == "associations":
+            if sub_id is None and method == "POST":
+                self._json(201, store.add_association(
+                    admin["username"], int(device_id), self._body()))
+                return
+            if sub_id is not None and method == "DELETE":
+                self._json(200, store.retire_association(
+                    admin["username"], int(device_id), int(sub_id)))
+                return
+        elif sub == "assign-policy" and method == "POST":
+            data = self._body()
+            if "policy_id" not in data:
+                raise StoreError("policy_id is required (null unassigns)", 400)
+            self._json(200, store.assign_policy(
+                admin["username"], int(device_id), data.get("policy_id")))
+            return
+        elif sub == "effective-policy" and method == "GET":
+            self._json(200, store.effective_policy(int(device_id)))
+            return
+        elif sub == "audit" and method == "GET":
+            limit = q("limit") or 200
+            self._json(200, {
+                "entries": store.list_device_audit(int(device_id), limit)})
+            return
         self._error(404, "not found")
 
     # -- static files ------------------------------------------------------
