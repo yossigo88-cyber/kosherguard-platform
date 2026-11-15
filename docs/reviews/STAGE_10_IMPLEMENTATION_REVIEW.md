@@ -594,3 +594,77 @@ the final HEAD.
   (the corrections only ADD checks).
 - Stage 10 is NOT claimed approved; that decision belongs to the
   independent review of these commits.
+
+## 16. Final fail-closed manifest edge case (2026-11-15)
+
+The independent review of the seven correction commits found one
+remaining bypass.
+
+### The defect
+
+`load_validated_engine()` in filtering-engine/src/dns_service.py gated
+manifest verification on `manifest_path.is_file()`. `is_file()` follows
+symlinks and is False for directories and broken symlinks, so a
+manifest.json that EXISTS as a directory, a broken symlink, or any
+other unusable filesystem object was silently treated as "no manifest",
+falling back to legacy unverified loading. Stage 10's rule is: only a
+genuinely ABSENT manifest path may use legacy compatibility; a present
+but invalid manifest must never be ignored.
+
+### The fix
+
+The gate is now `os.path.lexists(manifest_path)`, which is True for any
+filesystem entry including broken symlinks. Any existing entry that is
+not a regular readable file is rejected with PolicyConfigError; a
+regular file is parsed and strictly validated exactly as before (hash
+format, hash equality, revision/generation/directory consistency - all
+unchanged, nothing weakened). A genuinely absent path keeps legacy
+compatibility. The publisher's verify_generation() was already
+fail-closed for these cases (a directory, broken symlink, or missing
+manifest fails the manifest read with PublicationError), so publisher
+and engine behavior are consistent.
+
+### Regression tests (filtering-engine/tests/test_reload.py, +3 tests)
+
+- `test_manifest_path_is_directory_rejected` - manifest.json as a
+  directory: rejected.
+- `test_manifest_path_broken_symlink_rejected` - manifest.json as a
+  broken symlink: rejected (POSIX-only guard, genuinely necessary for
+  symlink creation).
+- `test_manifest_path_directory_reload_keeps_last_known_good` - a
+  running service rejects the reload and keeps answering UDP and TCP
+  with the last valid configuration.
+- (Already covered by section 15's tests: no manifest at all loads
+  legacy; a valid regular manifest is accepted; a rejected reload
+  retains last-known-good.)
+
+### Commits
+
+1. `d45ee9b8f8cdb1c3953bf0a3cddda2334ec177e0` - Stage 10 review fix:
+   reject present-but-unusable manifest paths (lexists)
+   (filtering-engine/src/dns_service.py)
+2. `72314718d8f16aa860f58660435c963958cceda9` - Stage 10 review fix:
+   manifest path edge-case tests
+   (filtering-engine/tests/test_reload.py)
+3. This document's own update commit follows; its SHA and the final
+   branch HEAD are in the final summary message.
+
+### Exact test commands and results (working tree, same content committed)
+
+- `python3 -m pytest filtering-engine/tests/test_reload.py -q` ->
+  21 passed in 5.01s
+- `python3 -m pytest filtering-engine/tests -q` -> 140 passed in 57.60s
+- `python3 -m pytest dashboard/tests -q` -> 161 passed in 113.48s
+- `node --check dashboard/static/app.js` -> clean
+- `bash -n deploy/backup.sh deploy/restore.sh` -> clean
+- No failures, no reruns needed in this round. Fresh-clone verification
+  of the final branch is reported in the final summary message.
+
+### Confirmations
+
+- main remains untouched at
+  `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`.
+- Nothing merged, nothing deployed, no services provisioned, no costs,
+  no new GitHub permissions or OAuth scopes.
+- Stage 11 has not started. No commits squashed or rewritten.
+- Stage 10 is NOT claimed approved; independent review decides.
