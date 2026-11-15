@@ -1,5 +1,7 @@
 # Stage 11A Implementation Review: Device Registry Data Model + API
 
+**Security correction applied after independent review: see section 9 (policy update/rollback now preserve the tighten-only invariant). Sections 1-8 describe the original implementation at `5377d2b4` and are kept as written.**
+
 **Status: implementation complete on the feature branch, awaiting the
 owner's independent review. Nothing was deployed, no server was
 touched, `main` is untouched, and Stage 11B/11C/11D/11E have NOT
@@ -418,3 +420,134 @@ project was used.
 path MUST re-run the tighten-only check per plan 4.5 enforcement point
 3 (Stage 11D); engine loading/lookup wiring (11C); UI (11B); last-seen
 (11E). Stage 11 implementation stops here for independent review.
+
+---
+
+## 9. Security correction: tighten-only on policy update and rollback
+
+Applied on the existing feature branch after independent review of
+`f8938a72f95b6f1fccc6127c47cdace3450cc3c7`. Stage 11A only: no
+Stage 11B UI, no DNS runtime or publication wiring, no tokens, no
+deployment, `main` untouched, no force-push. Stage 11A is NOT claimed
+approved.
+
+### 9.1 Defect found in independent review
+
+The tighten-only invariant (every active assignment is at least as
+restrictive as the selected default) was enforced only when an
+assignment was created and when a different policy was selected as the
+default. `update_policy()` and `rollback_policy()` change policy
+CONTENTS without rechecking, so an assigned policy could be edited or
+rolled back to something less restrictive than the default, and an
+edit or rollback of the selected default could make existing
+assignments unsafe.
+
+### 9.2 Correction and shared helper design
+
+New helper in `dashboard/src/store.py`:
+`Store._enforce_tighten_only_for_proposed_policy_locked(conn, policy_id,
+policy_name, proposed_engine, operation)`.
+
+- Called from `update_policy()` and `rollback_policy()` INSIDE the
+  existing `_write_txn` (BEGIN IMMEDIATE) block, after the Stage 10
+  selected-policy protections and BEFORE any write, so the check and
+  the mutation are atomic against concurrent assignment, selection, or
+  edits. `proposed_engine` is the actual proposed document: the
+  validated payload for update, the stored historical version for
+  rollback.
+- Loads all active assignments. If there are none, or the edited policy
+  is neither the selected default nor actively assigned, it returns
+  (the edit cannot affect the invariant).
+- Edited policy is the selected default: every active assignment to
+  another policy is compared against the proposed default contents.
+- Edited policy is actively assigned (not the default): the proposed
+  contents are compared against the current default contents.
+- No selected default while an assignment needs validation: 409, fail
+  closed.
+- Uses the existing `at_least_as_restrictive()` comparator and its
+  fail-closed behavior; never compares names, labels or rule counts;
+  unreadable policy content is a violation, never skipped.
+- Any violation raises `StoreError` 409 naming the registry entry, the
+  policy and the comparator reason. The exception rolls back the
+  transaction; nothing was written before it (policy row, rules,
+  versions, audit, assignments, default pointer all unchanged).
+- Successful changes keep the existing versioning and audit behavior.
+- Existing protections (selected/assigned policy cannot be disabled or
+  deleted, select-default recheck, assignment check) are unchanged.
+
+### 9.3 New regression tests
+
+`dashboard/tests/test_policy_mutation_tighten_only.py` (14 tests, real
+HTTP API against a real SQLite database). No existing test file was
+modified.
+
+1. update of an assigned policy to less restrictive: rejected (three
+   variants, including different name and fewer rules)
+2. update of an assigned policy to equal or stricter: succeeds
+3. update of the selected default making an assignment unsafe: rejected
+4. update of the selected default leaving assignments safe: succeeds
+5. rollback of an assigned policy to a less restrictive version: rejected
+6. rollback of an assigned policy to an equal or stricter version: succeeds
+7. rollback of the selected default making an assignment unsafe: rejected
+8. rollback of the selected default leaving assignments safe: succeeds
+9. every rejection leaves unchanged a full snapshot of policies, rules,
+   categories, policy_versions, audit_log, device_policy_assignments and
+   publication_state (also checked through the API: current version,
+   version list, selected pointer)
+10. concurrency: (a) an assignment held in an open BEGIN IMMEDIATE
+   transaction blocks the policy edit; after it commits the edit is
+   rejected 409; (b) concurrent assign and loosen threads never end
+   with an active unsafe assignment.
+
+Also: no selected default with an active assignment fails closed
+(update and rollback); unassigned policies and inactive assignment
+history do not constrain edits. Run against the pre-correction
+`store.py`, 8 of these 14 tests fail; with the correction all pass.
+
+### 9.4 Commits
+
+- `dcf62e13e1f2d89312925de119d610e4c0893075`: `dashboard/src/store.py`
+  (blob `88e4e449af3f9aec06644d0f0cf433e6704a28a4`)
+- `2256e6ea903569fde5fea8e652fd2e489b728272`:
+  `dashboard/tests/test_policy_mutation_tighten_only.py` (blob
+  `35fdc822c392f629f759f66ed2489fe63060b5a6`)
+- Report commit: this file; the final branch SHA is reported with it.
+
+**Tested implementation SHA:** `2256e6ea903569fde5fea8e652fd2e489b728272`
+(the code and tests at that SHA; the later report commit changes only
+this file). Previous branch SHA: `f8938a72f95b6f1fccc6127c47cdace3450cc3c7`.
+Both blobs were verified against the locally computed `git hash-object`.
+
+Exact changed files in this correction (3):
+`dashboard/src/store.py`, `dashboard/tests/test_policy_mutation_tighten_only.py`,
+`docs/reviews/STAGE_11A_IMPLEMENTATION_REVIEW.md`.
+`engine_bridge.py` and every engine file are unchanged; the earlier
+bridge change remains import re-exports only.
+
+### 9.5 Commands and results (fresh clone of the committed branch at 2256e6ea)
+
+Environment: Python 3.10.12, pytest 8.4.2, dnslib per requirements.
+`store.py` and the new test file in the clone are byte-identical (`cmp`)
+to the tested working tree.
+
+- Syntax: `python3 -m py_compile filtering-engine/src/address_canonicalization.py filtering-engine/src/policy_comparison.py dashboard/src/db.py dashboard/src/engine_bridge.py dashboard/src/store.py dashboard/src/server.py dashboard/tests/test_policy_mutation_tighten_only.py` -> exit 0.
+- Migration: `python3 -m pytest dashboard/tests/test_devices.py -k migration -q` (repo root) -> 3 passed.
+- Dashboard new/registry/assignment: `python3 -m pytest dashboard/tests/test_devices.py dashboard/tests/test_device_assignment.py dashboard/tests/test_policy_mutation_tighten_only.py -q` (repo root) -> **104 passed** (60.05s) = 90 + 14.
+- Dashboard existing: `python3 -m pytest dashboard/tests --ignore=dashboard/tests/test_devices.py --ignore=dashboard/tests/test_device_assignment.py --ignore=dashboard/tests/test_policy_mutation_tighten_only.py -q` (repo root) -> **165 passed** (106.19s).
+- Dashboard total **269 passed** across two invocations (environment's 120 s cap requires the split).
+- Engine: `python3 -m pytest tests -q` (cwd `filtering-engine/`, as in section 8). First full run on the committed clone: **207 passed, 1 failed, 1 error, 3 warnings** (57.02s), the failure in `tests/test_tcp_service.py::test_truncated_udp_upstream_triggers_tcp_fallback` and the error in `tests/test_tcp_service.py::test_max_udp_response_below_minimum_rejected`. Immediate rerun of the same command: **209 passed, 3 warnings** (57.82s).
+  In the working tree before committing, a full engine run that overlapped another pytest process gave 207 passed, 1 failed (`tests/test_dns_service.py::test_decision_log_fields_and_privacy`, OSError) and 1 error (`tests/test_tcp_service.py::test_shutdown_budget_covers_one_message_deadline`); an isolated rerun gave 209 passed (60.81s).
+  These are timing/port-sensitive engine tests in this sandbox. No engine file was changed by this correction. The root cause of these specific failures was not investigated.
+
+**Baseline flakes (unchanged, not described as clean):** at the Stage 11A
+starting HEAD `8cf9b951` the first full engine run was 144 passed, 2
+failed (`test_shutdown_deadline_is_overall_not_per_worker` and
+`test_blocked_domain_other_qtypes_nxdomain_in_sinkhole_mode`), both
+passing on immediate rerun (section 8). The engine suite is therefore
+not a clean baseline; it has intermittently failed timing/port-sensitive
+tests on first full runs and passed on rerun.
+
+**Confirmations:** `main` remains `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`;
+no merge, no force-push, no deployment, no external system touched. No
+Stage 11B or later work. Stopped for independent review.
+
