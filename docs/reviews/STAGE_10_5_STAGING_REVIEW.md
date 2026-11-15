@@ -49,13 +49,20 @@ live staging dashboard does not exist yet.
   accidentally run with insecure cookies.
 - Render free-tier suitability: the app is dependency-free Python +
   SQLite on the local filesystem. Render's free web-service tier runs
-  it directly. The free tier has NO persistent disk (disks are paid),
-  so the SQLite database is EPHEMERAL: it resets on every redeploy,
-  restart, or free-tier sleep/wake. Acceptable for a synthetic-data
-  staging dashboard (the admin is re-seeded from the environment on
-  each boot); documented as a limitation, not hidden. Free services
-  also sleep after inactivity, so the first request after idle may
-  take ~30-60s.
+  it directly. Precise free-tier storage behavior (per
+  https://render.com/docs/free, read 2026-11-15): the filesystem is
+  ephemeral and ANY local change - including a local SQLite database
+  - is lost EVERY time the service redeploys, restarts, OR SPINS
+  DOWN, and Render spins a free service down after 15 minutes without
+  inbound traffic (spin-up on the next request takes about a minute,
+  with a Render loading page shown meanwhile). Render may also
+  restart a free service at any time. So in practice the staging
+  database resets at least once per idle day. Acceptable for a
+  synthetic-data staging dashboard (the admin is re-seeded from
+  `KG_ADMIN_PASSWORD` on each boot); documented as a limitation, not
+  hidden. Free Render Postgres exists but expires 30 days after
+  creation, and the dashboard's storage layer is SQLite-only, so it
+  is not used.
 
 ## Phase 2 - Staging architecture (committed as `render.yaml`)
 
@@ -85,6 +92,19 @@ live staging dashboard does not exist yet.
 
 ## Phase 3 - Authentication and security (verified LIVE locally, 2026-11-15)
 
+Route-by-route reconciliation of "every dashboard page and API
+endpoint requires authentication" with the actual code
+(`server.py:_dispatch_api`): the ONLY public API routes are
+`GET /api/health` (a minimal liveness probe that reveals only
+process/database status - required by Render's health check) and
+`POST /api/login` itself. Every other API endpoint passes through
+`self._admin(conn)`, which rejects requests without a valid session
+with 401. The static SPA shell (HTML/CSS/JS) is served without a
+session - that shell IS the login page, verified below to carry no
+dashboard data: every byte of dashboard data flows through the
+authenticated API. There is no public registration route and no
+public dashboard page.
+
 Existing implementation (not added in this stage): pbkdf2 password
 hashing (`auth.hash_password`), per-account-session tokens in an
 HttpOnly + SameSite=Strict cookie (`Secure` added when
@@ -103,7 +123,7 @@ from unauthenticated and authenticated curl sessions:
 
 | # | Check | Result |
 |---|-------|--------|
-| 1 | GET / unauthenticated | 200, serves the login UI shell only |
+| 1 | GET / unauthenticated | 200, serves the login UI shell only - no dashboard data in it |
 | 2 | GET /api/config/status unauthenticated | 401 "not signed in" |
 | 3 | POST /api/login, wrong password | 401 |
 | 4 | POST /api/login, correct password | 200 + `kg_session` cookie, HttpOnly + SameSite=Strict |
@@ -173,13 +193,16 @@ is verified against the live URL.
 
 ## Known limitations
 
-- Free-tier sleep: the service sleeps after inactivity; the first
-  request after idle can take ~30-60 seconds.
-- Ephemeral storage: the free tier has no persistent disk, so the
-  SQLite database (policies, sessions, audit log) resets on every
-  redeploy/restart/wake. The admin account is re-seeded from
-  `KG_ADMIN_PASSWORD` on each boot. Fine for synthetic staging data;
-  NOT suitable for production.
+- Free-tier sleep: the service spins down after 15 minutes without
+  traffic; the next request waits about a minute while Render shows
+  its spin-up page.
+- Ephemeral storage (verified against
+  https://render.com/docs/free on 2026-11-15): local filesystem
+  changes - including the SQLite database with policies, sessions and
+  the audit log - are lost on EVERY redeploy, restart, or spin-down,
+  and Render may restart a free service at any time. The admin
+  account is re-seeded from `KG_ADMIN_PASSWORD` on each boot. Fine
+  for synthetic staging data; NOT suitable for production.
 - Legacy no-manifest engine loading is unavailable on platforms
   without O_NOFOLLOW (Stage 10, section 19); irrelevant to the
   dashboard-only staging service but recorded for completeness.
