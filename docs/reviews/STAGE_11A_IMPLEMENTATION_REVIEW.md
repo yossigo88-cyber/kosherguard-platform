@@ -363,8 +363,11 @@ locally computed `git hash-object` of the tested file (14/14). Both
 suites were then re-run on the clone with these exact invocations and
 results:
 
-- `python3 -m pytest filtering-engine/tests -q` (from
-  `filtering-engine/`) -> **209 passed**, 3 benign warnings (57.99s).
+- `python3 -m pytest tests -q` (cwd: `filtering-engine/`) -> **209
+  passed**, 3 benign warnings (57.99s). (The baseline and post-change
+  runs above used `python3 -m pytest filtering-engine/tests -q` from
+  the repository root; this committed-tree run used the equivalent
+  invocation from inside `filtering-engine/`.)
 - `python3 -m pytest dashboard/tests/test_devices.py dashboard/tests/test_device_assignment.py -q`
   (from the repo root) -> **90 passed** (47.85s); the new Stage 11A
   suites.
