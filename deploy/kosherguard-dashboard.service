@@ -1,0 +1,46 @@
+# KosherGuard dashboard - systemd service unit.
+#
+# Install:  sudo cp deploy/kosherguard-dashboard.service /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now kosherguard-dashboard
+#
+# See docs/deployment/RUNBOOK.md for the full procedure, including the
+# required /etc/kosherguard/dashboard.env file.
+#
+# NOTE: this unit is reviewed but NOT tested on a live system yet; the
+# first real deployment must verify it (the runbook's checklist says how).
+
+[Unit]
+Description=KosherGuard admin dashboard (development application)
+After=network.target
+
+[Service]
+Type=simple
+User=kosherguard
+Group=kosherguard
+
+# Deployment configuration. KG_ADMIN_PASSWORD is NOT here - it lives in
+# /etc/kosherguard/dashboard.env (root-only, 0600), loaded below.
+Environment=KG_ADMIN_USERNAME=admin
+Environment=KG_SECURE_COOKIES=1
+Environment=KG_TRUSTED_PROXIES=127.0.0.1
+Environment=KG_MAX_CONNECTIONS=32
+Environment=KG_REQUEST_TIMEOUT=30
+Environment=KG_TOTAL_REQUEST_TIMEOUT=60
+EnvironmentFile=-/etc/kosherguard/dashboard.env
+
+ExecStart=/usr/bin/python3 /opt/kosherguard/dashboard/src/server.py --host 127.0.0.1 --port 8080 --db /var/lib/kosherguard/dashboard.db
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the dashboard needs only its state directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=kosherguard
+ReadWritePaths=/var/lib/kosherguard
+
+[Install]
+WantedBy=multi-user.target
