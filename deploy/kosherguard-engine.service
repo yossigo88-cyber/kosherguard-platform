@@ -1,0 +1,51 @@
+# KosherGuard DNS filtering engine - systemd service unit.
+#
+# Install:  sudo cp deploy/kosherguard-engine.service /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now kosherguard-engine
+#
+# See docs/deployment/RUNBOOK.md for the full procedure.
+#
+# NOTE: this unit is reviewed but NOT tested on a live system yet; the
+# first real deployment must verify it (the runbook's checklist says how).
+
+[Unit]
+Description=KosherGuard DNS filtering engine (development-stage service)
+After=network.target
+
+[Service]
+Type=simple
+User=kosherguard
+Group=kosherguard
+
+# The engine reads the configuration generation the dashboard published:
+# "current" is a symlink the dashboard's publisher switches atomically.
+# --watch makes the engine pick up a new generation within seconds;
+# ExecReload (SIGHUP) triggers an immediate, fail-safe reload. A bad
+# publication is rejected and the last valid configuration stays live.
+ExecStart=/usr/bin/python3 /opt/kosherguard/filtering-engine/src/dns_service.py \
+    --policy /var/lib/kosherguard/published/current/policy.json \
+    --categories /var/lib/kosherguard/published/current/categories.json \
+    --listen 127.0.0.1:5353 \
+    --watch 5 \
+    --status-file /var/lib/kosherguard/published/engine-status.json
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the engine needs read access to the published configuration
+# and write access only for its status file. UMask=0077 keeps the status
+# file owner-only. The dashboard runs as the same user, so the 0600/0700
+# publication layout is readable here.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=kosherguard
+StateDirectoryMode=0700
+UMask=0077
+ReadWritePaths=/var/lib/kosherguard
+
+[Install]
+WantedBy=multi-user.target
