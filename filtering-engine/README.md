@@ -37,6 +37,8 @@ filtering-engine/
   src/
     policy_engine.py         central policy engine (allow/block/category/default)
     category_db.py           category database + import tool (CLI)
+    generation_io.py         fail-closed generation file I/O + multi-doc manifest validation
+    engine_set.py            immutable multi-policy engine set + loader (Stage 11C)
     dns_service.py           DNS filtering service (UDP) + structured logging
   tests/
     test_policy_engine.py    precedence, lists, categories, unknowns
@@ -46,6 +48,8 @@ filtering-engine/
     test_category_db_and_import.py  dataset, multi-category, import process
     test_address_canonicalization.py  Stage 11A binding canonicalization (plan 6.2)
     test_policy_comparison.py  Stage 11A tighten-only comparator (plan 4.5)
+    test_multi_policy.py     Stage 11C multi-policy engine set, generation format,
+                             resolution, reload, concurrency, privacy
 ```
 
 ## Architecture
@@ -379,6 +383,94 @@ dig @127.0.0.1 -p 5353 example.com        # allowed: real answer
 dig @127.0.0.1 -p 5353 tracker.example.com # blocked: 0.0.0.0
 dig @127.0.0.1 -p 5353 +tcp example.com    # same service over TCP
 
+## Multi-policy engine sets (Stage 11C)
+
+One running service can now enforce a different policy per client group.
+The service holds ONE immutable **engine set**: a default `PolicyEngine`,
+a map of validated per-policy `PolicyEngine` instances keyed by policy
+ID, a validated network-binding map, and a reserved (always empty)
+credential structure for a future authenticated channel. The complete
+set is built and validated before activation; a query never observes a
+partially loaded or mixed configuration, and no per-query database,
+file, or network access happens during request processing.
+
+**Generation format** (what the Stage 11D publisher will emit; the
+engine loads it today):
+
+```
+generations/<revision>/
+  policies/<policy_id>.json   one validated policy document per published policy
+  categories.json             the shared category database
+  devices.json                default policy pointer + binding map
+  manifest.json               revision/generation identity + SHA-256 of EVERY file
+```
+
+`devices.json` has a strict schema - exactly `default_policy_id`,
+`bindings`, `credentials` (must be empty), and optional `_meta`; unknown
+keys are rejected. Each binding maps a canonical address key
+(`ipv4:<dotted-quad>` or `ipv6:<prefix>/64`, produced by the Stage 11A
+canonicalizer) to `{"device_id", "policy_id", "class": "network_binding"}`.
+IDs are real positive integers (booleans are rejected). There is no
+device inventory in the format: each binding carries its device
+reference inline. A binding with missing, null, or malformed device
+metadata rejects the whole generation; whether a well-formed device_id
+exists in the dashboard registry is NOT verifiable from the generation
+format, and no registry lookup is performed - the publisher enforces
+registry existence upstream. The policy set must be exactly the default
+policy plus the policies referenced by bindings (the publisher emits
+exactly that set): a manifest listing a policy nothing references, or a
+reference to a policy with no document, is an inconsistent generation
+and is rejected fail-closed - silently accepting it could mask a binding
+lost from `devices.json` and quietly demote those clients to the default
+policy.
+
+**Manifest**: `manifest.json` records `revision`, `generation` (which
+must equal the directory name), and a `files` map with the SHA-256 of
+every other file in the generation. The manifest must cover every file
+on disk (an unmanifested file is unverified content and rejects the
+generation); entries that are missing, extra, malformed, duplicated, or
+mismatched reject it; every listed file's bytes are read through a
+descriptor-based safe open (no symlinks, regular files only, no path
+traversal) and verified against its own hash before any document is
+used. The Stage 10 two-file manifest keeps working unchanged for legacy
+generations.
+
+**Policy resolution order** (strict, per query): (1) authenticated
+credential - a reserved extension point that never fires in Stage 11C
+(no token issuance, storage, or authentication exists); (2) exact IPv4
+network binding; (3) IPv6 /64 network/group binding; (4) the default
+policy. Observed addresses are canonicalized with the shared Stage 11A
+canonicalizer (IPv4-mapped forms collapse to the IPv4 key; IPv6 scope
+IDs are stripped - an interface marker, never a different network
+identity); an invalid, unsupported, or absent client address safely
+selects the default policy and never crashes request processing. A
+shared IPv4 address or IPv6 /64 applies the same policy to every client
+behind it: bindings are group ROUTING HINTS, never authenticated device
+identity, and an IPv6 /128 is never treated as a registered device.
+
+**Atomic activation and reload**: startup and reload build the complete
+replacement set separately and swap one immutable reference only after
+every validation succeeds; a rejected reload keeps the entire previous
+set serving (last-known-good), in-flight queries finish on the snapshot
+they captured, and a valid default can never hide an invalid assigned
+policy. SIGHUP and `--watch` are unchanged; `--policy` now also accepts a
+generation directory (typically the publisher's `current` symlink), with
+`--categories` naming that same generation's categories.json. The status
+file gains `format`, `default_policy_id`, `policy_count`,
+`binding_count`, `device_count`, and `devices_sha256` - never client
+addresses.
+
+**Legacy compatibility**: a Stage 10 generation (`policy.json` +
+`categories.json` + optional legacy manifest, no `devices.json`) loads
+exactly as before: the single policy becomes the default and every
+client is treated as unregistered. A legacy file set WITH a
+`devices.json` sibling is an ambiguous mixed layout and is rejected
+loudly.
+
+**Privacy**: client addresses are used in memory for routing only. They
+are never written to the decision log, the status file, or any
+persistent output; there are no last-seen timestamps and no tokens.
+
 ## Hot reload (Stage 10)
 
 The running service never modifies its policy engine in place. A reload
@@ -456,9 +548,18 @@ domain records in one import file; import atomicity (a malformed
 record leaves the database unchanged); and concurrency tests
 synchronized on real events and conditions instead of fixed sleeps.
 
-Latest local run: **209 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **316 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 Stage 10 added 10 reload tests: successful reload changing real UDP and TCP answers, rejection of invalid/missing/corrupted configurations with the last valid one kept, in-flight query safety across 40 real reloads, status-file accuracy, and real-subprocess SIGHUP and --watch reloads.
 Stage 11A added two policy-logic modules alongside the engine (re-exported to the dashboard through `engine_bridge.py`, keeping validation single-sourced; the DNS service itself is unchanged): `address_canonicalization.py` - the shared canonical form for device-registry network bindings (strict IPv4 and IPv6 /64 group prefixes, with IPv4-mapped and deprecated IPv4-compatible forms rejected) - and `policy_comparison.py` - the mandatory tighten-only comparator, which proves by the feasible-signature method that a candidate policy is at least as restrictive as the default policy, and fails closed (rejects) on invalid input, uncomputable comparisons, or exceeded caps. 63 tests cover the full plan matrices.
+Stage 11C made the DNS service multi-policy: one immutable engine set
+(default policy + validated per-policy engines + canonical binding map +
+reserved credentials), the multi-document generation format with a
+hash-every-file manifest, client-address threading through the UDP and
+TCP workers, the strict credential/IPv4/IPv6-64/default resolution
+order, atomic engine-set reload with last-known-good, and full Stage 10
+legacy compatibility - with client addresses kept out of every log and
+status output. 107 tests cover the loading matrix, address resolution,
+DNS behavior over real sockets, reload and concurrency, and privacy.
 
 ## Security notes
 
@@ -475,11 +576,14 @@ Stage 11A added two policy-logic modules alongside the engine (re-exported to th
 Listed for orientation only; none of this exists today:
 
 - Dashboard ingestion of the JSON decision log.
-- Per-device or per-group policies (the engine already takes any policy
-  object; keying policies by client identity is future work).
+- Dashboard publication of multi-policy generations (Stage 11D: the
+  engine loads the format today; the publisher does not emit it yet).
+- Token authentication and credential-based routing (reserved; the
+  credential resolution step never fires in Stage 11C).
+- Apple MDM enrollment, APNs push, and real device enrollment.
+- Last-seen reporting (Stage 11E).
 - DNS over HTTPS/TLS listeners (deliberately out of scope: the
   service speaks classic DNS on UDP and TCP only).
-- Policy hot-reload without restart.
 - A production-scale, properly licensed category feed.
 - Integration with the managed-device layers (proxy, MDM, URL Filter
   backend) described in the investigation document - all gated on the
