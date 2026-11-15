@@ -514,3 +514,42 @@ def test_watch_mode_picks_up_new_generation(tmp_path):
         finally:
             proc.terminate()
             proc.wait(timeout=10)
+
+
+# -- manifest path edge cases: present-but-unusable is never "absent" -----
+
+def test_manifest_path_is_directory_rejected(tmp_path):
+    """A manifest.json that exists as a DIRECTORY is a present-but-
+    invalid manifest: rejected, never treated as legacy no-manifest."""
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    (gen / "manifest.json").mkdir()
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="POSIX symlinks")
+def test_manifest_path_broken_symlink_rejected(tmp_path):
+    """A manifest.json that is a broken symlink: Path.is_file() is False
+    (it follows the link) but the entry exists, so this must be rejected
+    rather than silently falling back to legacy unverified loading."""
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    os.symlink(gen / "does-not-exist.json", gen / "manifest.json")
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+def test_manifest_path_directory_reload_keeps_last_known_good(service):
+    """A reload whose manifest path is unusable is rejected by the
+    running service, which keeps answering UDP and TCP with the last
+    valid configuration."""
+    svc, policy_path, categories_path = service
+    port = svc.config.listen_port
+    gen = Path(policy_path).parent
+    write_config(gen, POLICY_V2, CATEGORIES)
+    (gen / "manifest.json").mkdir()
+    assert svc.reload_from_paths(policy_path, categories_path, trigger="test") is False
+    assert svc.reload_count == 0
+    assert answer_a(query_udp(port, "blocked-one.test")) == "0.0.0.0"
+    assert answer_a(query_tcp(port, "blocked-one.test")) == "0.0.0.0"
