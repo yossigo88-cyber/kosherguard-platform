@@ -398,4 +398,4 @@ tr:hover td { background: #f8fbfc; }
   .sidebar.open { transform: none; box-shadow: 8px 0 24px rgba(0, 0, 0, 0.25); }
   .content { padding: 1rem 0.9rem 3rem; }
   .modal .two-col { grid-template-columns: 1fr; }
-          }
+}
