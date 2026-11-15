@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 
 import db as db_module
 from engine_bridge import (
@@ -56,6 +57,28 @@ from util import utcnow
 
 MAX_NAME_LEN = 80
 MAX_DESCRIPTION_LEN = 1000
+
+
+@contextmanager
+def _write_txn(conn: sqlite3.Connection):
+    """One serialized write transaction.
+
+    BEGIN IMMEDIATE takes the database write lock BEFORE any invariant
+    check runs, so an invariant check and the mutation it guards are
+    atomic against concurrent requests: a check outside the lock could
+    pass while another request changes the underlying state (for
+    example selecting a policy for publication) before the mutation
+    lands. Every mutation that touches the selected-for-publication
+    invariant, and the selection write itself, goes through this.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
 
 
 class StoreError(Exception):
@@ -596,7 +619,13 @@ class Store:
             ).fetchone()
             if clash:
                 raise StoreError(f"policy named {fields['name']!r} already exists", 409)
-            with conn:
+            with _write_txn(conn):
+                # The selected-for-publication invariant is checked
+                # under the write lock: an update with enabled=false
+                # would disable the policy, so it is refused exactly
+                # like an explicit disable.
+                if not fields["enabled"]:
+                    self._require_not_selected(conn, policy_id, "disable")
                 conn.execute(
                     "UPDATE policies SET name = ?, description = ?, default_policy = ?,"
                     " enabled = ?, updated_at = ? WHERE id = ?",
@@ -622,9 +651,12 @@ class Store:
             row = conn.execute("SELECT * FROM policies WHERE id = ?", (policy_id,)).fetchone()
             if row is None:
                 raise StoreError(f"policy {policy_id} does not exist", 404)
-            if not enabled:
-                self._require_not_selected(conn, policy_id, "disable")
-            with conn:
+            with _write_txn(conn):
+                # Checked under the write lock so a concurrent
+                # select-for-publication cannot slip between check and
+                # mutation.
+                if not enabled:
+                    self._require_not_selected(conn, policy_id, "disable")
                 conn.execute(
                     "UPDATE policies SET enabled = ?, updated_at = ? WHERE id = ?",
                     (1 if enabled else 0, utcnow(), policy_id),
@@ -645,8 +677,9 @@ class Store:
             row = conn.execute("SELECT * FROM policies WHERE id = ?", (policy_id,)).fetchone()
             if row is None:
                 raise StoreError(f"policy {policy_id} does not exist", 404)
-            self._require_not_selected(conn, policy_id, "delete")
-            with conn:
+            with _write_txn(conn):
+                # Checked under the write lock (see set_policy_enabled).
+                self._require_not_selected(conn, policy_id, "delete")
                 # The final snapshot preserves the complete content of
                 # the deleted policy; history survives deletion.
                 self._snapshot_policy_version(conn, admin, policy_id, note="policy deleted")
@@ -817,7 +850,13 @@ class Store:
                 "blocklist": engine["blocklist"],
                 "category_rules": engine["category_rules"],
             }
-            with conn:
+            with _write_txn(conn):
+                # A rollback that would restore enabled=false disables
+                # the policy, so the selected-for-publication invariant
+                # applies exactly as it does to an explicit disable;
+                # checked under the write lock.
+                if not vrow["enabled"]:
+                    self._require_not_selected(conn, policy_id, "disable")
                 conn.execute(
                     "UPDATE policies SET name = ?, description = ?, default_policy = ?,"
                     " enabled = ?, updated_at = ? WHERE id = ?",
@@ -870,7 +909,20 @@ class Store:
                     f"policy {row['name']!r} is disabled; only an enabled policy "
                     "can be selected for publication", 409)
             now = utcnow()
-            with conn:
+            with _write_txn(conn):
+                # Re-read under the write lock: this write is the other
+                # side of the selected-policy invariant, so it must be
+                # serialized against the checks in update/disable/
+                # delete/rollback - and the policy must STILL be
+                # enabled when the selection lands.
+                current = conn.execute(
+                    "SELECT enabled FROM policies WHERE id = ?", (policy_id,)).fetchone()
+                if current is None:
+                    raise StoreError(f"policy {policy_id} does not exist", 404)
+                if not current["enabled"]:
+                    raise StoreError(
+                        f"policy {row['name']!r} is disabled; only an enabled policy "
+                        "can be selected for publication", 409)
                 conn.execute(
                     "INSERT INTO publication_state"
                     " (id, selected_policy_id, selected_by, selected_at, active_revision)"
