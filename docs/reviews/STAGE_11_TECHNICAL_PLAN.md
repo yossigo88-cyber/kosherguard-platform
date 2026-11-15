@@ -7,11 +7,13 @@ explicit approval before any Stage 11 implementation begins.**
 
 **Repository:** https://github.com/yossigo88-cyber/kosherguard-platform
 **Working branch:** `stage-9b-deployment-preparation`
-**Branch HEAD under review (this revision):** `7f87c415ccef8aa2ebb87900302da9f32ecd33db`
-(verified 2026-11-15 through the GitHub API; the source files
-referenced below were re-read at `f4f8492d7f7e22058da018b4cd66b55c769978ea` and are unchanged at this
-revision, because every commit after `f4f8492d7f7e22058da018b4cd66b55c769978ea` touched only this
-document)
+**Plan content review baseline:** `7f87c415ccef8aa2ebb87900302da9f32ecd33db`
+(the current branch HEAD is tracked by GitHub and is intentionally not
+embedded in this document, because this document changes when committed;
+the source files referenced below were re-read at
+`f4f8492d7f7e22058da018b4cd66b55c769978ea` and are unchanged at the
+review baseline, because every commit after
+`f4f8492d7f7e22058da018b4cd66b55c769978ea` touched only this document)
 **Main (unchanged):** `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`
 
 This plan follows the Stage 10 Technical Roadmap
@@ -41,15 +43,18 @@ equivalent and demonstrably stricter policies pass - and deliberately
 conservative only over category-database contents.
 
 Revision note (2026-11-15, fifth commit): final documentation
-corrections from independent review, applied here. (1) The revision
-metadata above now names the actual branch HEAD under review,
-`a1359e0b`; it previously still named `f4f8492d` from the earlier
-revision. (2) Section 6.2 now defines the IPv4-compatible IPv6
-rejection precisely (only `::/64` is reachable under the exact-/64
-rule, and it is rejected because it contains the entire deprecated
-IPv4-compatible block) and the planned test matrix covers the
-IPv4-compatible forms and boundary cases, not only IPv4-mapped. No
-comparator, schema, phase, or other architectural decision changed.
+corrections from independent review, applied here. (1) This final
+cleanup removes the self-referential branch-HEAD metadata: earlier
+revisions of the header embedded a commit hash presented as the branch
+HEAD under review, but any such hash goes stale as soon as the document
+is committed, so the header now records a plan content review baseline
+and leaves branch-HEAD tracking to GitHub. (2) Section 6.2 now defines
+the IPv4-compatible IPv6 rejection precisely (only `::/64` is reachable
+under the exact-/64 rule, and it is rejected because it contains the
+entire deprecated IPv4-compatible block) and the planned test matrix
+covers the IPv4-compatible forms and boundary cases, not only
+IPv4-mapped. No comparator, schema, phase, or other architectural
+decision changed.
 
 Revision note (2026-11-15, third commit): independent review requested
 four corrections, all applied in this revision and summarized in
