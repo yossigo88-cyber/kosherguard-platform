@@ -12,9 +12,24 @@ https://129-158-203-53.sslip.io/ - completely separate from the
 production KosherGuard server, its network, its DNS, and the paid
 hosting. The earlier Render plan (below) was superseded by the
 owner's decision on 2026-11-15: deploy on a separate free Oracle
-server, "nothing to do with my original kosher guard". No Render
-service was ever created; `render.yaml` remains in the repo as an
-unused alternative blueprint only.
+server, "nothing to do with my original kosher guard".
+
+Render status correction (updated 2026-11-15 ~19:12 UTC): the Render
+blueprint WAS initiated by the owner at ~12:48 EST ("Deploy
+Blueprint"; the blueprint synced commit 02e8ecb and created the web
+service). The resulting status had gone unrecorded; it is now
+verified directly in the Render dashboard: a free web service
+`kosherguard-staging-dashboard` (service ID
+`srv-dbsv0smi0phs73e7qpb0`) is LIVE at
+https://kosherguard-staging-dashboard.onrender.com, tracking branch
+`stage-9b-deployment-preparation` with auto-deploy ACTIVE (this
+review's own commit e0be444 auto-deployed there). The Oracle
+deployment above is the delivered and fully verified staging
+environment; the Render instance is an earlier duplicate whose
+admin password is a Render-generated value in its Environment tab
+and whose SQLite data resets on every redeploy or free-tier
+spin-down. Suspending or deleting it is pending the owner's decision
+(see Confirmations); no cleanup of it has been performed.
 
 ## Phase 1 - What was inspected (actual files, not assumptions)
 
@@ -97,12 +112,17 @@ unused alternative blueprint only.
   deployment, so the branch HEAD after that commit is a DOCS-ONLY
   descendant; the running code on the server remains exactly the
   deployed SHA above.
-- Automatic GitHub deployments: NOT configured. There is no webhook,
-  polling job, CI workflow, or any other mechanism deploying new
-  commits to this server; updating is a manual, deliberate operation
-  (git fetch/reset on the server by an operator). (Render's
-  `autoDeploy: true` in `render.yaml` has no effect: no Render
-  service was ever created from the blueprint.)
+- Automatic GitHub deployments: NOT configured on the delivered
+  Oracle server - no webhook, polling job, CI workflow, or any other
+  mechanism deploys new commits to it; updating is a manual,
+  deliberate operation (git fetch/reset on the server by an
+  operator). NOTE: on Render, auto-deploy IS configured by the
+  blueprint (`autoDeploy: true`) and is ACTIVE - verified
+  2026-11-15 ~19:12 UTC when this review's commit e0be444
+  auto-deployed to
+  https://kosherguard-staging-dashboard.onrender.com. Until that
+  service is suspended, every commit to this branch (including the
+  commit recording this correction) redeploys the Render copy.
 - Isolation: the staging VM runs the dashboard alone with
   synthetic/local data only. No DNS engine, no Apple MDM/APNs, no
   customer devices, no production data, no connection of any kind to
@@ -218,10 +238,15 @@ this deployment.
   `ocid1.instance.oc1.iad.anuwcljtlu6l33icvr73t2nhfbl7ctozhpvinfhojkukkfjv54m4ognncsda`;
   security list OCID:
   `ocid1.securitylist.oc1.iad.aaaaaaaaxa2xzdstvsi5jj5ptzmapbdnfhojkxfake4kexdtueaazxg42nja`.
-- Deployed commit SHA:
+- Deployed commit SHA (Oracle):
   `02e8ecb54018cacb683a60107fca8b1e3a8dd0fb` (branch
   `stage-9b-deployment-preparation`; the branch HEAD after this
   review commit is a docs-only descendant - no deployed-code change).
+- Render duplicate: service `srv-dbsv0smi0phs73e7qpb0`,
+  https://kosherguard-staging-dashboard.onrender.com, live; initial
+  Blueprint deploy of 02e8ecb (~17:48 UTC), auto-deploy of e0be444
+  verified ~19:12 UTC; this correction commit will likewise
+  auto-deploy there.
 - main: `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a` (untouched).
 - This report: `docs/reviews/STAGE_10_5_STAGING_REVIEW.md`.
 
@@ -265,7 +290,14 @@ this deployment.
 - Deployed Git commit confirmed:
   `02e8ecb54018cacb683a60107fca8b1e3a8dd0fb` on the intended feature
   branch `stage-9b-deployment-preparation`.
-- Automatic GitHub deployments are documented as NOT configured.
+- Automatic GitHub deployments: NOT configured on the delivered
+  Oracle staging (manual updates only, as the owner requested).
+  The separately initiated Render blueprint service DOES auto-deploy
+  this branch (discovered and verified during this update) and
+  remains live pending the owner's suspend/delete decision. Owner
+  step to stop it: Render dashboard -> kosherguard-staging-dashboard
+  -> Settings -> Suspend Web Service (keeps configuration; stops
+  deploys and traffic) or Delete Service (removes it entirely).
 - This report was committed to the feature branch only.
 - main remains untouched at
   `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`; no merge, no production
