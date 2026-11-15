@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from dnslib import A, QTYPE, RCODE, DNSRecord, RR
 
 from category_db import CategoryDB
+import dns_service
 from dns_service import (
     DNSFilteringService,
     DecisionLogger,
@@ -598,3 +599,44 @@ def test_manifest_symlink_reload_keeps_last_known_good(service):
     assert svc.reload_count == 0
     assert answer_a(query_udp(port, "blocked-one.test")) == "0.0.0.0"
     assert answer_a(query_tcp(port, "blocked-one.test")) == "0.0.0.0"
+
+
+# -- descriptor-based manifest open: no check-then-read window ----------
+
+def test_manifest_read_from_opened_descriptor_only(tmp_path, monkeypatch):
+    """The manifest bytes come from the SAME descriptor that os.open
+    opened with O_NOFOLLOW and os.fstat verified as regular: there is
+    no separate path-based read after the safe open. Rigging
+    Path.read_text to explode must not affect loading a valid
+    manifest."""
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    _write_manifest(gen)
+
+    def boom(self, *args, **kwargs):
+        raise AssertionError("path-based read_text used after the safe open")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    engine, info = load_validated_engine(policy_path, categories_path)
+    assert info["generation"] == "1"
+    assert info["manifest_revision"] == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="POSIX O_NOFOLLOW")
+def test_manifest_descriptor_unaffected_by_pathname_swap(tmp_path):
+    """Focused descriptor test (not a claimed full-race simulation):
+    replacing the pathname AFTER the safe open cannot change which file
+    the returned descriptor reads - the descriptor pins the opened
+    file, which is what removes the time-of-check/time-of-use window
+    between verifying the entry type and reading its bytes."""
+    gen = tmp_path / "1"
+    write_config(gen, POLICY_V1, CATEGORIES)
+    manifest = _write_manifest(gen)
+    path = gen / "manifest.json"
+    fd = dns_service._safe_open_manifest(path)
+    replacement = gen / "replacement.json"
+    replacement.write_text(json.dumps({"revision": 999}), encoding="utf-8")
+    os.replace(replacement, path)  # the pathname now names another file
+    with os.fdopen(fd, "rb") as fh:
+        data = json.loads(fh.read().decode("utf-8"))
+    assert data["revision"] == manifest["revision"]
