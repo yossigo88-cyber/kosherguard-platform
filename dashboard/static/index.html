@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KosherGuard Admin</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- Sign-in view (shown when there is no valid session) -->
+  <div id="login-view" class="login-view hidden">
+    <div class="login-card">
+      <div class="brand-mark">KG</div>
+      <h1>KosherGuard Admin</h1>
+      <p class="muted">Sign in to manage filtering policies.</p>
+      <form id="login-form">
+        <label for="login-username">Username</label>
+        <input id="login-username" name="username" type="text" autocomplete="username" required>
+        <label for="login-password">Password</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        <p id="login-error" class="form-error hidden"></p>
+        <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+      </form>
+      <p class="muted small">Development environment. No devices are connected.</p>
+    </div>
+  </div>
+
+  <!-- Application shell (shown after sign-in) -->
+  <div id="app-shell" class="app-shell hidden">
+    <header class="topbar">
+      <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation">&#9776;</button>
+      <div class="topbar-title">
+        <span id="page-title">Overview</span>
+        <span class="env-badge">Development</span>
+      </div>
+      <div class="topbar-user">
+        <span id="current-user" class="muted"></span>
+        <button id="logout-btn" class="btn btn-ghost">Sign out</button>
+      </div>
+    </header>
+    <div class="shell-body">
+      <nav class="sidebar" id="sidebar" aria-label="Main navigation">
+        <div class="sidebar-brand"><span class="brand-mark">KG</span> KosherGuard</div>
+        <a href="#/overview" class="nav-link" data-route="overview"><span class="nav-icon">&#9635;</span>Overview</a>
+        <a href="#/policies" class="nav-link" data-route="policies"><span class="nav-icon">&#9881;</span>Policies</a>
+        <a href="#/categories" class="nav-link" data-route="categories"><span class="nav-icon">&#9783;</span>Categories</a>
+        <a href="#/domains" class="nav-link" data-route="domains"><span class="nav-icon">&#9737;</span>Domain Management</a>
+        <a href="#/applications" class="nav-link" data-route="applications"><span class="nav-icon">&#9638;</span>Applications</a>
+        <a href="#/devices" class="nav-link" data-route="devices"><span class="nav-icon">&#8982;</span>Devices</a>
+        <a href="#/activity" class="nav-link" data-route="activity"><span class="nav-icon">&#8987;</span>Activity Logs</a>
+        <a href="#/settings" class="nav-link" data-route="settings"><span class="nav-icon">&#9881;</span>Settings</a>
+        <div class="sidebar-note">No MDM connection<br>No enrolled devices</div>
+      </nav>
+      <main class="content" id="content" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <!-- Modal dialog host -->
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div class="modal" role="dialog" aria-modal="true" id="modal"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
