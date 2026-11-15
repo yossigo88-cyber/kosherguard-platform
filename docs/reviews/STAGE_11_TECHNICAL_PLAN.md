@@ -7,9 +7,11 @@ explicit approval before any Stage 11 implementation begins.**
 
 **Repository:** https://github.com/yossigo88-cyber/kosherguard-platform
 **Working branch:** `stage-9b-deployment-preparation`
-**Branch HEAD at inspection (this revision):** `f4f8492d7f7e22058da018b4cd66b55c769978ea`
-(verified 2026-11-15 through the GitHub API; every source file
-referenced below was re-read at that commit for this revision)
+**Branch HEAD under review (this revision):** `a1359e0b440e92e9255b90b51c3814204e2fd8ad`
+(verified 2026-11-15 through the GitHub API; the source files
+referenced below were re-read at `f4f8492d` and are unchanged at this
+revision, because every commit after `f4f8492d` touched only this
+document)
 **Main (unchanged):** `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`
 
 This plan follows the Stage 10 Technical Roadmap
@@ -37,6 +39,17 @@ blocklist but not A's identical blocklist" counted against the pair).
 The feasible-signature method is exact for the rule structure -
 equivalent and demonstrably stricter policies pass - and deliberately
 conservative only over category-database contents.
+
+Revision note (2026-11-15, fifth commit): final documentation
+corrections from independent review, applied here. (1) The revision
+metadata above now names the actual branch HEAD under review,
+`a1359e0b`; it previously still named `f4f8492d` from the earlier
+revision. (2) Section 6.2 now defines the IPv4-compatible IPv6
+rejection precisely (only `::/64` is reachable under the exact-/64
+rule, and it is rejected because it contains the entire deprecated
+IPv4-compatible block) and the planned test matrix covers the
+IPv4-compatible forms and boundary cases, not only IPv4-mapped. No
+comparator, schema, phase, or other architectural decision changed.
 
 Revision note (2026-11-15, third commit): independent review requested
 four corrections, all applied in this revision and summarized in
@@ -903,10 +916,47 @@ Rules (specified against Python's `ipaddress` module):
   and the administrator writes `2001:db8::/64`). Store `str(network)`
   - the canonical compressed lowercase form with the normalized
   network address. Rejected: malformed addresses, any prefix length
-  other than /64, zone IDs (`fe80::%eth0/64`), IPv4-mapped or
-  IPv4-compatible forms (so IPv4 space has exactly one representation
-  and cannot be duplicated through the IPv6 kind), and empty or
-  whitespace-padded input.
+  other than /64, zone IDs (`fe80::%eth0/64`), IPv4-mapped and
+  IPv4-compatible forms (defined exactly in the next bullet), and
+  empty or whitespace-padded input.
+- **IPv4-mapped and IPv4-compatible rejection, defined exactly.** Two
+  reserved spellings of IPv4 space may never become an `ipv6_prefix`
+  binding, so IPv4 space has exactly one representation (`ipv4`) and
+  cannot be duplicated through the IPv6 kind:
+  - *IPv4-mapped* (RFC 4291 section 2.5.5.2): 80 zero bits, then
+    `ffff`, then a 32-bit IPv4 address, in mixed (`::ffff:192.0.2.1`)
+    or hex (`::ffff:c000:201`) spelling. In Python this is any address
+    whose `IPv6Address.ipv4_mapped` is not `None`. Under the exact-/64
+    requirement no mapped input can reach storage anyway: the `ffff`
+    marker sits at bits 80-95, inside the host portion of a /64, so
+    `IPv6Network(value, strict=True)` already rejects every mapped
+    spelling as host-bits-set. The canonicalizer still checks
+    `ipv4_mapped` explicitly, so the rule does not depend on that
+    parser subtlety and the API error names the real reason.
+  - *IPv4-compatible* (the deprecated RFC 4291 section 2.5.5.1 form):
+    96 zero bits, then a 32-bit IPv4 address (`::192.0.2.1`, hex
+    `::c000:201`). Python's `ipaddress` parses these as ordinary IPv6
+    addresses and has no `ipv4_compatible` property, so the check is
+    arithmetic: a parsed candidate is rejected when its address has
+    the top 96 bits all zero (`int(address) < 2**32`). Because a
+    strictly parsed /64 network address already has zero host bits,
+    this rejects exactly one network, `::/64` - but that network
+    contains the unspecified address `::`, the loopback `::1`, and the
+    entire deprecated IPv4-compatible block `::/96`, so rejecting it
+    closes the whole class. Individual compatible spellings with a
+    nonzero low 32 bits (`::192.0.2.1/64`) also fail strict /64
+    parsing as host-bits-set; either check rejecting is correct, and
+    the API error names the field.
+  - Boundary cases, pinned by the planned tests below: `::/64` is
+    rejected in every spelling (`0:0:0:0:0:0:0:0/64`, mixed
+    `::0.0.0.0/64`); `::1/64` and `::ffff:0.0.0.0/64` are rejected;
+    the NAT64 well-known prefix `64:ff9b::/64` is NOT IPv4-compatible
+    (its top 96 bits are nonzero) and stays acceptable as an ordinary
+    /64; a mixed dotted-quad spelling of a non-reserved address
+    (`2001:db8::0.0.0.0/64`) is not special-cased - it parses
+    unambiguously and stores as canonical `2001:db8::/64`. None of
+    this weakens canonicalization or the exact-/64 rule: every stored
+    value is still `str()` of a strictly parsed /64 network.
 - **Duplicate detection operates on canonical values only.** Only
   canonical strings are ever stored, so the partial unique index
   `uq_live_association (kind, value) WHERE retired_at IS NULL` IS the
@@ -925,7 +975,15 @@ Planned tests (section 10): equivalent IPv6 spellings
 second spelling of the same network is rejected as a duplicate;
 host-bits-set prefix (`2001:db8::1/64`) rejected; `/48`, `/128`, and
 `/32` on the IPv6 kind rejected; malformed input (`2001:::0/64`)
-rejected; zone ID rejected; IPv4-mapped rejected; IPv4 normalization
+rejected; zone ID rejected; IPv4-mapped rejected in both spellings
+(mixed `::ffff:192.0.2.1/64`, hex `::ffff:c000:201/64`);
+IPv4-compatible rejected: `::/64` in every spelling (`::/64`,
+`0:0:0:0:0:0:0:0/64`, `::0.0.0.0/64`) is rejected even though
+`IPv6Network('::/64', strict=True)` parses it cleanly, and
+`::1/64`, `::192.0.2.1/64`, and hex `::c000:201/64` are rejected;
+boundary cases pinned: NAT64 `64:ff9b::/64` accepted as an ordinary
+/64, and `2001:db8::0.0.0.0/64` stores as canonical `2001:db8::/64`;
+IPv4 normalization
 (`192.168.1.50` stored unchanged; leading-zero `192.168.001.50`
 rejected, not corrected); duplicate normalized IPv4 rejected; exported
 `devices.json` contains only canonical keys; engine lookup matches a
@@ -1197,7 +1255,7 @@ Target files: `dashboard/tests/test_devices.py`,
 | Credential precedence (forward) | Once token identity exists: a query with a valid token gets the credential's policy even from an address bound to another device; a bad/absent token falls through to binding, then default |
 | Privacy | Decision log contains no client IP after all engine changes; status file carries device IDs and timestamps only |
 | Identity-class enforcement (correction 1) | API attempt to create an `ipv4`/`ipv6_prefix` association as `credential` -> 400 with a field-named error; direct-SQL INSERT and UPDATE with a mismatched (kind, identity_class) pair -> SQLite CHECK violation, the transaction aborts, no row is written; a table-rebuild migration test proves existing rows survive a future kind addition and invalid pairs stay rejected |
-| Address canonicalization (correction 2) | The full 6.2 matrix: equivalent IPv6 spellings collapse to one canonical stored value and publish key; a second spelling of the same network 409s as a duplicate; host-bits-set, wrong-length (/48, /128, /32), malformed, zone-ID, and IPv4-mapped IPv6 rejected; leading-zero and prefixed IPv4 rejected; exported `devices.json` keys all canonical; engine lookup matches a source inside a canonical /64 |
+| Address canonicalization (correction 2) | The full 6.2 matrix: equivalent IPv6 spellings collapse to one canonical stored value and publish key; a second spelling of the same network 409s as a duplicate; host-bits-set, wrong-length (/48, /128, /32), malformed, zone-ID, IPv4-mapped (mixed and hex spellings), and IPv4-compatible IPv6 rejected (`::/64` in all spellings despite parsing cleanly under strict /64, `::1/64`, `::192.0.2.1/64`, `::c000:201/64`); boundary cases pinned (NAT64 `64:ff9b::/64` accepted; mixed-spelling non-reserved address canonicalized); leading-zero and prefixed IPv4 rejected; exported `devices.json` keys all canonical; engine lookup matches a source inside a canonical /64 |
 | Tighten-only rule (correction 3) | The full 4.5 matrix: equivalent candidates accepted (including block-all vs block-all), strict-superset blocking accepted, correlated shared lists never falsely rejected; less-restrictive, incomparable, invalid, and cap-exceeded candidates rejected at assignment, at default-policy selection change, and at publish; feasible-signature cases (candidate allowlists a baseline-blocked domain, drops a baseline blocklist entry, or allowlists a subdomain of one - all rejected); category-precedence cases (category allow vs block, an allowlist entry overriding a category block, default allow vs default block); a violating publish writes no generation and keeps the previous one current |
 | Assigned / published / enforced (correction 4) | Saved-but-unpublished assignment is badged unpublished; publish success with no engine -> enforcement reported unavailable (never active); matching engine status -> enforced; engine status on an older revision -> stale; missing status file -> not connected; `last_error` after a publish -> rejection surfaced; no UI or API state ever renders a saved assignment as enforced |
 
