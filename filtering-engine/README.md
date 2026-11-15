@@ -44,6 +44,8 @@ filtering-engine/
     test_dns_service.py      real UDP tests: responses, upstream failure, malformed, logs
     test_concurrency.py      worker pool: slow upstream, saturation, shutdown
     test_category_db_and_import.py  dataset, multi-category, import process
+    test_address_canonicalization.py  Stage 11A binding canonicalization (plan 6.2)
+    test_policy_comparison.py  Stage 11A tighten-only comparator (plan 4.5)
 ```
 
 ## Architecture
@@ -454,8 +456,9 @@ domain records in one import file; import atomicity (a malformed
 record leaves the database unchanged); and concurrency tests
 synchronized on real events and conditions instead of fixed sleeps.
 
-Latest local run: **129 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **209 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 Stage 10 added 10 reload tests: successful reload changing real UDP and TCP answers, rejection of invalid/missing/corrupted configurations with the last valid one kept, in-flight query safety across 40 real reloads, status-file accuracy, and real-subprocess SIGHUP and --watch reloads.
+Stage 11A added two policy-logic modules alongside the engine (re-exported to the dashboard through `engine_bridge.py`, keeping validation single-sourced; the DNS service itself is unchanged): `address_canonicalization.py` - the shared canonical form for device-registry network bindings (strict IPv4 and IPv6 /64 group prefixes, with IPv4-mapped and deprecated IPv4-compatible forms rejected) - and `policy_comparison.py` - the mandatory tighten-only comparator, which proves by the feasible-signature method that a candidate policy is at least as restrictive as the default policy, and fails closed (rejects) on invalid input, uncomputable comparisons, or exceeded caps. 63 tests cover the full plan matrices.
 
 ## Security notes
 
