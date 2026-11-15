@@ -54,6 +54,26 @@ closed to unblock their workers. Threads still alive at the deadline are
 logged by name, kept referenced, and returned - an incomplete shutdown
 is never reported as clean.
 
+Configuration hot reload (Stage 10): the running service NEVER modifies
+its PolicyEngine or CategoryDB in place. A reload (SIGHUP, or the
+optional --watch poll) builds a complete replacement engine from the
+configuration files - validating the policy with validate_policy(),
+building a fresh CategoryDB, and verifying the generation manifest's
+content hashes when one exists - and only then swaps one immutable
+reference. Every DNS query reads that reference exactly once at the
+start of its handling, so each query evaluates against ONE complete
+engine instance; in-flight queries simply finish against the previous
+engine object. An invalid, incomplete, missing, or corrupted new
+configuration is rejected loudly: the service keeps answering with the
+last valid configuration, the rejection is logged, the failed
+configuration is never reported as active, and the service stays
+healthy. The SIGHUP handler itself only sets a flag; all file I/O and
+validation happen in the service's normal execution flow. When
+--status-file is given, the service atomically writes its active
+configuration identity (paths, hashes, generation, reload count, last
+error) after every load attempt, so the dashboard can show what the
+engine is actually enforcing.
+
 Scope, stated plainly: DNS filtering controls access to *domains*. It
 cannot block individual URLs, pages, or paths, and it cannot see or filter
 the contents of encrypted HTTPS traffic. See README.md.
@@ -64,19 +84,23 @@ the decision log. Logs contain the requested domain, the decision, and why.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import queue
 import socket
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from dnslib import AAAA, A, QTYPE, RCODE, DNSHeader, DNSRecord, RR
 
-from policy_engine import PolicyEngine, normalize_domain
+from category_db import CategoryDB, CategoryDBError
+from policy_engine import PolicyConfigError, PolicyEngine, normalize_domain
 
 log = logging.getLogger("kosherguard.dns")
 
@@ -104,6 +128,84 @@ class DecisionLogger:
         with self._lock:
             self._stream.write(line + "\n")
             self._stream.flush()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_validated_engine(policy_path, categories_path):
+    """Build a COMPLETE replacement engine from configuration files.
+
+    Both files are read, parsed, validated with the engine's own
+    validators, and - when a generation manifest.json sits next to the
+    policy file (the dashboard's Stage 10 publication layout) - their
+    content hashes are verified against it, so a corrupted or
+    mixed-generation file set is rejected rather than loaded. Returns
+    (engine, info); raises OSError, PolicyConfigError, CategoryDBError,
+    or ValueError on any problem. Nothing is mutated anywhere: the
+    caller decides whether to activate the result.
+    """
+    policy_path = str(policy_path)
+    categories_path = str(categories_path)
+    policy_bytes = Path(policy_path).read_bytes()
+    categories_bytes = Path(categories_path).read_bytes()
+    info = {
+        "policy_path": policy_path,
+        "categories_path": categories_path,
+        "policy_sha256": _sha256(policy_bytes),
+        "categories_sha256": _sha256(categories_bytes),
+    }
+    manifest_path = Path(policy_path).parent / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PolicyConfigError(
+                f"unreadable generation manifest {manifest_path}: {exc}")
+        expected_policy = manifest.get("policy_sha256")
+        expected_categories = manifest.get("categories_sha256")
+        if expected_policy and expected_policy != info["policy_sha256"]:
+            raise PolicyConfigError(
+                f"{policy_path} does not match its generation manifest "
+                "(corrupted or mixed-generation file); refusing to load")
+        if expected_categories and expected_categories != info["categories_sha256"]:
+            raise PolicyConfigError(
+                f"{categories_path} does not match its generation manifest "
+                "(corrupted or mixed-generation file); refusing to load")
+        info["generation"] = manifest.get("generation")
+        info["manifest_revision"] = manifest.get("revision")
+    try:
+        policy = json.loads(policy_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PolicyConfigError(f"{policy_path}: invalid JSON: {exc}")
+    try:
+        categories_raw = json.loads(categories_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CategoryDBError(f"{categories_path}: invalid JSON: {exc}")
+    if not isinstance(categories_raw, dict) or not isinstance(categories_raw.get("domains"), dict):
+        raise CategoryDBError(
+            f"{categories_path}: expected an object with a 'domains' object")
+    engine = PolicyEngine(
+        policy, CategoryDB(categories_raw["domains"], meta=categories_raw.get("_meta", {})))
+    return engine, info
+
+
+def config_identity(policy_path, categories_path):
+    """A cheap fingerprint of the configuration file set, used by the
+    --watch poll to notice a new publication: resolved paths (the
+    dashboard's 'current' symlink makes a new generation resolve to a
+    new path) plus size and mtime of both files. None when either file
+    is unreadable."""
+    try:
+        resolved_policy = os.path.realpath(policy_path)
+        resolved_categories = os.path.realpath(categories_path)
+        ps = os.stat(resolved_policy)
+        cs = os.stat(resolved_categories)
+        return (resolved_policy, resolved_categories,
+                ps.st_size, ps.st_mtime_ns, cs.st_size, cs.st_mtime_ns)
+    except OSError:
+        return None
 
 
 @dataclass
@@ -169,6 +271,14 @@ class DNSFilteringService:
             if not isinstance(value, (int, float)) or value <= 0:
                 raise ValueError(f"{name} must be a positive number, got {value!r}")
         self.decisions = decision_logger
+        # Stage 10 hot reload: self.engine is one immutable reference,
+        # replaced wholesale by reload_from_paths and never mutated.
+        # handle_packet reads it exactly once per query, so every query
+        # sees one complete engine instance.
+        self.active_config: Optional[dict] = None
+        self.reload_count = 0
+        self.last_reload_error: Optional[dict] = None
+        self._status_path: Optional[str] = None
         self._sock: Optional[socket.socket] = None
         self._tcp_sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
@@ -207,8 +317,11 @@ class DNSFilteringService:
             "domain": qname,
             "qtype": qtype_name,
         }
+        # Read the engine reference ONCE: even if a reload swaps it
+        # mid-query, this query completes against one complete engine.
+        engine = self.engine
         try:
-            decision = self.engine.decide(qname)
+            decision = engine.decide(qname)
         except ValueError:
             reply = query.reply()
             reply.header.rcode = RCODE.REFUSED
@@ -379,6 +492,84 @@ class DNSFilteringService:
             except Exception:
                 log.exception("failed to write decision log")
         log.info("%s", json.dumps(record, sort_keys=True))
+
+    # -- hot reload (Stage 10) ----------------------------------------------
+
+    def reload_from_paths(self, policy_path, categories_path,
+                          trigger: str = "manual") -> bool:
+        """Build and activate a replacement engine, fail-safe.
+
+        The replacement is fully loaded and validated BEFORE anything
+        changes; the swap is a single reference assignment. On ANY
+        failure the previous engine keeps serving, the rejection is
+        logged loudly, the failed configuration is never reported as
+        active, and the method returns False. In-flight queries are
+        never interrupted: they already hold their own reference to the
+        previous engine object, which is never mutated.
+        """
+        try:
+            engine, info = load_validated_engine(policy_path, categories_path)
+        except Exception as exc:
+            self.last_reload_error = {
+                "error": str(exc),
+                "trigger": trigger,
+                "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            log.error(
+                "configuration reload REJECTED (%s): %s - keeping the previous "
+                "valid configuration (policy=%s, categories=%s)",
+                trigger, exc, policy_path, categories_path)
+            self._write_status(trigger)
+            return False
+        self.engine = engine  # the one atomic step
+        self.active_config = info
+        self.reload_count += 1
+        self.last_reload_error = None
+        log.info(
+            "configuration reload accepted (%s): generation=%s revision=%s "
+            "policy_sha256=%s categories_sha256=%s",
+            trigger, info.get("generation"), info.get("manifest_revision"),
+            info["policy_sha256"][:12], info["categories_sha256"][:12])
+        self._write_status(trigger)
+        return True
+
+    def set_status_path(self, path) -> None:
+        self._status_path = str(path)
+
+    def _write_status(self, trigger: str) -> None:
+        """Atomically record what the engine is enforcing right now.
+
+        Written temp-file-plus-rename so a reader (the dashboard) never
+        sees a partial file. Contains the ACTIVE configuration identity
+        only; a rejected reload updates last_error but never the active
+        fields."""
+        if not self._status_path:
+            return
+        status = {
+            "pid": os.getpid(),
+            "state": "active",
+            "trigger": trigger,
+            "reload_count": self.reload_count,
+            "loaded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "last_error": self.last_reload_error,
+        }
+        if self.active_config:
+            status.update({
+                "policy_path": self.active_config["policy_path"],
+                "categories_path": self.active_config["categories_path"],
+                "policy_sha256": self.active_config["policy_sha256"],
+                "categories_sha256": self.active_config["categories_sha256"],
+                "generation": self.active_config.get("generation"),
+                "revision": self.active_config.get("manifest_revision"),
+            })
+        path = Path(self._status_path)
+        try:
+            tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8")
+            os.replace(str(tmp), str(path))
+        except OSError:
+            log.exception("could not write engine status file %s", path)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -738,8 +929,6 @@ class DNSFilteringService:
 def main(argv: Optional[list] = None) -> int:
     import argparse
 
-    from category_db import CategoryDB
-
     parser = argparse.ArgumentParser(description="KosherGuard DNS filtering service")
     parser.add_argument("--policy", required=True, help="policy JSON file")
     parser.add_argument("--categories", required=True, help="category database JSON file")
@@ -767,12 +956,20 @@ def main(argv: Optional[list] = None) -> int:
                         help="safety cap on UDP response size to clients "
                              "(default: 4096)")
     parser.add_argument("--log", help="decision log file (JSON lines); default: stderr")
+    parser.add_argument("--watch", type=float, default=0.0, metavar="SECONDS",
+                        help="poll the configuration files every SECONDS and "
+                             "reload when they change (0 = disabled; SIGHUP "
+                             "always triggers a reload)")
+    parser.add_argument("--status-file",
+                        help="atomically write the active configuration identity "
+                             "here after every load attempt (JSON)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    policy = json.loads(open(args.policy, encoding="utf-8").read())
-    engine = PolicyEngine(policy, CategoryDB.load(args.categories))
+    # Startup load is validation-first too: an invalid or corrupted
+    # initial configuration stops the service instead of mis-filtering.
+    engine, info = load_validated_engine(args.policy, args.categories)
 
     host, _, port = args.listen.partition(":")
     upstreams = None
@@ -795,12 +992,50 @@ def main(argv: Optional[list] = None) -> int:
     import sys
     stream = open(args.log, "a", encoding="utf-8") if args.log else sys.stderr
     service = DNSFilteringService(engine, config, DecisionLogger(stream))
+    service.active_config = info
+    if args.status_file:
+        service.set_status_path(args.status_file)
     service.start()
+    service._write_status("startup")
     print(f"Listening on {config.listen_host}:{config.listen_port} "
           f"(UDP+TCP) - Ctrl+C to stop")
+
+    # SIGHUP only sets a flag: signal handlers must never do file I/O or
+    # validation. The loop below performs the reload in the service's
+    # normal execution flow. The --watch poll additionally notices a new
+    # published generation on its own (the dashboard cannot signal this
+    # process across service boundaries).
+    import signal
+
+    reload_requested = threading.Event()
+
+    def _on_sighup(_signum, _frame):
+        reload_requested.set()
+
+    signal.signal(signal.SIGHUP, _on_sighup)
+
+    active_identity = config_identity(args.policy, args.categories)
+    rejected_identity = None  # do not retry the same rejected file set
+    watch = args.watch if args.watch > 0 else None
     try:
         while True:
-            time.sleep(3600)
+            reload_requested.wait(timeout=watch or 3600)
+            if reload_requested.is_set():
+                reload_requested.clear()
+                if service.reload_from_paths(args.policy, args.categories,
+                                             trigger="sighup"):
+                    active_identity = config_identity(args.policy, args.categories)
+                    rejected_identity = None
+            elif watch:
+                identity = config_identity(args.policy, args.categories)
+                if (identity is not None and identity != active_identity
+                        and identity != rejected_identity):
+                    if service.reload_from_paths(args.policy, args.categories,
+                                                 trigger="watch"):
+                        active_identity = identity
+                        rejected_identity = None
+                    else:
+                        rejected_identity = identity
     except KeyboardInterrupt:
         service.stop()
     return 0
