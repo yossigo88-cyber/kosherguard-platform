@@ -1,4 +1,4 @@
-# KosherGuard Admin Dashboard (Stage 7)
+# KosherGuard Admin Dashboard (Stage 7, hardened in Stage 9A)
 
 A development-stage admin interface for managing KosherGuard filtering
 policies, categories, and domain records. It is a real, working
@@ -28,7 +28,7 @@ dashboard/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 91 pytest tests against a real running server
+  tests/              - 106 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -85,23 +85,70 @@ always visible.
   random salt) and compared with `secrets.compare_digest` equivalent
   (`hmac.compare_digest`). No secret appears in source, responses, or
   static files.
+- Passwords must be at least 12 characters (first-admin seeding and
+  password changes). Existing shorter passwords keep working; update
+  one via Settings - the minimum applies only when a password is set.
 - Sessions are 256-bit random tokens stored server-side with a 12-hour
-  expiry, delivered in an `HttpOnly; SameSite=Strict` cookie.
-- Every `/api/*` endpoint except `/api/login` requires a valid session.
+  expiry, delivered in an `HttpOnly; SameSite=Strict` cookie. With
+  `KG_SECURE_COOKIES=1` (required for HTTPS production) the cookie also
+  gets the `Secure` attribute, on both creation and clearing.
+- Every `/api/*` endpoint except `/api/login` and `/api/health`
+  requires a valid session.
 - Every state-changing request requires the `X-KosherGuard-Request`
   header; with the SameSite=Strict cookie this defeats CSRF.
 - Failed logins are limited: 5 failures for a username+address lock
-  further attempts for 60 seconds.
+  further attempts for 60 seconds. Behind a reverse proxy the real
+  client address is taken from `X-Forwarded-For` only when the
+  immediate peer is listed in `KG_TRUSTED_PROXIES` (see below), so a
+  forged header cannot steer or bypass the limiter, and one attacker's
+  lockout never applies to other clients.
+- Failed login attempts are recorded in the audit log
+  (`auth.login_failed`) with the attempted username (truncated to 64
+  characters) and a generic detail; passwords and tokens are never
+  recorded, and an audit failure never changes the login response.
 - Request bodies are capped at 1 MB (checked from Content-Length before
   reading). All errors are JSON `{"error": ...}`; internals are never
   returned.
+- Concurrent request handling is bounded (`KG_MAX_CONNECTIONS`, default
+  32; excess connections are refused, not queued) and every connection
+  has a read timeout (`KG_REQUEST_TIMEOUT`, default 30 seconds), so
+  slow or incomplete clients cannot hold handler threads forever.
 - Static files are served only from `static/`; path traversal is
   rejected, and the HTML carries a restrictive Content-Security-Policy
   (`default-src 'self'`), `X-Frame-Options: DENY`, and
   `X-Content-Type-Options: nosniff`.
 - Every administrative mutation writes an audit record (admin, action,
   detail, UTC time), visible under Activity Logs.
+- Expired sessions are rejected on use (and deleted then); remaining
+  expired rows are removed at server startup. There is deliberately no
+  background cleanup thread, so shutdown stays simple and clean.
 - The DNS filtering service is not exposed by this server at all.
+
+### Configuration (environment variables)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `KG_ADMIN_PASSWORD` | (required on first run) | Seeds the first administrator. |
+| `KG_ADMIN_USERNAME` | `admin` | First administrator's username. |
+| `KG_SECURE_COOKIES` | off | `1` adds the `Secure` attribute to session cookies. Set this ONLY when the dashboard is served over HTTPS (browsers drop Secure cookies over plain HTTP). Any value other than `1/0/true/false/yes/no` refuses startup - a typo can never silently weaken a production deployment. |
+| `KG_TRUSTED_PROXIES` | (empty) | Comma-separated IP addresses of trusted reverse proxies. Only requests arriving from these peers may supply the client address via `X-Forwarded-For`; the last entry of the header is used and must parse as an IP address, otherwise the socket peer is used. With no trusted proxies the header is always ignored. |
+| `KG_MAX_CONNECTIONS` | `32` | Maximum concurrent requests; extra connections are refused. |
+| `KG_REQUEST_TIMEOUT` | `30` | Seconds a connection may take to send a request (also bounds idle keep-alive). |
+
+Required proxy configuration: the proxy must terminate TLS, forward to
+the dashboard bound on `127.0.0.1`, and set/append `X-Forwarded-For`
+(Caddy's `reverse_proxy 127.0.0.1:8080` does this by default). Then set
+`KG_TRUSTED_PROXIES` to the proxy's address (usually `127.0.0.1`) and
+`KG_SECURE_COOKIES=1`.
+
+### Health endpoint
+
+`GET /api/health` is public and deliberately minimal: `200`
+`{"status": "ok"}` when the process responds and the database answers a
+real query, `503 {"status": "unavailable"}` otherwise. It reveals no
+usernames, paths, configuration, or error details. It is public so an
+unauthenticated uptime check can use it; it exposes nothing beyond
+up/down.
 
 ## Running (development)
 
@@ -122,31 +169,46 @@ URL database).
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-91 tests run the real server on an ephemeral localhost port with a
+106 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
 authentication and lockout, persistence across restarts, audit logging,
-and security behavior (CSRF, body limits, traversal, injection strings,
-header checks). No sleeps are used for synchronization; the server
+security behavior (CSRF, body limits, traversal, injection strings,
+header checks), and the Stage 9A hardening (secure-cookie modes and
+strict configuration parsing, proxy-aware login limiting including
+spoofed and malformed forwarding headers, the 12-character password
+minimum, failed-login auditing without secrets, expired-session
+rejection and cleanup, health endpoint, and connection bounds with
+header timeouts). No sleeps are used for synchronization; the server
 socket is bound before the test client connects.
 
 ## Deployment (future, not done)
 
 Nothing here is deployed. When the project is ready, a free deployment
-path is any always-free tier that runs Python (for example a free VM or
-container tier) behind its TLS termination; the app needs only
-`python3` and write access to its database file. Before any real
-deployment: put the server behind HTTPS (and add the `Secure` flag to
-the session cookie), set a strong `KG_ADMIN_PASSWORD`, and keep the
-bind address private until TLS exists.
+path is an always-free VM tier (for example Oracle Cloud Always Free)
+behind a TLS-terminating reverse proxy such as Caddy; the app needs
+only `python3` and write access to its database file. Before any real
+deployment: put the server behind HTTPS with `KG_SECURE_COOKIES=1`, set
+`KG_TRUSTED_PROXIES` to the proxy address, set a strong
+`KG_ADMIN_PASSWORD` (12+ characters), and keep the bind address on
+`127.0.0.1` behind the proxy.
+
+Stage 9A hardened the application, but it does NOT make the dashboard
+production-ready on its own. Still missing before public deployment:
+TLS termination at a hardened reverse proxy (the standard-library
+server must not face the internet directly even with the new limits),
+automated database backups with a tested restore, process supervision
+and log management, and a deployment runbook. The connection bounds
+above reduce abuse impact; they do not replace a proxy.
 
 ## Known limitations
 
 - Single-admin model (the schema supports more, but there is no user
-  management interface yet).
+  management interface yet), with no self-service password recovery: a
+  lost password means editing the database directly.
+- No automated backup or restore mechanism yet; the SQLite file is a
+  single point of failure until Stage 9B adds one.
 - No device synchronization of any kind (requires Apple MDM
   authorization, which does not exist).
 - The interface is English-only, desktop and mobile responsive.
-- Session storage is the same SQLite file; a very busy deployment would
-  want periodic cleanup of expired sessions.
