@@ -6,3 +6,5 @@ dashboard/data/
 *.db
 *.db-wal
 *.db-shm
+# Stage 10 local publication output (engine configuration generations)
+/data/
