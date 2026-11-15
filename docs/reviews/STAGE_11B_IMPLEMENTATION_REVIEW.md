@@ -232,12 +232,45 @@ commit (and repeated on the fresh clone in section 10):
   inline-style CSP issue described in section 6; both were fixed and
   re-verified before this report.
 
+### Workflow coverage against the real local backend
+
+The pixel verification and the workflow run below drove the real
+dashboard server (`dashboard/src/server.py` + `store.py`, local
+SQLite, synthetic fixtures only, no external access, no real-device
+records):
+
+- Every rendered page (devices list, device detail, register modal,
+  and the unrelated overview, policies, and publication pages) was
+  served by the real backend with real authentication and real API
+  responses - the screenshots are of the real UI over the real Stage
+  11A server, not mocks.
+- Through the actual UI (headless Chrome): a registry entry was
+  created via the Register Device modal (on the first attempt the
+  server's duplicate-name 409 verdict was shown verbatim in the form;
+  a unique name then succeeded), a policy was assigned through the
+  assignment picker, a second binding was added on the detail page,
+  and a state change (active -> inactive) was made through the state
+  controls with the confirmation dialog. Each result was verified to
+  persist through the API (`GET /api/devices/7`: state `inactive`,
+  assignment to policy 2, both bindings live) and through the audit
+  feed (`device.create`, `device.binding.add` x2,
+  `device.policy.assign`, `device.state`).
+- The Node UI suite (22 tests) drives the real `app.js` with a
+  shimmed DOM/fetch (no server), and the pytest frontend checks are
+  static contract checks. Those layers are logic checks, not
+  end-to-end coverage; only the paragraphs above are end-to-end.
+- No backend file was changed for any of this.
+
 ## 10. Fresh-clone verification
 
-Completed after every commit above landed. A fresh single-branch clone
-of the final branch was verified `diff -r`-identical to the tested
-implementation tree (only `.pytest_cache` artifact directories
-differed). All suites were re-run on the clone:
+A fresh single-branch clone of the branch at
+`fbe2c01ebd7502ac333ba05d15c79a9dde42f5ae` (the HEAD that included the
+first version of this report) was verified `diff -r`-identical to the
+tested implementation tree (only `.pytest_cache` artifact directories
+differed), and all suites below were re-run on that clone. The commits
+after `fbe2c01e` touch ONLY this report file (verification wording and
+this coverage record); every code, test, and documentation file at the
+final branch HEAD is byte-identical to the verified clone.
 
 - Dashboard pytest: 98 passed + 178 passed = **276 passed** across two
   invocations (split only to fit execution time limits).
@@ -245,15 +278,16 @@ differed). All suites were re-run on the clone:
 - `python3 -m py_compile dashboard/src/server.py
   dashboard/src/store.py` and `node --check
   dashboard/static/app.js`: clean.
-- Engine suite, first run on the clone: **208 passed, 1 error**
-  (57.51s): setup of `tests/test_reload.py::
+- Engine suite, first run on the clone (`cd filtering-engine &&
+  python3 -m pytest tests -q`): **208 passed, 1 error** (57.51s):
+  setup of `tests/test_reload.py::
   test_failed_reload_does_not_stop_service` raised `OSError: [Errno
   98] Address already in use` on a TCP socket bind - the same
   intermittent socket-bind failure class seen in the working-tree first
-  attempt (section 9). Isolated rerun of `tests/test_reload.py`: **27
-  passed**. Across runs, all 209 engine tests pass. No engine file was
-  changed in Stage 11B; this is environmental, recorded, and not
-  hidden.
+  attempt (section 9). Isolated rerun (`cd filtering-engine &&
+  python3 -m pytest tests/test_reload.py -q`): **27 passed**. Across
+  runs, all 209 engine tests pass. No engine file was changed in Stage
+  11B; this is environmental, recorded, and not hidden.
 
 ## 11. Stage 11A backend files not modified
 
