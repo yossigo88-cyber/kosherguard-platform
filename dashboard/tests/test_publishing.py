@@ -489,3 +489,33 @@ def test_publisher_rejects_symlink_manifest(client, server, pub_root):
     assert (gen_dir / "manifest.json").is_file()  # follows the link
     with pytest.raises(publishing.PublicationError):
         server.store.publisher.verify_generation(gen_dir)
+
+
+def test_publisher_rejects_missing_manifest(client, server, pub_root):
+    """A generation the publisher itself wrote MUST have a manifest:
+    after manifest.json is deleted, verify_generation() fails."""
+    policy = make_policy(client)
+    select_and_publish(client, policy["id"])
+    gen_dir = pub_root / "generations" / "1"
+    os.unlink(gen_dir / "manifest.json")
+    with pytest.raises(publishing.PublicationError):
+        server.store.publisher.verify_generation(gen_dir)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="POSIX O_NOFOLLOW")
+def test_publisher_manifest_descriptor_unaffected_by_pathname_swap(
+        client, server, pub_root):
+    """The publisher's safe open returns a descriptor that pins the
+    opened file: swapping the pathname afterwards cannot change which
+    file is read, so there is no check-then-read window."""
+    policy = make_policy(client)
+    select_and_publish(client, policy["id"])
+    gen_dir = pub_root / "generations" / "1"
+    original = json.loads((gen_dir / "manifest.json").read_text(encoding="utf-8"))
+    fd = publishing._safe_open_manifest_nofollow(gen_dir / "manifest.json")
+    replacement = gen_dir / "replacement.json"
+    replacement.write_text(json.dumps({"revision": 999}), encoding="utf-8")
+    os.replace(replacement, gen_dir / "manifest.json")
+    with os.fdopen(fd, "rb") as fh:
+        data = json.loads(fh.read().decode("utf-8"))
+    assert data["revision"] == original["revision"]
