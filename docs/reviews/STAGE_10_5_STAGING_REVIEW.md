@@ -28,8 +28,19 @@ deployment above is the delivered and fully verified staging
 environment; the Render instance is an earlier duplicate whose
 admin password is a Render-generated value in its Environment tab
 and whose SQLite data resets on every redeploy or free-tier
-spin-down. Suspending or deleting it is pending the owner's decision
-(see Confirmations); no cleanup of it has been performed.
+spin-down.
+
+Render suspension (updated 2026-11-15 ~19:17 UTC): with the owner's
+explicit approval (2026-11-15 14:16 EST: "suspend the duplicate
+Render service, but do NOT delete it"), the service was SUSPENDED
+(not deleted) via Render dashboard -> Settings -> Suspend Web
+Service. Verified: Render dashboard shows "Status: Suspended", and
+https://kosherguard-staging-dashboard.onrender.com now answers 503
+"Service Suspended". A suspended service runs no deploys, serves no
+traffic, and is not billed; it can be resumed from the same Settings
+page. The Oracle staging dashboard (the primary, delivered
+environment) was verified healthy immediately after the suspension
+(GET /api/health = 200).
 
 ## Phase 1 - What was inspected (actual files, not assumptions)
 
@@ -116,13 +127,12 @@ spin-down. Suspending or deleting it is pending the owner's decision
   Oracle server - no webhook, polling job, CI workflow, or any other
   mechanism deploys new commits to it; updating is a manual,
   deliberate operation (git fetch/reset on the server by an
-  operator). NOTE: on Render, auto-deploy IS configured by the
-  blueprint (`autoDeploy: true`) and is ACTIVE - verified
-  2026-11-15 ~19:12 UTC when this review's commit e0be444
-  auto-deployed to
-  https://kosherguard-staging-dashboard.onrender.com. Until that
-  service is suspended, every commit to this branch (including the
-  commit recording this correction) redeploys the Render copy.
+  operator). NOTE: on Render, auto-deploy was configured by the
+  blueprint (`autoDeploy: true`) and was ACTIVE - verified
+  2026-11-15 ~19:12 UTC when commit e0be444 auto-deployed there.
+  The Render service was SUSPENDED at ~19:17 UTC (see Status above);
+  while suspended it runs no deploys, so branch commits no longer
+  redeploy it. Resuming it would re-enable that behavior.
 - Isolation: the staging VM runs the dashboard alone with
   synthetic/local data only. No DNS engine, no Apple MDM/APNs, no
   customer devices, no production data, no connection of any kind to
@@ -243,10 +253,11 @@ this deployment.
   `stage-9b-deployment-preparation`; the branch HEAD after this
   review commit is a docs-only descendant - no deployed-code change).
 - Render duplicate: service `srv-dbsv0smi0phs73e7qpb0`,
-  https://kosherguard-staging-dashboard.onrender.com, live; initial
-  Blueprint deploy of 02e8ecb (~17:48 UTC), auto-deploy of e0be444
-  verified ~19:12 UTC; this correction commit will likewise
-  auto-deploy there.
+  https://kosherguard-staging-dashboard.onrender.com - SUSPENDED
+  2026-11-15 ~19:17 UTC (not deleted; answers 503 "Service
+  Suspended"; resume possible from Render Settings). History:
+  initial Blueprint deploy of 02e8ecb (~17:48 UTC), auto-deploy of
+  e0be444 verified ~19:12 UTC.
 - main: `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a` (untouched).
 - This report: `docs/reviews/STAGE_10_5_STAGING_REVIEW.md`.
 
@@ -292,12 +303,11 @@ this deployment.
   branch `stage-9b-deployment-preparation`.
 - Automatic GitHub deployments: NOT configured on the delivered
   Oracle staging (manual updates only, as the owner requested).
-  The separately initiated Render blueprint service DOES auto-deploy
-  this branch (discovered and verified during this update) and
-  remains live pending the owner's suspend/delete decision. Owner
-  step to stop it: Render dashboard -> kosherguard-staging-dashboard
-  -> Settings -> Suspend Web Service (keeps configuration; stops
-  deploys and traffic) or Delete Service (removes it entirely).
+  The separately initiated Render blueprint service DID auto-deploy
+  this branch until it was SUSPENDED (not deleted) on the owner's
+  explicit approval at 2026-11-15 ~19:17 UTC; it now runs no
+  deploys and serves no traffic (503 "Service Suspended"). Oracle
+  is the primary staging dashboard.
 - This report was committed to the feature branch only.
 - main remains untouched at
   `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`; no merge, no production
