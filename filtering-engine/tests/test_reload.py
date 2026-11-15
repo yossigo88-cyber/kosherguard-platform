@@ -640,3 +640,24 @@ def test_manifest_descriptor_unaffected_by_pathname_swap(tmp_path):
     with os.fdopen(fd, "rb") as fh:
         data = json.loads(fh.read().decode("utf-8"))
     assert data["revision"] == manifest["revision"]
+
+
+def test_safe_open_fails_closed_without_nofollow(tmp_path, monkeypatch):
+    """Simulating a platform without O_NOFOLLOW (via monkeypatch only -
+    the real OS capability is untouched): the engine helper fails
+    closed UNCONDITIONALLY, whether the manifest path is absent or
+    present, and never consults os.path.lexists() (whose answer could
+    change before the caller continues)."""
+    monkeypatch.delattr(os, "O_NOFOLLOW")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("lexists must not be consulted")
+
+    monkeypatch.setattr(os.path, "lexists", boom)
+    gen = tmp_path / "1"
+    write_config(gen, POLICY_V1, CATEGORIES)
+    with pytest.raises(PolicyConfigError):  # manifest path ABSENT
+        dns_service._safe_open_manifest(gen / "manifest.json")
+    _write_manifest(gen)
+    with pytest.raises(PolicyConfigError):  # manifest path PRESENT
+        dns_service._safe_open_manifest(gen / "manifest.json")
