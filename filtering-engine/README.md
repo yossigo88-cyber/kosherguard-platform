@@ -413,10 +413,13 @@ shared deadline per complete TCP message (a fragmented frame within the
 deadline succeeds; prefix-fast-plus-body-fast but over-deadline total is
 disconnected; the shutdown budget covers exactly one message deadline),
 queued connections drained and closed at shutdown, the accept/shutdown
-race guard, UDP bind-failure cleanup, the max_udp_response 512-byte
-minimum, and oversized-OPT truncation that never exceeds the limit.
+race guard (including a worker that is parked inside the connection
+queue's get() when shutdown begins: a connection it then dequeues is
+closed, never served), UDP bind-failure cleanup, the max_udp_response
+512-byte minimum, and oversized-OPT truncation that never exceeds the
+limit.
 
-Latest local run: **98 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **99 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 
 ## Security notes
 
