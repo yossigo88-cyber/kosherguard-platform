@@ -839,12 +839,31 @@ def test_oversized_opt_dropped_to_fit_udp_limit():
 
 
 def test_worker_closes_connection_dequeued_after_shutdown_began(upstream):
-    """Race regression, fully synchronized: the TCP worker is provably
-    inside _tcp_conn_queue.get() (having passed its loop's shutdown
-    check) when shutdown sets _stopping; the get then returns a queued
-    connection. That connection was never genuinely served, so the
-    worker must close it without calling _serve_tcp_conn()."""
-    service = build_service(upstream.port, tcp_workers=1, tcp_queued=4)
+    """Race regression, fully synchronized: the TCP worker is gated
+    BEFORE service.start() so it cannot reach the original queue read
+    until the instrumentation is installed; it is then provably inside
+    _tcp_conn_queue.get() (having passed its loop's shutdown check) when
+    shutdown sets _stopping, and the get returns a queued connection.
+    That connection was never genuinely served, so the worker must close
+    it without calling _serve_tcp_conn()."""
+    # Constructed directly (not via build_service) so the worker gate is
+    # installed before any worker thread exists.
+    db = CategoryDB({"adult-site.example": ["adult"]})
+    engine = PolicyEngine({"default_policy": "allow", "allowlist": [],
+                           "blocklist": ["blocked.example"],
+                           "category_rules": {"allow": [], "block": ["adult"]}},
+                          db)
+    config = ServiceConfig(
+        listen_host="127.0.0.1",
+        listen_port=0,  # ephemeral
+        upstreams=[("127.0.0.1", upstream.port)],
+        upstream_timeout=2.0,
+        tcp_idle_timeout=2.0,
+        tcp_workers=1,
+        tcp_queued=4,
+    )
+    service = DNSFilteringService(engine, config, DecisionLogger(io.StringIO()))
+
     served = []
     real_serve = service._serve_tcp_conn
 
@@ -854,46 +873,64 @@ def test_worker_closes_connection_dequeued_after_shutdown_began(upstream):
 
     service._serve_tcp_conn = spy
 
-    # Instrument the queue's get(): the first call signals that the
-    # worker passed its loop's shutdown check and entered the queue
-    # read, then holds it there until the test has set _stopping and
-    # enqueued the connection. No sleeps stand in for synchronization;
-    # the wait timeouts are failure bounds, not timing assumptions.
+    # Gate installed before start(): each TCP worker signals when it
+    # reaches the gate and is held there, before entering the original
+    # _tcp_worker() loop, so no worker can call queue.get() until the
+    # test has installed the instrumented get.
+    reached_gate = threading.Event()
+    open_gate = threading.Event()
+    real_worker = service._tcp_worker
+
+    def gated_worker():
+        reached_gate.set()
+        assert open_gate.wait(5), "test never released the worker gate"
+        real_worker()
+
+    service._tcp_worker = gated_worker
+
     entered_get = threading.Event()
     release_get = threading.Event()
-    real_get = service._tcp_conn_queue.get
-
-    def instrumented_get(*args, **kwargs):
-        entered_get.set()
-        assert release_get.wait(5), "test never released the worker"
-        return real_get(*args, **kwargs)
-
-    service._tcp_conn_queue.get = instrumented_get
     try:
-        assert entered_get.wait(5), "worker never reached the queue read"
-        assert service._tcp_workers[0].is_alive()
-        # The worker is now held inside get(). Begin shutdown, then
-        # enqueue a tracked, never-served connection (socketpair: the
-        # server end plays the accepted connection).
-        server_end, client_end = socket.socketpair()
-        with service._conns_lock:
-            service._active_conns.add(server_end)
-        service._stopping.set()
-        service._tcp_conn_queue.put_nowait(server_end)
-        release_get.set()  # worker's get() now returns the connection
+        service.start()
         try:
-            # Closed without being served: wait until the worker has
-            # finished with it (it exits its loop right after).
-            assert service._tcp_workers[0].join(5) is None
-            assert not service._tcp_workers[0].is_alive()
-            assert served == []  # never served after shutdown began
-            client_end.settimeout(5)
-            assert client_end.recv(64) == b""  # closed by the worker
-            assert service._tcp_conn_queue.qsize() == 0
+            assert reached_gate.wait(5), "worker never started"
+            # The worker is held before its loop: instrument the queue
+            # read now, before any get() call can have happened.
+            real_get = service._tcp_conn_queue.get
+
+            def instrumented_get(*args, **kwargs):
+                entered_get.set()
+                assert release_get.wait(5), "test never released the read"
+                return real_get(*args, **kwargs)
+
+            service._tcp_conn_queue.get = instrumented_get
+            open_gate.set()
+            assert entered_get.wait(5), "worker never reached the queue read"
+            assert service._tcp_workers[0].is_alive()
+
+            # The worker is held inside get(). Begin shutdown, then
+            # enqueue a tracked, never-served connection (socketpair:
+            # the server end plays the accepted connection).
+            server_end, client_end = socket.socketpair()
+            with service._conns_lock:
+                service._active_conns.add(server_end)
+            service._stopping.set()
+            service._tcp_conn_queue.put_nowait(server_end)
+            release_get.set()  # worker's get() now returns the connection
+            try:
+                assert service._tcp_workers[0].join(5) is None
+                assert not service._tcp_workers[0].is_alive()
+                assert served == []  # never served after shutdown began
+                client_end.settimeout(5)
+                assert client_end.recv(64) == b""  # closed by the worker
+                assert service._tcp_conn_queue.qsize() == 0
+            finally:
+                client_end.close()
         finally:
-            client_end.close()
+            # Never strand the worker at either gate, even on failure.
+            open_gate.set()
+            release_get.set()
     finally:
-        release_get.set()  # never leave the worker stuck on failure
         survivors = service.stop()
     assert survivors == []  # clean shutdown, no surviving worker
 
