@@ -13,6 +13,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -247,9 +248,68 @@ def test_decision_log_fields_and_privacy(upstream):
 
 # -- multiple upstreams ----------------------------------------------------
 
-def test_first_upstream_dead_fails_over_to_second(upstream):
-    # Port 9 (discard) is closed: the first upstream attempt always
-    # times out; the next upstream must get the query and answer it.
+class SilentUpstream:
+    """A fake upstream that receives queries, proves they arrived by
+    signaling an event, and deliberately never answers - so the only
+    possible client outcome is a genuine timeout."""
+
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.received = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while True:
+            try:
+                self.sock.recvfrom(4096)
+            except OSError:
+                return  # socket closed by stop()
+            self.received.set()  # the query arrived; it is never answered
+
+    def stop(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+
+def test_first_upstream_timeout_fails_over_to_second(upstream):
+    """Real timeout, proven: the first upstream receives the query (its
+    event fires) and never answers, so the service's attempt on it runs
+    to the full upstream timeout; the service then fails over to the
+    second upstream and returns that upstream's answer."""
+    silent = SilentUpstream()
+    silent.start()
+    service = build_service([silent.port, upstream.port])  # timeout 1.0s
+    try:
+        started = time.monotonic()
+        reply = query("some-site.example", service.config.listen_port)
+        elapsed = time.monotonic() - started
+        # The first upstream got the query and never answered...
+        assert silent.received.wait(1)
+        # ...so the attempt genuinely timed out: an immediate error
+        # (e.g. connection refused) would have failed over in
+        # milliseconds, far under the 1s upstream timeout.
+        assert elapsed >= 1.0
+        assert reply.header.rcode == RCODE.NOERROR
+        assert any(str(r.rdata) == UPSTREAM_A for r in reply.rr)
+    finally:
+        service.stop()
+        silent.stop()
+
+
+def test_first_upstream_refused_fails_over_to_second(upstream):
+    # Port 9 (discard) is closed: the first upstream attempt gets an
+    # immediate connection-refused error (NOT a timeout); the next
+    # upstream must still get the query and answer it.
     service = build_service([9, upstream.port])
     try:
         reply = query("some-site.example", service.config.listen_port)
