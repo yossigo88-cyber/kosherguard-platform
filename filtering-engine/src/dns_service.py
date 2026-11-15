@@ -91,6 +91,7 @@ import os
 import queue
 import re
 import socket
+import stat
 import threading
 import time
 from dataclasses import dataclass, field
@@ -219,17 +220,25 @@ def load_validated_engine(policy_path, categories_path):
     }
     manifest_path = Path(policy_path).parent / "manifest.json"
     if os.path.lexists(manifest_path):
-        # lexists, not is_file: a manifest path that EXISTS as anything
-        # other than a regular readable file (a directory, a broken
-        # symlink, an unreadable entry) is a present-but-invalid
-        # manifest and must be rejected, never silently treated as "no
-        # manifest". Only a genuinely absent manifest path loads
-        # unverified (the legacy pre-publication layout).
-        if not manifest_path.is_file():
+        # lstat + S_ISREG, never Path.is_file(): is_file() FOLLOWS
+        # symlinks, so a symlink to a valid regular file would pass it.
+        # The manifest path itself must be a regular file: a symlink of
+        # any kind (even to a valid file), a directory, FIFO, socket,
+        # device, broken symlink, or any other non-regular entry is a
+        # present-but-invalid manifest and is rejected, never silently
+        # treated as "no manifest". Only a genuinely absent manifest
+        # path loads unverified (the legacy pre-publication layout).
+        try:
+            manifest_stat = os.lstat(manifest_path)
+        except OSError as exc:
+            raise PolicyConfigError(
+                f"generation manifest {manifest_path}: cannot inspect "
+                f"the entry: {exc}")
+        if not stat.S_ISREG(manifest_stat.st_mode):
             raise PolicyConfigError(
                 f"generation manifest {manifest_path} exists but is not "
-                "a regular readable file (directory, broken symlink, or "
-                "unusable entry); refusing to load")
+                "a regular file (symlink, directory, or other "
+                "non-regular entry); refusing to load")
         try:
             manifest = json.loads(manifest_path.read_text("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
