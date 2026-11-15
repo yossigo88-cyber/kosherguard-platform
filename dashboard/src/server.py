@@ -205,8 +205,8 @@ class DashboardServer(ThreadingHTTPServer):
     def __init__(self, address, db_path, admin_username, admin_password,
                  limiter=None, static_dir=STATIC_DIR, secure_cookies=False,
                  trusted_proxies=(), max_connections=32, request_timeout=30.0,
-                 total_request_timeout=60.0):
-        self.store = Store(db_path)
+                 total_request_timeout=60.0, publish_dir=None):
+        self.store = Store(db_path, publish_root=publish_dir)
         self.static_dir = Path(static_dir)
         self.limiter = limiter or auth.LoginLimiter()
         self.secure_cookies = bool(secure_cookies)
@@ -534,9 +534,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
                 return
 
-            m = re.fullmatch(r"/api/policies(?:/(\d+)(?:/(enabled|test))?)?", path)
+            m = re.fullmatch(
+                r"/api/policies(?:/(\d+)(?:/(enabled|test|versions|rollback|select)(?:/(\d+))?)?)?",
+                path)
             if m and path.startswith("/api/policies"):
                 self._handle_policies(method, m, q, store, admin, conn)
+                return
+
+            if path == "/api/config/status" and method == "GET":
+                self._json(200, store.config_status())
+                return
+            if path == "/api/config/publish" and method == "POST":
+                self._json(200, store.publish_config(admin["username"]))
+                return
+            if path == "/api/config/rollback" and method == "POST":
+                data = self._body()
+                revision = data.get("revision")
+                if not isinstance(revision, int):
+                    raise StoreError("revision must be an integer", 400)
+                self._json(200, store.rollback_config(admin["username"], revision))
+                return
+            m_cfg = re.fullmatch(r"/api/config/revisions(?:/(\d+))?", path)
+            if m_cfg and method == "GET":
+                if m_cfg.group(1) is None:
+                    limit = q("limit") or 100
+                    self._json(200, {"revisions": store.list_config_revisions(limit)})
+                else:
+                    self._json(200, store.get_config_revision(int(m_cfg.group(1))))
                 return
 
             m = re.fullmatch(r"/api/categories(?:/([a-z0-9-]+)(?:/(enabled))?)?", path)
@@ -653,7 +677,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # -- resource endpoints ----------------------------------------------
 
     def _handle_policies(self, method, m, q, store, admin, conn) -> None:
-        policy_id, sub = m.group(1), m.group(2)
+        policy_id, sub, sub_id = m.group(1), m.group(2), m.group(3)
         if policy_id is None:
             if method == "GET":
                 enabled = q("enabled")
@@ -681,6 +705,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif sub == "test" and method == "POST":
             data = self._body()
             self._json(200, store.test_domain(int(policy_id), data.get("domain")))
+            return
+        elif sub == "versions" and method == "GET":
+            if sub_id is None:
+                self._json(200, {"versions": store.list_policy_versions(int(policy_id))})
+            else:
+                self._json(200, store.get_policy_version(int(policy_id), int(sub_id)))
+            return
+        elif sub == "rollback" and method == "POST":
+            data = self._body()
+            version = data.get("version")
+            if not isinstance(version, int):
+                raise StoreError("version must be an integer", 400)
+            self._json(200, store.rollback_policy(admin["username"], int(policy_id), version))
+            return
+        elif sub == "select" and method == "POST":
+            self._json(200, store.select_policy_for_publication(
+                admin["username"], int(policy_id)))
             return
         self._error(404, "not found")
 
@@ -767,12 +808,13 @@ def make_server(host: str, port: int, db_path, admin_username: str = "admin",
                 admin_password: str | None = None, limiter=None,
                 secure_cookies: bool = False, trusted_proxies=(),
                 max_connections: int = 32, request_timeout: float = 30.0,
-                total_request_timeout: float = 60.0) -> DashboardServer:
+                total_request_timeout: float = 60.0,
+                publish_dir=None) -> DashboardServer:
     return DashboardServer(
         (host, port), db_path, admin_username, admin_password, limiter=limiter,
         secure_cookies=secure_cookies, trusted_proxies=trusted_proxies,
         max_connections=max_connections, request_timeout=request_timeout,
-        total_request_timeout=total_request_timeout,
+        total_request_timeout=total_request_timeout, publish_dir=publish_dir,
     )
 
 
@@ -781,6 +823,13 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: localhost only)")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--db", default=str(Path(__file__).resolve().parents[1] / "data" / "dashboard.db"))
+    parser.add_argument(
+        "--publish-dir",
+        default=os.environ.get(
+            "KG_PUBLISH_DIR",
+            str(Path(__file__).resolve().parents[2] / "data" / "published")),
+        help="directory engine configuration generations are published into "
+             "(default: <repository>/data/published or KG_PUBLISH_DIR)")
     args = parser.parse_args(argv)
 
     password = os.environ.get("KG_ADMIN_PASSWORD")
@@ -810,6 +859,7 @@ def main(argv=None) -> int:
         secure_cookies=secure_cookies, trusted_proxies=trusted_proxies,
         max_connections=max_connections, request_timeout=request_timeout,
         total_request_timeout=total_request_timeout,
+        publish_dir=args.publish_dir,
     )
     print(f"KosherGuard admin dashboard (development) on http://{args.host}:{args.port}")
     print("No Apple MDM connection exists; this dashboard manages local policy data only.")
