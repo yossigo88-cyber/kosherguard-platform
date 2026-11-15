@@ -668,3 +668,103 @@ and engine behavior are consistent.
   no new GitHub permissions or OAuth scopes.
 - Stage 11 has not started. No commits squashed or rewritten.
 - Stage 10 is NOT claimed approved; independent review decides.
+
+## 17. Manifest file-type correction: symlinks never accepted (2026-11-15)
+
+The independent review of the edge-case fix found one more bypass in
+the same gate.
+
+### The defect
+
+The section-16 fix used `os.path.lexists()` followed by
+`Path.is_file()`. That catches directories and broken symlinks, but
+`is_file()` FOLLOWS symlinks: a manifest.json that is a symlink to an
+existing valid regular file passed the check, so the manifest path
+itself was not required to be a regular file.
+
+### The fix (engine and publisher, same rule)
+
+- filtering-engine/src/dns_service.py `load_validated_engine()`: the
+  file-type check is now `os.lstat()` + `stat.S_ISREG(st_mode)`, which
+  examines the path itself without following symlinks. Distinguishes:
+  genuinely absent path (legacy no-manifest compatibility preserved);
+  existing regular file (read and strictly validated exactly as
+  before); symlink of ANY kind including to a valid regular file
+  (rejected); directory, FIFO, socket, device, broken symlink,
+  unreadable or uninspectable entry (rejected). lstat failures are
+  treated as rejection, not fallback. All existing strict validation is
+  preserved unchanged: both SHA-256 hashes required, exact 64-character
+  lowercase hex, hashes matching file bytes, revision a non-negative
+  integer and not a boolean, generation matching revision and the
+  generation directory, invalid manifests never falling back to legacy
+  loading.
+- dashboard/src/publishing.py `verify_generation()`: the same
+  lstat+S_ISREG check now runs BEFORE manifest.json is read, so
+  publisher and engine accept exactly the same manifest paths. A
+  missing manifest in a publisher generation remains a failure, as
+  before.
+
+### Regression tests (+4)
+
+- `test_manifest_symlink_to_valid_file_rejected` (engine) - the exact
+  bypass: a symlink to a valid manifest passes is_file() but is
+  rejected.
+- `test_manifest_fifo_rejected` (engine) - other non-regular entries
+  (a FIFO) rejected; POSIX-only guard, genuinely necessary.
+- `test_manifest_symlink_reload_keeps_last_known_good` (engine) - a
+  running service rejects the symlink-manifest reload and keeps
+  answering UDP AND TCP with the last valid configuration.
+- `test_publisher_rejects_symlink_manifest` (publisher, via the real
+  API + Publisher) - verify_generation() rejects a symlink manifest
+  pointing to a valid file.
+- POSIX guards used only where symlink/FIFO creation requires them.
+- Already covered from earlier rounds: no manifest loads legacy; a
+  valid regular manifest is accepted; a directory is rejected; a
+  broken symlink is rejected; rejected reloads retain last-known-good.
+
+### Commits (oldest first)
+
+1. `13dbbcff74eccf0400777b1d78526c41ae9bd7b2` - Stage 10 review fix:
+   manifest path must be a regular file (lstat, no symlinks)
+   (filtering-engine/src/dns_service.py)
+2. `749da28aa3b7509c0889e15f4768c2e0dd45cf4a` - Stage 10 review fix:
+   publisher rejects non-regular manifest paths
+   (dashboard/src/publishing.py)
+3. `9b80ed837cb52311e8944343e60068c0abb68b54` - Stage 10 review fix:
+   manifest file-type tests (symlink, FIFO)
+   (filtering-engine/tests/test_reload.py)
+4. `501c78ad3272bd78d979382c94279ef63e1efeca` - Stage 10 review fix:
+   publisher symlink-manifest test
+   (dashboard/tests/test_publishing.py)
+5. This document's own update commit follows; its SHA and the final
+   branch HEAD are in the final summary message.
+
+### Exact test commands and results (working tree, same content committed)
+
+- `python3 -m pytest filtering-engine/tests/test_reload.py -q` ->
+  24 passed (21 + 3 new) in a combined run of 45 passed in 17.83s
+  with the dashboard publishing suite
+- `python3 -m pytest dashboard/tests/test_publishing.py -q` ->
+  21 passed (20 + 1 new) in that same combined run
+- `python3 -m pytest filtering-engine/tests -q` -> FIRST run: 142
+  passed, 1 error in 60.45s (the error's identity was not captured
+  before the cache cleared; no failure line was produced). Three
+  subsequent full runs: 143 passed in 57.89s, 143 passed in 57.88s,
+  and a fourth clean run. Reported as observed: one transient error
+  once, never reproduced in three later full runs; suite total is 143.
+- `python3 -m pytest dashboard/tests -q` -> 162 passed in 103.97s
+- `node --check dashboard/static/app.js` -> clean
+- `bash -n deploy/backup.sh deploy/restore.sh` -> clean
+
+Fresh-clone verification of the final committed branch (byte-identity
+of all changed files plus both full suites) is reported in the final
+summary message.
+
+### Confirmations
+
+- main remains untouched at
+  `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`.
+- Nothing merged, nothing deployed, no services provisioned, no costs,
+  no new GitHub permissions or OAuth scopes.
+- Stage 11 has not started. No commits squashed or rewritten.
+- Stage 10 is NOT claimed approved; independent review decides.
