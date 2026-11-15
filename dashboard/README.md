@@ -28,7 +28,7 @@ dashboard/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 106 pytest tests against a real running server
+  tests/              - 114 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -91,7 +91,11 @@ always visible.
 - Sessions are 256-bit random tokens stored server-side with a 12-hour
   expiry, delivered in an `HttpOnly; SameSite=Strict` cookie. With
   `KG_SECURE_COOKIES=1` (required for HTTPS production) the cookie also
-  gets the `Secure` attribute, on both creation and clearing.
+  gets the `Secure` attribute, on both creation and clearing. Localhost
+  development may omit the setting; a deployment-shaped configuration
+  (any `KG_TRUSTED_PROXIES` entry, or a non-loopback bind address)
+  refuses to start unless `KG_SECURE_COOKIES=1` is set explicitly, so
+  the Secure attribute can never be forgotten on a real deployment.
 - Every `/api/*` endpoint except `/api/login` and `/api/health`
   requires a valid session.
 - Every state-changing request requires the `X-KosherGuard-Request`
@@ -106,13 +110,22 @@ always visible.
   (`auth.login_failed`) with the attempted username (truncated to 64
   characters) and a generic detail; passwords and tokens are never
   recorded, and an audit failure never changes the login response.
-- Request bodies are capped at 1 MB (checked from Content-Length before
-  reading). All errors are JSON `{"error": ...}`; internals are never
-  returned.
+- Request bodies are capped at 1 MB. The `Content-Length` header must
+  be a plain non-negative decimal integer: malformed or negative values
+  are rejected (400) before any body byte is read, oversized values are
+  rejected (413), and in all of these cases (and when the header is
+  missing) the connection is closed, so unread bytes cannot be parsed
+  as the next request on it. All errors are JSON `{"error": ...}`;
+  internals are never returned.
 - Concurrent request handling is bounded (`KG_MAX_CONNECTIONS`, default
-  32; excess connections are refused, not queued) and every connection
-  has a read timeout (`KG_REQUEST_TIMEOUT`, default 30 seconds), so
-  slow or incomplete clients cannot hold handler threads forever.
+  32; excess connections are refused, not queued). Every connection has
+  a per-read inactivity timeout (`KG_REQUEST_TIMEOUT`, default 30
+  seconds) AND a total deadline for receiving one complete request
+  (`KG_TOTAL_REQUEST_TIMEOUT`, default 60 seconds), so a slow-trickle
+  client that sends one byte before each inactivity timeout expires
+  still cannot hold a handler slot forever. The total deadline bounds
+  receiving only; producing and sending the response is covered by the
+  per-read timeout.
 - Static files are served only from `static/`; path traversal is
   rejected, and the HTML carries a restrictive Content-Security-Policy
   (`default-src 'self'`), `X-Frame-Options: DENY`, and
@@ -130,10 +143,11 @@ always visible.
 | --- | --- | --- |
 | `KG_ADMIN_PASSWORD` | (required on first run) | Seeds the first administrator. |
 | `KG_ADMIN_USERNAME` | `admin` | First administrator's username. |
-| `KG_SECURE_COOKIES` | off | `1` adds the `Secure` attribute to session cookies. Set this ONLY when the dashboard is served over HTTPS (browsers drop Secure cookies over plain HTTP). Any value other than `1/0/true/false/yes/no` refuses startup - a typo can never silently weaken a production deployment. |
+| `KG_SECURE_COOKIES` | off | `1` adds the `Secure` attribute to session cookies. Set this ONLY when the dashboard is served over HTTPS (browsers drop Secure cookies over plain HTTP). Any value other than `1/0/true/false/yes/no` refuses startup - a typo can never silently weaken a production deployment. Deployment guard: with trusted proxies configured or a non-loopback bind address, startup is refused unless this is explicitly `1`. |
 | `KG_TRUSTED_PROXIES` | (empty) | Comma-separated IP addresses of trusted reverse proxies. Only requests arriving from these peers may supply the client address via `X-Forwarded-For`; the last entry of the header is used and must parse as an IP address, otherwise the socket peer is used. With no trusted proxies the header is always ignored. |
 | `KG_MAX_CONNECTIONS` | `32` | Maximum concurrent requests; extra connections are refused. |
-| `KG_REQUEST_TIMEOUT` | `30` | Seconds a connection may take to send a request (also bounds idle keep-alive). |
+| `KG_REQUEST_TIMEOUT` | `30` | Per-read inactivity timeout in seconds (also bounds idle keep-alive). |
+| `KG_TOTAL_REQUEST_TIMEOUT` | `60` | Total seconds one complete request (headers + body) may take to arrive; defeats slow-trickle clients that keep each individual read under the inactivity timeout. Must be at least `KG_REQUEST_TIMEOUT`. |
 
 Required proxy configuration: the proxy must terminate TLS, forward to
 the dashboard bound on `127.0.0.1`, and set/append `X-Forwarded-For`
@@ -169,7 +183,7 @@ URL database).
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-106 tests run the real server on an ephemeral localhost port with a
+114 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
@@ -179,9 +193,14 @@ header checks), and the Stage 9A hardening (secure-cookie modes and
 strict configuration parsing, proxy-aware login limiting including
 spoofed and malformed forwarding headers, the 12-character password
 minimum, failed-login auditing without secrets, expired-session
-rejection and cleanup, health endpoint, and connection bounds with
-header timeouts). No sleeps are used for synchronization; the server
-socket is bound before the test client connects.
+rejection and cleanup, health endpoint, connection bounds with
+header timeouts, strict Content-Length validation (negative, malformed,
+and oversized values, with connection-close behavior), the total
+request deadline (slow-trickle clients in both the header and body
+phases, killed and their slot released), and the cookie deployment
+guard (localhost default, explicit deployment opt-in, refusal cases).
+No sleeps are used for synchronization; the server socket is bound
+before the test client connects.
 
 ## Deployment (future, not done)
 
@@ -189,10 +208,11 @@ Nothing here is deployed. When the project is ready, a free deployment
 path is an always-free VM tier (for example Oracle Cloud Always Free)
 behind a TLS-terminating reverse proxy such as Caddy; the app needs
 only `python3` and write access to its database file. Before any real
-deployment: put the server behind HTTPS with `KG_SECURE_COOKIES=1`, set
-`KG_TRUSTED_PROXIES` to the proxy address, set a strong
-`KG_ADMIN_PASSWORD` (12+ characters), and keep the bind address on
-`127.0.0.1` behind the proxy.
+deployment: put the server behind HTTPS with `KG_SECURE_COOKIES=1`
+(enforced: a proxied or non-loopback configuration refuses to start
+without it), set `KG_TRUSTED_PROXIES` to the proxy address, set a
+strong `KG_ADMIN_PASSWORD` (12+ characters), and keep the bind address
+on `127.0.0.1` behind the proxy.
 
 Stage 9A hardened the application, but it does NOT make the dashboard
 production-ready on its own. Still missing before public deployment:
