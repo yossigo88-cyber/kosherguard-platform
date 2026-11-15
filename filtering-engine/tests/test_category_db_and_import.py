@@ -106,3 +106,61 @@ def test_import_cli_rejects_invalid_json(tmp_path, capsys):
     rc = db_tool_main([str(DATASET), "import", str(records), "--out", str(tmp_path / "x.json")])
     assert rc == 1
     assert "line 1" in capsys.readouterr().err
+
+
+# -- loading invalid or unavailable data ---------------------------------------
+
+def test_load_requires_domains_key(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"_meta": {}}', encoding="utf-8")
+    with pytest.raises(CategoryDBError):
+        CategoryDB.load(bad)
+
+
+def test_load_rejects_non_object_top_level(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text('["not", "an", "object"]', encoding="utf-8")
+    with pytest.raises(CategoryDBError):
+        CategoryDB.load(bad)
+
+
+def test_load_rejects_non_object_domains(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"domains": ["not-a-dict"]}', encoding="utf-8")
+    with pytest.raises(CategoryDBError):
+        CategoryDB.load(bad)
+
+
+def test_load_missing_file_raises_oserror(tmp_path):
+    # Unavailable data fails loudly with the underlying OS error; the
+    # service cannot start on a database that does not exist.
+    with pytest.raises(OSError):
+        CategoryDB.load(tmp_path / "does-not-exist.json")
+
+
+# -- import edge cases -----------------------------------------------------------
+
+def test_import_same_domain_twice_unions_in_one_file():
+    db = CategoryDB.load(DATASET)
+    added, updated = db.merge_records([
+        {"domain": "brand-new.example", "categories": ["news"]},
+        {"domain": "brand-new.example", "categories": ["education"]},
+    ])
+    assert (added, updated) == (1, 1)
+    assert db.categories_for("brand-new.example") == {"news", "education"}
+
+
+def test_failed_import_leaves_database_unchanged():
+    """Regression: a malformed record must abort the import BEFORE any
+    record is applied - a partially applied import is a silently wrong
+    database, and the documented abort guarantee must hold for the
+    in-memory merge too, not only for the CLI's file write."""
+    db = CategoryDB.load(DATASET)
+    before = db.to_dict()
+    with pytest.raises(CategoryDBError, match="line 2"):
+        db.merge_records([
+            {"domain": "fine.example", "categories": ["news"]},
+            {"domain": "not a domain", "categories": ["news"]},
+        ])
+    assert db.to_dict() == before
+    assert db.categories_for("fine.example") == set()
