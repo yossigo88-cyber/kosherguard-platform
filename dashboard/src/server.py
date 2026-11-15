@@ -28,10 +28,12 @@ Run (development):
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
 import sys
+import threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -61,21 +63,105 @@ CSP = (
 )
 
 
+def _env_flag(raw, name: str) -> bool:
+    """Parse a boolean environment setting. Ambiguous values are a
+    startup error, so a production security setting (for example
+    KG_SECURE_COOKIES) can never silently fall back to the insecure
+    default because of a typo."""
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes"):
+        return True
+    if value in ("0", "false", "no"):
+        return False
+    raise SystemExit(f"{name} must be one of 1/0/true/false/yes/no, got {raw!r}")
+
+
+def _env_int(raw, name: str, default: int, minimum: int = 1) -> int:
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SystemExit(f"{name} must be an integer, got {raw!r}")
+    if value < minimum:
+        raise SystemExit(f"{name} must be at least {minimum}, got {value}")
+    return value
+
+
+def _env_float(raw, name: str, default: float, minimum: float = 1.0) -> float:
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise SystemExit(f"{name} must be a number, got {raw!r}")
+    if value < minimum:
+        raise SystemExit(f"{name} must be at least {minimum}, got {value}")
+    return value
+
+
+def _env_proxy_list(raw, name: str) -> frozenset:
+    """Parse a comma-separated list of trusted proxy IP addresses."""
+    if not raw:
+        return frozenset()
+    proxies = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ipaddress.ip_address(part)
+        except ValueError:
+            raise SystemExit(f"{name}: {part!r} is not a valid IP address")
+        proxies.add(part)
+    return frozenset(proxies)
+
+
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, db_path, admin_username, admin_password,
-                 limiter=None, static_dir=STATIC_DIR):
+                 limiter=None, static_dir=STATIC_DIR, secure_cookies=False,
+                 trusted_proxies=(), max_connections=32, request_timeout=30.0):
         self.store = Store(db_path)
         self.static_dir = Path(static_dir)
         self.limiter = limiter or auth.LoginLimiter()
+        self.secure_cookies = bool(secure_cookies)
+        self.trusted_proxies = frozenset(trusted_proxies)
+        self.request_timeout = float(request_timeout)
+        self._connection_slots = threading.BoundedSemaphore(max(1, int(max_connections)))
         conn = db_module.connect(db_path)
         try:
             db_module.init_db(conn)
             self._seed_admin(conn, admin_username, admin_password)
+            auth.cleanup_expired_sessions(conn)
         finally:
             conn.close()
         super().__init__(address, DashboardHandler)
+
+    # Bound concurrent request handling: when every slot is taken, the
+    # extra connection is refused instead of spawning an unbounded
+    # number of handler threads.
+    def process_request(self, request, client_address):
+        if not self._connection_slots.acquire(blocking=False):
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
 
     @staticmethod
     def _seed_admin(conn, username: str, password: str | None) -> None:
@@ -95,8 +181,10 @@ class DashboardServer(ThreadingHTTPServer):
                 "environment to seed the first admin account; refusing to "
                 "start with an open dashboard."
             )
-        if len(password) < 8:
-            raise SystemExit("KG_ADMIN_PASSWORD must be at least 8 characters.")
+        if len(password) < auth.MIN_PASSWORD_LENGTH:
+            raise SystemExit(
+                f"KG_ADMIN_PASSWORD must be at least {auth.MIN_PASSWORD_LENGTH} characters."
+            )
         conn.execute(
             "INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, ?)",
             (username, auth.hash_password(password), utcnow()),
@@ -107,6 +195,12 @@ class DashboardServer(ThreadingHTTPServer):
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "KosherGuardDashboard/1.0"
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        # Slow or incomplete clients (including idle keep-alive
+        # connections) cannot hold a handler thread forever.
+        self.request.settimeout(self.server.request_timeout)
 
     # -- plumbing ------------------------------------------------------
 
@@ -165,6 +259,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             raise StoreError("request body must be a JSON object", 400)
         return data
+
+    def _client_address(self) -> str:
+        """The client address used for login limiting.
+
+        X-Forwarded-For is honored only when the immediate socket peer
+        is a configured trusted proxy (KG_TRUSTED_PROXIES); then the
+        LAST entry - the one the trusted proxy appended - is used, and
+        only if it parses as an IP address. An untrusted peer, a
+        missing header, or a malformed entry all fall back to the
+        socket peer, so a forged header can never steer or bypass the
+        limiter.
+        """
+        peer = self.client_address[0]
+        if peer in self.server.trusted_proxies:
+            forwarded = self.headers.get("X-Forwarded-For")
+            if forwarded:
+                candidate = forwarded.rsplit(",", 1)[-1].strip()
+                try:
+                    ipaddress.ip_address(candidate)
+                    return candidate
+                except ValueError:
+                    pass
+        return peer
 
     def _session_token(self) -> str | None:
         header = self.headers.get("Cookie")
@@ -235,6 +352,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._cached_body = self._read_body()
             self._require_csrf_header()
 
+        # The health check runs before the shared connection opens so
+        # it can REPORT a database failure instead of failing with one.
+        if method == "GET" and path == "/api/health":
+            self._handle_health()
+            return
+
         conn = db_module.connect(self.server.store.db_path)
         try:
             # The only public endpoint.
@@ -297,14 +420,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # -- auth endpoints --------------------------------------------------
 
     def _session_cookie(self, token: str) -> str:
-        return (
+        cookie = (
             f"kg_session={token}; Path=/; HttpOnly; SameSite=Strict; "
             f"Max-Age={auth.SESSION_LIFETIME_SECONDS}"
         )
+        if self.server.secure_cookies:
+            cookie += "; Secure"
+        return cookie
 
-    @staticmethod
-    def _clear_cookie() -> str:
-        return "kg_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+    def _clear_cookie(self) -> str:
+        cookie = "kg_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        if self.server.secure_cookies:
+            cookie += "; Secure"
+        return cookie
+
+    def _handle_health(self) -> None:
+        """Public minimal health check. Reveals only that the process is
+        responding and its database is usable: no usernames, paths,
+        configuration, or internal errors."""
+        try:
+            conn = db_module.connect(self.server.store.db_path)
+            try:
+                conn.execute("SELECT 1 FROM admins LIMIT 1").fetchone()
+            finally:
+                conn.close()
+        except Exception:
+            self.log_message("health check: database unavailable")
+            self._json(503, {"status": "unavailable"})
+            return
+        self._json(200, {"status": "ok"})
 
     def _handle_login(self, conn) -> None:
         data = self._body()
@@ -312,7 +456,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         password = data.get("password")
         if not isinstance(username, str) or not isinstance(password, str):
             raise StoreError("username and password must be strings", 400)
-        key = (username, self.client_address[0])
+        key = (username, self._client_address())
         if self.server.limiter.is_locked(key):
             raise StoreError("too many failed attempts; try again later", 429)
         row = conn.execute(
@@ -320,6 +464,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if row is None or not auth.verify_password(password, row["password_hash"]):
             self.server.limiter.record_failure(key)
+            self._audit_login_failure(conn, username)
             raise auth.AuthError("invalid username or password")
         self.server.limiter.record_success(key)
         token = auth.create_session(conn, row["id"])
@@ -327,6 +472,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         store.audit(conn, username, "auth.login", "signed in")
         conn.commit()
         self._json(200, {"username": username}, {"Set-Cookie": self._session_cookie(token)})
+
+    def _audit_login_failure(self, conn, username: str) -> None:
+        """Record a failed login attempt. Never records the password or
+        any secret, and an audit failure never changes the
+        client-facing authentication result or leaks database details."""
+        try:
+            self.server.store.audit(
+                conn, username[:64], "auth.login_failed",
+                "failed login attempt (invalid username or password)",
+            )
+            conn.commit()
+        except Exception:
+            self.log_message("could not record failed-login audit entry")
 
     def _handle_change_password(self, conn, admin) -> None:
         data = self._body()
@@ -339,8 +497,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if not auth.verify_password(current, row["password_hash"]):
             raise auth.AuthError("current password is incorrect")
-        if len(new) < 8:
-            raise StoreError("new password must be at least 8 characters", 400)
+        if len(new) < auth.MIN_PASSWORD_LENGTH:
+            raise StoreError(
+                f"new password must be at least {auth.MIN_PASSWORD_LENGTH} characters", 400
+            )
         with conn:
             conn.execute(
                 "UPDATE admins SET password_hash = ? WHERE id = ?",
@@ -464,9 +624,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def make_server(host: str, port: int, db_path, admin_username: str = "admin",
-                admin_password: str | None = None, limiter=None) -> DashboardServer:
+                admin_password: str | None = None, limiter=None,
+                secure_cookies: bool = False, trusted_proxies=(),
+                max_connections: int = 32, request_timeout: float = 30.0) -> DashboardServer:
     return DashboardServer(
-        (host, port), db_path, admin_username, admin_password, limiter=limiter
+        (host, port), db_path, admin_username, admin_password, limiter=limiter,
+        secure_cookies=secure_cookies, trusted_proxies=trusted_proxies,
+        max_connections=max_connections, request_timeout=request_timeout,
     )
 
 
@@ -479,7 +643,20 @@ def main(argv=None) -> int:
 
     password = os.environ.get("KG_ADMIN_PASSWORD")
     username = os.environ.get("KG_ADMIN_USERNAME", "admin")
-    server = make_server(args.host, args.port, args.db, username, password)
+    # Security-relevant settings refuse ambiguous values instead of
+    # silently falling back to an insecure default (Stage 9A).
+    secure_cookies = _env_flag(os.environ.get("KG_SECURE_COOKIES"), "KG_SECURE_COOKIES")
+    trusted_proxies = _env_proxy_list(
+        os.environ.get("KG_TRUSTED_PROXIES"), "KG_TRUSTED_PROXIES")
+    max_connections = _env_int(
+        os.environ.get("KG_MAX_CONNECTIONS"), "KG_MAX_CONNECTIONS", 32)
+    request_timeout = _env_float(
+        os.environ.get("KG_REQUEST_TIMEOUT"), "KG_REQUEST_TIMEOUT", 30.0)
+    server = make_server(
+        args.host, args.port, args.db, username, password,
+        secure_cookies=secure_cookies, trusted_proxies=trusted_proxies,
+        max_connections=max_connections, request_timeout=request_timeout,
+    )
     print(f"KosherGuard admin dashboard (development) on http://{args.host}:{args.port}")
     print("No Apple MDM connection exists; this dashboard manages local policy data only.")
     try:
