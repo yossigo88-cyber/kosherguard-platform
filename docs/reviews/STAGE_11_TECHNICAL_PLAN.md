@@ -9,8 +9,8 @@ explicit approval before any Stage 11 implementation begins.**
 **Working branch:** `stage-9b-deployment-preparation`
 **Branch HEAD under review (this revision):** `7f87c415ccef8aa2ebb87900302da9f32ecd33db`
 (verified 2026-11-15 through the GitHub API; the source files
-referenced below were re-read at `f4f8492d` and are unchanged at this
-revision, because every commit after `f4f8492d` touched only this
+referenced below were re-read at `f4f8492d7f7e22058da018b4cd66b55c769978ea` and are unchanged at this
+revision, because every commit after `f4f8492d7f7e22058da018b4cd66b55c769978ea` touched only this
 document)
 **Main (unchanged):** `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`
 
