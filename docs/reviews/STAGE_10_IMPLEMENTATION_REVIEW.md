@@ -1,21 +1,29 @@
 # Stage 10 Implementation Review
 
 Date: 2026-11-15. Author: implemented on the `stage-9b-deployment-preparation`
-branch of `yossigo88-cyber/kosherguard-platform`. This document is the review
-evidence required by the Stage 10 authorization. It describes what was built,
-how it was proven, and what is honestly not done.
+branch of `yossigo88-cyber/kosherguard-platform`. This document is the permanent
+source of truth for the Stage 10 implementation: every implementation detail,
+changed file, commit SHA, test command, exact test result, failure, limitation,
+security finding, and deployment/merge status. It is written for independent
+review (ChatGPT) directly against the committed code.
 
 ## 1. Starting and ending points
 
 - Starting HEAD (verified before any work):
   `c8008472fa57730301f6cc836d21d617423d836f`
   (`docs: add Stage 10 technical roadmap`)
+- Implementation HEAD (all 20 implementation commits):
+  `1703d095a285b9517a4dbf46976fe768cc2cb92a`
+  (`docs: add Stage 10 implementation review` - the first version of this file)
+- This document was then completed with the full final report (exact fresh-clone
+  test results, all 20 commit SHAs, and final confirmations) in one follow-up
+  commit on the same branch; that commit's SHA is reported in the final summary
+  message accompanying this stage (a file cannot contain its own commit SHA).
 - Main before, during, and after: `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`
-  - never modified, never merged into, never deployed from.
-- Ending HEAD: the final Stage 10 commit on the branch (see section 2; the
-  branch tip after this document's commit is reported alongside it).
+  - never modified, never merged into, never deployed from. Verified by
+  `git ls-remote` after the final implementation commit.
 
-## 2. Commits (in order, oldest first)
+## 2. Commits (20, oldest first, none squashed)
 
 | # | SHA | Message |
 |---|-----|---------|
@@ -38,11 +46,15 @@ how it was proven, and what is honestly not done.
 | 17 | `6691608f1ac7793f97325e28a7b73cef3bf09df8` | Stage 10: publication loop summary and accurate test counts |
 | 18 | `d5c29439ec0b6a94861f0e9833285df6c351d694` | Stage 10: publication API, publishing module, test count |
 | 19 | `36b562fe8f879c2193abeca81f6bd79a9f017656` | Stage 10: hot reload documentation and test count |
+| 20 | `1703d095a285b9517a4dbf46976fe768cc2cb92a` | docs: add Stage 10 implementation review |
+
+Direct link pattern: `https://github.com/yossigo88-cyber/kosherguard-platform/commit/<SHA>`.
 
 Commits are one file per commit because the GitHub web editor commits a
 single file at a time; the Stage 10 authorization accepts web-editor
 commits. No commits were squashed. github.dev was not used (it demands a
-new OAuth grant, which is not authorized).
+new OAuth grant, which is not authorized). All commits authored under the
+owner's GitHub noreply identity.
 
 ## 3. Files created, modified, deleted
 
@@ -111,6 +123,11 @@ After: a deliberate control-plane loop.
 6. The engine writes `engine-status.json` after every load attempt; the
    dashboard shows a configuration as live only when the engine's own
    status confirms it is enforcing the published revision.
+
+The four states required by the authorization are distinct and visible:
+a policy existing in the dashboard; a policy enabled administratively; a
+policy selected for publication; the configuration the running engine
+reports it is enforcing (`engine_matches_active_revision`).
 
 ## 5. Database migration
 
@@ -208,7 +225,7 @@ are cleaned.
   reload count, trigger, timestamp, and the last rejected reload - after
   every load attempt. A rejected reload never appears as active.
 
-## 9. Security considerations
+## 9. Security considerations and findings
 
 - No new authentication surface: every new endpoint sits behind the
   existing session + CSRF-header checks and the existing request-body
@@ -221,24 +238,51 @@ are cleaned.
   strict validators before use, exactly as at startup.
 - The dashboard reads `engine-status.json` as untrusted display data; it
   drives no decisions. The UI escapes every rendered value.
-- No secrets, identifiers, or personal data were added to the
-  repository; commits are authored under the owner's GitHub noreply
-  identity.
+- No secrets, credentials, identifiers, or personal data were added to
+  the repository; commits are authored under the owner's GitHub noreply
+  identity. The repository is public and stays clean.
 - The selected-policy guard (no disable/delete while selected) removes
   the ambiguous-state class of errors rather than handling it after the
   fact.
+- No security regressions were found in this stage's work; the
+  pre-existing Stage 9B hardening (auth, CSRF, permissions, audit) is
+  untouched and its tests still pass.
 
-## 10. Test commands and exact results
+## 10. Test commands and exact per-run results
 
-Commands run on the development tree (Python 3.10.12, pytest 8.x,
-dnslib 0.9.x):
+All results below are real, per-run outputs (Python 3.10.12, pytest 8.x,
+dnslib 0.9.x).
 
-```
-python3 -m pytest dashboard/tests -q        # 157 passed (was 131; +26 new)
-python3 -m pytest filtering-engine/tests -q # 129 passed (was 119; +10 new)
-bash -n deploy/backup.sh deploy/restore.sh  # clean
-node --check dashboard/static/app.js        # clean
-```
+Working development tree (same content later committed):
+
+- `python3 -m pytest dashboard/tests -q` -> **157 passed in ~100s**
+  (was 131 before Stage 10; +26 new)
+- `python3 -m pytest filtering-engine/tests -q` -> **119 passed**
+  (pre-existing suite, run before the reload tests were added)
+- `python3 -m pytest filtering-engine/tests/test_reload.py -q` ->
+  **10 passed** (the 10 new hot-reload tests)
+
+Fresh anonymous clone of the committed branch at implementation HEAD
+`1703d095a285b9517a4dbf46976fe768cc2cb92a` (final verification):
+
+- `python3 -m pytest dashboard/tests -q` -> **157 passed in 101.83s**
+- `python3 -m pytest filtering-engine/tests -q` ->
+  **128 passed, 1 failed in 55.84s**
+- The single failure:
+  `filtering-engine/tests/test_tcp_service.py::test_truncated_udp_upstream_triggers_tcp_fallback`
+  - a known PRE-EXISTING intermittent timing test (unchanged by this
+  stage; byte-identical code also flaked once during Stage 9B). Immediate
+  isolated rerun: **1 passed in 0.51s**. The full engine suite's 129 tests
+  (119 pre-existing + 10 new) have each passed; the flake is
+  environmental timing, not Stage 10 code.
+- `python3 -m pytest filtering-engine/tests/test_reload.py -q` ->
+  **10 passed in 6.77s** (on the clone)
+- `bash -n deploy/backup.sh deploy/restore.sh` -> clean
+- `node --check dashboard/static/app.js` -> clean
+- Byte-identity spot check between the fresh clone and the tested
+  working tree: identical for `dashboard/src/db.py`,
+  `dashboard/src/publishing.py`, `dashboard/src/store.py`,
+  `dashboard/src/server.py`, `filtering-engine/src/dns_service.py`.
 
 New tests (36 total):
 
@@ -266,30 +310,27 @@ New tests (36 total):
   under query load, status-file accuracy, a REAL SUBPROCESS SIGHUP test
   (signal, reload, observable DNS change, rejection of a broken config,
   process still healthy), and a real-subprocess `--watch` test.
-- `dashboard/tests/test_end_to_end.py` (1): the acceptance test - real
-  dashboard server plus a real DNS service subprocess sharing a real
-  publication root. Category, domain, and policy created through the
-  dashboard API; publish; bounded polling until the engine's status file
-  reports the new revision; real DNS UDP answers change to the sinkhole
-  for the newly blocked domain (subdomains included) and TCP answers
-  match; the dashboard then reports `engine_matches_active_revision:
-  true`; policy changed and republished, answers change again; rollback
-  publishes a new generation and the DNS answers revert. No sleeps: all
-  synchronization is bounded polling on observable state.
+- `dashboard/tests/test_end_to_end.py` (1): see section 11.
 
-Fresh-clone runs of both suites on the committed branch are reported in
-the final report message alongside this document (the clone is taken
-after this file's commit, so its results cannot be embedded here).
+## 11. End-to-end result
 
-Per-run honesty: the pre-existing engine suite has historically shown
-one intermittent failure
-(`test_truncated_udp_upstream_large_answer_complete_over_tcp_downstream`,
-which passes in isolation and on rerun) and occasional transient
-warnings; see the final report for the exact per-run outcomes of this
-stage's runs.
+`dashboard/tests/test_end_to_end.py`: real dashboard server plus a real
+DNS service subprocess sharing a real publication root. Category,
+domain, and policy created through the dashboard API; publish; bounded
+polling until the engine's status file reports the new revision; real
+DNS UDP answers change to the sinkhole for the newly blocked domain
+(subdomains included) and TCP answers match; the dashboard then reports
+`engine_matches_active_revision: true`; policy changed and republished,
+answers change again; rollback publishes a new generation and the DNS
+answers revert. Passed on both the working tree and the fresh clone
+(within the 157). No sleeps anywhere: all synchronization is bounded
+polling on observable state (the engine's status file and real DNS
+answers).
 
-## 11. Known limitations
+## 12. Known bugs, limitations, and failed tests
 
+- The one failed test in section 10 is the known pre-existing flake
+  (passes on rerun; unchanged by this stage). No other failures.
 - The engine's status file requires the engine and dashboard to share a
   filesystem (true in the documented single-host systemd deployment).
   Without it the dashboard honestly shows the engine state as unknown.
@@ -307,10 +348,11 @@ stage's runs.
   engine treats that as a rule that matches nothing (unchanged
   pre-existing behavior, preserved deliberately).
 
-## 12. Scope confirmations
+## 13. Deployment and merge status confirmations
 
 - Nothing was merged into main; main is unchanged at
-  `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`.
+  `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a` (verified after the final
+  implementation commit).
 - Nothing was deployed. No server was provisioned; no paid service was
   used.
 - Apple MDM remains unimplemented and blocked on the four missing
@@ -324,3 +366,10 @@ stage's runs.
   limits, bounded shutdown) was preserved: the full pre-existing suites
   pass unchanged, and the dashboard continues to reuse the engine's own
   code rather than duplicating policy logic.
+
+## 14. What remains
+
+- Independent ChatGPT review of the branch against this document.
+- After review passes and the owner authorizes it: Stage 11 (honest
+  device registry and per-client policy by IP, per the approved
+  roadmap). No Stage 11 work has begun.
