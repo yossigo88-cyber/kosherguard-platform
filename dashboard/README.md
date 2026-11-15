@@ -221,17 +221,37 @@ Endpoints: `GET/POST /api/devices`, `GET/PUT /api/devices/<id>`,
 `POST /api/devices/<id>/assign-policy`,
 `GET /api/devices/<id>/effective-policy`, `GET /api/devices/<id>/audit`.
 
+## Devices interface (Stage 11B)
+
+Stage 11B replaces the Devices placeholder with a complete registry
+management interface in the existing vanilla-JS hash-router SPA
+(`static/app.js`, `static/styles.css`; `index.html` unchanged). `#/devices`
+lists entries with search, state filter, state badges, and an explicit
+device-vs-network/group distinction; `#/devices/<id>` shows overview and
+editing, network bindings (add/retire, each labeled "Network/group
+binding - routing hint only, not verified device identity"), policy
+assignment with the server's tighten-only verdict shown verbatim, the
+three distinct assigned/published/enforced states (published and
+enforced honestly "Unavailable" while no generation carries assignments
+and no engine is connected), state controls behind confirmations, and
+the per-device audit and assignment history. No backend file changed;
+tables become labeled stacked cards on phone-width screens with no
+horizontal overflow.
+
 ## Testing
 
 ```bash
 cd dashboard && python3 -m pytest tests/ -q
+node --test tests/test_devices_ui.mjs   # Stage 11B UI tests (needs Node.js)
 ```
 
-252 tests run the real server on an ephemeral localhost port with a
+276 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
 authentication and lockout, persistence across restarts, audit logging,
+Stage 11B frontend checks (mandated honest wording, responsive CSS,
+the Node UI suite driving the real app.js against a DOM/fetch shim),
 security behavior (CSRF, body limits, traversal, injection strings,
 header checks), and the Stage 9A hardening (secure-cookie modes and
 strict configuration parsing, proxy-aware login limiting including
