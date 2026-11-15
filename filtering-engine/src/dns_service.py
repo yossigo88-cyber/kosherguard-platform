@@ -154,18 +154,22 @@ def _safe_open_manifest(manifest_path):
     Returns None only when the path is genuinely absent (the legacy
     pre-publication layout). Raises PolicyConfigError for every
     present-but-unusable entry: any symlink or broken symlink (ELOOP),
-    directory, FIFO, socket, device, permission error, an
-    uninspectable descriptor, or a platform without O_NOFOLLOW.
+    directory, FIFO, socket, device, permission error, or an
+    uninspectable descriptor. On a platform without O_NOFOLLOW there
+    is no safe way to distinguish "genuinely absent" from "replaced
+    between check and read", so it fails closed UNCONDITIONALLY - even
+    a path that looks absent is rejected, which deliberately means
+    legacy no-manifest loading is unavailable there. os.path.lexists()
+    is never consulted: its answer could change before the caller
+    continues.
     """
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
-        # Without no-follow support a present manifest cannot be opened
-        # safely: fail closed. Absence still means legacy mode.
-        if os.path.lexists(manifest_path):
-            raise PolicyConfigError(
-                f"generation manifest {manifest_path}: this platform "
-                "lacks O_NOFOLLOW; refusing to open")
-        return None
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: this platform lacks "
+            "O_NOFOLLOW, so no manifest path can be opened safely; "
+            "refusing to load (legacy no-manifest loading is "
+            "unavailable on this platform)")
     flags = os.O_RDONLY | nofollow
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)  # a FIFO cannot hang the open
