@@ -28,7 +28,7 @@ dashboard/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 84 pytest tests against a real running server
+  tests/              - 91 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -122,7 +122,7 @@ URL database).
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-84 tests run the real server on an ephemeral localhost port with a
+91 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
