@@ -65,6 +65,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -76,6 +77,9 @@ from engine_bridge import CategoryDB, CategoryDBError, PolicyConfigError, valida
 
 class PublicationError(Exception):
     """A publication step failed; the previous generation is unchanged."""
+
+
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -259,9 +263,55 @@ class Publisher:
                 pass
             raise
 
+    def _check_manifest(self, manifest, generation_dir: Path,
+                        policy_bytes: bytes, categories_bytes: bytes) -> None:
+        """Fail-closed manifest validation, compatible with the
+        engine's own rules in
+        filtering-engine/src/dns_service.py:_validate_generation_manifest:
+        a JSON object; both hashes present as 64-character lowercase
+        SHA-256 hex; a non-negative-integer revision; a generation string
+        equal to str(revision) and to the generation directory name;
+        and both hashes matching the actual file bytes. Raises
+        PublicationError on any defect."""
+        if not isinstance(manifest, dict):
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest is not a JSON object")
+        for key, data in (("policy_sha256", policy_bytes),
+                          ("categories_sha256", categories_bytes)):
+            value = manifest.get(key)
+            if not isinstance(value, str) or not _SHA256_HEX.fullmatch(value):
+                raise PublicationError(
+                    f"generation {generation_dir.name}: manifest {key} is "
+                    "missing or not a valid 64-character SHA-256 "
+                    "hexadecimal value")
+            if value != sha256_bytes(data):
+                raise PublicationError(
+                    f"generation {generation_dir.name}: "
+                    f"{'policy.json' if key == 'policy_sha256' else 'categories.json'}"
+                    " hash mismatch")
+        revision = manifest.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest revision is "
+                "missing or not a non-negative integer")
+        generation = manifest.get("generation")
+        if not isinstance(generation, str) or not generation:
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest generation is "
+                "missing or not a non-empty string")
+        if generation != str(revision):
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest generation "
+                f"{generation!r} is inconsistent with revision {revision}")
+        if generation != generation_dir.name:
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest generation "
+                f"{generation!r} does not match its directory name")
+
     def verify_generation(self, generation_dir: Path) -> dict:
         """Re-read a generation from disk, validate it with the engine's
-        own code, and verify the manifest hashes. Returns the manifest.
+        own code, and verify the manifest strictly (structure, metadata
+        consistency, and hashes). Returns the manifest.
         Raises PublicationError on any mismatch."""
         generation_dir = Path(generation_dir)
         try:
@@ -270,12 +320,7 @@ class Publisher:
             manifest = json.loads((generation_dir / "manifest.json").read_text("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise PublicationError(f"generation {generation_dir.name}: unreadable: {exc}")
-        if manifest.get("policy_sha256") != sha256_bytes(policy_bytes):
-            raise PublicationError(
-                f"generation {generation_dir.name}: policy.json hash mismatch")
-        if manifest.get("categories_sha256") != sha256_bytes(categories_bytes):
-            raise PublicationError(
-                f"generation {generation_dir.name}: categories.json hash mismatch")
+        self._check_manifest(manifest, generation_dir, policy_bytes, categories_bytes)
         try:
             validate_engine_documents(
                 json.loads(policy_bytes.decode("utf-8")),
@@ -304,4 +349,4 @@ class Publisher:
             "generation": resolved.name,
             "path": str(resolved),
             "manifest": manifest,
-        }
+            }
