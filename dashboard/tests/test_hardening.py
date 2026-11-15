@@ -373,11 +373,11 @@ def test_content_length_oversized_rejected_and_connection_closed(custom_server):
 
 # -- slow-trickle total deadline ----------------------------------------
 
-def _wait_slot_released(port):
+def _wait_slot_released(port, within=15):
     """The killed trickle connection releases its slot just after the
     client observes EOF, so poll for recovery (bounded) instead of
     sleeping a fixed guess."""
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + within
     while True:
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -391,6 +391,38 @@ def _wait_slot_released(port):
         if time.monotonic() > deadline:
             raise AssertionError("connection slot was not released")
         time.sleep(0.05)
+
+
+def _trickle_loop(sock, started):
+    """Keep an incomplete request alive: receive until the server closes
+    the connection, sending one byte (well inside the inactivity
+    window) whenever no close arrived. Returns (elapsed, received)."""
+    received = b""
+    while True:
+        # Poll for the server closing the connection; the recv timeout
+        # paces the trickle far inside the inactivity window. No fixed
+        # sleeps: the close (EOF or RST) is the synchronization.
+        sock.settimeout(0.1)
+        try:
+            data = sock.recv(4096)
+        except socket.timeout:
+            data = None
+        except ConnectionResetError:
+            # Killed with our trickled bytes still unread: the close
+            # arrives as a RST rather than a clean FIN.
+            data = b""
+        if data == b"":
+            return time.monotonic() - started, received
+        if data:
+            received += data
+        if time.monotonic() - started > 30:
+            raise AssertionError(
+                "server did not terminate the slow-trickle request")
+        try:
+            sock.sendall(b"x")
+        except (BrokenPipeError, ConnectionResetError):
+            # The close raced our send; the connection is just as dead.
+            return time.monotonic() - started, received
 
 
 def test_slow_trickle_terminated_by_total_deadline(custom_server):
@@ -408,39 +440,15 @@ def test_slow_trickle_terminated_by_total_deadline(custom_server):
             sock = socket.create_connection(("127.0.0.1", port), timeout=10)
             sock.sendall(first_bytes)
             started = time.monotonic()
-            closed_after = None
             try:
-                while True:
-                    # Poll for the server closing the connection; the
-                    # recv timeout paces the trickle far inside the
-                    # 3-second inactivity window (a byte about every
-                    # 0.1s), so only a multi-second scheduler stall
-                    # could trip the inactivity timeout instead. No
-                    # fixed sleeps: EOF is the synchronization.
-                    sock.settimeout(0.1)
-                    try:
-                        data = sock.recv(4096)
-                    except socket.timeout:
-                        data = None
-                    except ConnectionResetError:
-                        # The server killed the connection with our
-                        # trickled bytes still unread, so the close
-                        # arrives as a RST rather than a clean FIN.
-                        data = b""
-                    if data == b"":
-                        closed_after = time.monotonic() - started
-                        break
-                    if time.monotonic() - started > 30:
-                        raise AssertionError(
-                            "server did not terminate the slow-trickle request")
-                    sock.sendall(b"x")
+                closed_after, _ = _trickle_loop(sock, started)
             finally:
                 sock.close()
             # An instant EOF means the single slot was still held by
             # the previous recovery check and this connection was
             # refused: retry, bounded. A real deadline kill takes
             # seconds.
-            if closed_after is not None and closed_after > 0.5:
+            if closed_after > 0.5:
                 return closed_after
             if time.monotonic() > overall:
                 raise AssertionError("could not start a trickle connection")
@@ -455,13 +463,38 @@ def test_slow_trickle_terminated_by_total_deadline(custom_server):
     assert elapsed < 20, f"total deadline not enforced? {elapsed:.2f}s"
     _wait_slot_released(port)
 
-    # Body phase: complete headers, then a body that never completes.
-    elapsed = trickle(
+
+def test_body_slow_trickle_closed_at_deadline_without_response(custom_server):
+    """A request body that never completes is cut off at the total
+    deadline: the server sends NO response (a client timeout is not an
+    internal error), closes the connection (its unread bytes can never
+    be parsed as a subsequent request), and releases the slot
+    promptly. Runs under the same max_connections=1 setup so the slot
+    check is decisive."""
+    _, client = custom_server(max_connections=1, request_timeout=3.0,
+                              total_request_timeout=6.0)
+    port = client.port
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    # The declared body is far larger than the trickle can ever fill
+    # (~10 bytes/second for at most 30 seconds), so the request truly
+    # never completes and only the total deadline can end it.
+    sock.sendall(
         b"POST /api/login HTTP/1.1\r\nHost: x\r\n"
-        b"Content-Length: 50\r\nContent-Type: application/json\r\n\r\n{}")
-    assert elapsed > 3.5, f"killed early by inactivity timeout? {elapsed:.2f}s"
-    assert elapsed < 20, f"total deadline not enforced? {elapsed:.2f}s"
-    _wait_slot_released(port)
+        b"Content-Length: 100000\r\nContent-Type: application/json\r\n\r\n{}")
+    started = time.monotonic()
+    try:
+        closed_after, received = _trickle_loop(sock, started)
+    finally:
+        sock.close()
+    # 1. Terminated at approximately the 6s total deadline: not before
+    #    it, and within a few seconds after - not merely "under 20s".
+    assert 5.0 < closed_after < 10.0, f"deadline kill at {closed_after:.2f}s"
+    # 2. No response bytes ever arrived: the timeout was not reported
+    #    as a 500, and the closed connection cannot serve another
+    #    request.
+    assert received == b"", f"unexpected response bytes: {received!r}"
+    # 3. The single connection slot is released promptly.
+    _wait_slot_released(port, within=5)
 
 
 def test_total_deadline_must_cover_inactivity_timeout(tmp_path):
