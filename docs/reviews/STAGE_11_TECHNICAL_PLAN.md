@@ -7,7 +7,7 @@ explicit approval before any Stage 11 implementation begins.**
 
 **Repository:** https://github.com/yossigo88-cyber/kosherguard-platform
 **Working branch:** `stage-9b-deployment-preparation`
-**Branch HEAD under review (this revision):** `a1359e0b440e92e9255b90b51c3814204e2fd8ad`
+**Branch HEAD under review (this revision):** `7f87c415ccef8aa2ebb87900302da9f32ecd33db`
 (verified 2026-11-15 through the GitHub API; the source files
 referenced below were re-read at `f4f8492d` and are unchanged at this
 revision, because every commit after `f4f8492d` touched only this
