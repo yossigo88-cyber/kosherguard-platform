@@ -367,4 +367,4 @@ class Publisher:
             "generation": resolved.name,
             "path": str(resolved),
             "manifest": manifest,
-                       }
+        }
