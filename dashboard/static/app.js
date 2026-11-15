@@ -586,7 +586,7 @@ function renderSettings() {
     '<div class="card" style="max-width:560px"><h3>Account</h3>' +
     '<p>Signed in as <strong id="settings-user"></strong></p>' +
     '<label for="sp-current">Current password</label><input type="password" id="sp-current" autocomplete="current-password">' +
-    '<label for="sp-new">New password (at least 8 characters)</label><input type="password" id="sp-new" autocomplete="new-password">' +
+    '<label for="sp-new">New password (at least 12 characters)</label><input type="password" id="sp-new" autocomplete="new-password">' +
     '<p id="sp-error" class="form-error hidden"></p>' +
     '<p id="sp-ok" class="hidden" style="color:var(--ok)">Password changed. Please sign in again.</p>' +
     '<div class="modal-actions" style="justify-content:flex-start">' +
