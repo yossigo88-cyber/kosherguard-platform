@@ -214,9 +214,47 @@ function openPolicyDetail(policy, onChanged) {
     '<div class="toolbar"><input type="text" id="pt-domain" placeholder="example.com" style="max-width:280px">' +
     '<button class="btn btn-primary" id="pt-run">Evaluate</button></div>' +
     '<div id="pt-result"></div>' +
-    '<div class="modal-actions"><button class="btn" id="modal-cancel">Close</button></div>'
+    '<h3 style="margin-top:1rem">Version history</h3>' +
+    '<div id="pv-list"><span class="muted">Loading...</span></div>' +
+    '<div class="modal-actions">' +
+    (policy.enabled
+      ? '<button class="btn" id="pv-select">Select for publication</button>'
+      : '') +
+    '<button class="btn" id="modal-cancel">Close</button></div>'
   );
   modal.querySelector("#modal-cancel").addEventListener("click", closeModal);
+  const selectBtn = modal.querySelector("#pv-select");
+  if (selectBtn) {
+    selectBtn.addEventListener("click", function () {
+      api("POST", "/api/policies/" + policy.id + "/select", {})
+        .then(function () { closeModal(); onChanged(); })
+        .catch(showModalError);
+    });
+  }
+  api("GET", "/api/policies/" + policy.id + "/versions").then(function (data) {
+    el("pv-list").innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+      '<th>Version</th><th>When (UTC)</th><th>By</th><th>Note</th><th></th>' +
+      '</tr></thead><tbody>' +
+      data.versions.map(function (v) {
+        return '<tr><td class="mono">v' + escapeHtml(v.version) + '</td>' +
+          '<td class="mono">' + escapeHtml(v.created_at) + '</td>' +
+          '<td>' + escapeHtml(v.admin) + '</td>' +
+          '<td class="muted small">' + escapeHtml(v.note || '') + '</td>' +
+          '<td class="row-actions">' +
+          (v.version === policy.current_version
+            ? '<span class="muted small">current</span>'
+            : '<button class="btn btn-sm" data-rollback="' + v.version + '">Roll back</button>') +
+          '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    el("pv-list").querySelectorAll("button[data-rollback]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        api("POST", "/api/policies/" + policy.id + "/rollback",
+            { version: Number(btn.getAttribute("data-rollback")) })
+          .then(function () { closeModal(); onChanged(); })
+          .catch(showModalError);
+      });
+    });
+  }).catch(showModalError);
   modal.querySelector("#pt-run").addEventListener("click", function () {
     const domain = el("pt-domain").value.trim();
     api("POST", "/api/policies/" + policy.id + "/test", { domain: domain }).then(function (result) {
@@ -254,7 +292,7 @@ async function renderPolicies(params) {
     '<div class="spacer"></div>' +
     '<button class="btn btn-primary" id="policy-new">New policy</button></div>' +
     '<div class="table-wrap"><table><thead><tr>' +
-    "<th>Name</th><th>Default</th><th>Rules</th><th>Status</th><th></th>" +
+    "<th>Name</th><th>Default</th><th>Rules</th><th>Status</th><th>Publication</th><th></th>" +
     "</tr></thead><tbody id=" + '"policy-rows"' + "></tbody></table>" +
     '<div class="empty-state' + (data.policies.length ? " hidden" : "") + '">No policies yet. Create one to get started.</div></div>';
 
@@ -266,6 +304,9 @@ async function renderPolicies(params) {
       '<td class="mono">' + escapeHtml(p.rule_count) + "</td>" +
       '<td><button class="toggle' + (p.enabled ? " on" : "") + '" data-action="toggle" data-id="' + p.id +
       '" data-enabled="' + p.enabled + '" aria-label="Toggle policy"></button></td>' +
+      '<td>' + (p.selected_for_publication
+        ? '<span class="badge badge-info">Selected for publication</span>'
+        : '<span class="muted">-</span>') + '</td>' +
       '<td class="row-actions">' +
       '<button class="btn btn-sm" data-action="view" data-id="' + p.id + '">View / Test</button>' +
       '<button class="btn btn-sm" data-action="edit" data-id="' + p.id + '">Edit</button>' +
@@ -615,6 +656,136 @@ function renderSettings() {
   });
 }
 
+
+// ---------- publication (Stage 10) ----------
+
+async function renderPublication() {
+  const status = await api('GET', '/api/config/status');
+  const revData = await api('GET', '/api/config/revisions');
+
+  const sel = status.selected_policy;
+  const active = status.active_revision;
+  const engine = status.engine;
+
+  let banner;
+  if (!sel) {
+    banner = '<div class="banner banner-warn">No policy is selected for publication. ' +
+      'Open a policy and choose Select for publication.</div>';
+  } else if (status.unpublished_changes) {
+    banner = '<div class="banner banner-warn">The dashboard has <strong>unpublished changes</strong>. ' +
+      'The published revision below is still the previous configuration. ' +
+      'Publishing writes a new configuration revision for the filtering engine.</div>';
+  } else if (active && engine && status.engine_matches_active_revision === true) {
+    banner = '<div class="banner banner-info">The published configuration is live: the engine ' +
+      'reports it is enforcing revision ' + escapeHtml(active.revision) + '.</div>';
+  } else if (active) {
+    banner = '<div class="banner banner-info">Revision ' + escapeHtml(active.revision) +
+      ' is published to the engine configuration directory. The engine has not confirmed ' +
+      'a reload through its status file, so it is not shown as live.</div>';
+  } else {
+    banner = '<div class="banner banner-info">Nothing has been published yet.</div>';
+  }
+
+  const selectedCard = sel
+    ? '<dt>Policy</dt><dd><strong>' + escapeHtml(sel.name || ('id ' + sel.id)) + '</strong>' +
+      (sel.missing ? ' <span class="badge badge-danger">deleted</span>' : '') +
+      (sel.enabled === false ? ' <span class="badge badge-muted">disabled</span>' : '') + '</dd>' +
+      '<dt>Current draft version</dt><dd class="mono">v' + escapeHtml(sel.current_version || '-') + '</dd>' +
+      '<dt>Selected by</dt><dd>' + escapeHtml(sel.selected_by || '-') + ' at ' +
+      escapeHtml(sel.selected_at || '-') + '</dd>'
+    : '<dt>Policy</dt><dd><span class="muted">none selected</span></dd>';
+
+  const activeCard = active
+    ? '<dt>Revision</dt><dd class="mono">' + escapeHtml(active.revision) + '</dd>' +
+      '<dt>Policy</dt><dd>' + escapeHtml(active.policy_name) + ' (v' + escapeHtml(active.policy_version) + ')</dd>' +
+      '<dt>Published by</dt><dd>' + escapeHtml(active.admin) + ' at ' + escapeHtml(active.created_at) + '</dd>' +
+      '<dt>Generation</dt><dd class="mono">' + escapeHtml(active.generation) + '</dd>' +
+      '<dt>Policy SHA-256</dt><dd class="mono small">' + escapeHtml(active.policy_sha256) + '</dd>' +
+      '<dt>Categories SHA-256</dt><dd class="mono small">' + escapeHtml(active.categories_sha256) + '</dd>'
+    : '<dd><span class="muted">no published revision</span></dd>';
+
+  let engineCard;
+  if (!engine) {
+    engineCard = '<dd><span class="muted">Unknown - the engine has not written a status file ' +
+      'to this publication directory. Only the engine\'s own report counts as live.</span></dd>';
+  } else {
+    engineCard =
+      '<dt>State</dt><dd>' + escapeHtml(engine.state) + '</dd>' +
+      '<dt>Active revision</dt><dd class="mono">' + escapeHtml(engine.revision == null ? '-' : engine.revision) + '</dd>' +
+      '<dt>Generation</dt><dd class="mono">' + escapeHtml(engine.generation || '-') + '</dd>' +
+      '<dt>Loaded at</dt><dd class="mono">' + escapeHtml(engine.loaded_at || '-') + '</dd>' +
+      '<dt>Trigger</dt><dd>' + escapeHtml(engine.trigger || '-') + '</dd>' +
+      '<dt>Reloads</dt><dd class="mono">' + escapeHtml(engine.reload_count) + '</dd>' +
+      '<dt>Policy SHA-256</dt><dd class="mono small">' + escapeHtml(engine.policy_sha256 || '-') + '</dd>' +
+      (engine.last_error
+        ? '<dt>Last rejected reload</dt><dd>' + escapeHtml(engine.last_error.error) +
+          ' (' + escapeHtml(engine.last_error.at) + ')</dd>'
+        : '');
+  }
+
+  el('content').innerHTML =
+    '<p class="page-sub">Dashboard edits are drafts. An edit reaches the filtering engine only ' +
+    'after an explicit publish of the selected policy, and it is live only after the engine ' +
+    'confirms a successful reload.</p>' +
+    banner +
+    '<div class="card-grid">' +
+    '<div class="card"><h3>Selected for publication</h3><dl class="kv">' + selectedCard + '</dl>' +
+    '<div class="modal-actions" style="justify-content:flex-start">' +
+    '<button class="btn btn-primary" id="pub-publish"' + (sel ? '' : ' disabled') +
+    '>Publish now</button></div></div>' +
+    '<div class="card"><h3>Published to disk</h3><dl class="kv">' + activeCard + '</dl></div>' +
+    '<div class="card"><h3>Enforced by the engine</h3><dl class="kv">' + engineCard + '</dl></div>' +
+    '</div>' +
+    '<h3>Published configuration history</h3>' +
+    '<div class="table-wrap"><table><thead><tr>' +
+    '<th>Revision</th><th>Policy</th><th>Published by</th><th>At (UTC)</th><th>Status</th><th></th>' +
+    '</tr></thead><tbody id="rev-rows"></tbody></table>' +
+    '<div class="empty-state' + (revData.revisions.length ? ' hidden' : '') +
+    '">Nothing published yet.</div></div>';
+
+  el('rev-rows').innerHTML = revData.revisions.map(function (r) {
+    return '<tr><td class="mono">' + escapeHtml(r.revision) + '</td>' +
+      '<td>' + escapeHtml(r.policy_name) + ' <span class="muted small">v' + escapeHtml(r.policy_version) + '</span></td>' +
+      '<td>' + escapeHtml(r.admin) + '</td>' +
+      '<td class="mono">' + escapeHtml(r.created_at) + '</td>' +
+      '<td>' + (r.status === 'published'
+        ? '<span class="badge badge-ok">Published</span>'
+        : r.status === 'failed'
+          ? '<span class="badge badge-danger">Failed</span>'
+          : '<span class="badge badge-muted">' + escapeHtml(r.status) + '</span>') +
+      (r.detail ? '<br><span class="muted small">' + escapeHtml(r.detail) + '</span>' : '') + '</td>' +
+      '<td class="row-actions">' +
+      (r.status === 'published' && (!active || active.revision !== r.revision)
+        ? '<button class="btn btn-sm" data-rollback="' + r.revision + '">Roll back to this</button>'
+        : '') +
+      '</td></tr>';
+  }).join('');
+
+  const publishBtn = el('pub-publish');
+  if (publishBtn && sel) {
+    publishBtn.addEventListener('click', function () {
+      publishBtn.disabled = true;
+      api('POST', '/api/config/publish', {})
+        .then(renderPublication)
+        .catch(function (e) { alert(e.message); renderPublication(); });
+    });
+  }
+  el('rev-rows').addEventListener('click', function (event) {
+    const btn = event.target.closest('button[data-rollback]');
+    if (!btn) return;
+    const rev = btn.getAttribute('data-rollback');
+    confirmDialog(
+      'Roll back configuration',
+      'Publish a new revision with the exact content of revision ' + rev +
+      '? The engine will enforce it after its next reload. History is never modified.',
+      'Roll back',
+      function () { return api('POST', '/api/config/rollback', { revision: Number(rev) }); });
+    el('modal').querySelector('#modal-confirm').addEventListener('click', function () {
+      setTimeout(renderPublication, 50);
+    });
+  });
+}
+
 // ---------- router ----------
 
 var currentUser = null;
@@ -622,6 +793,7 @@ var currentUser = null;
 var ROUTES = {
   overview: { title: "Overview", render: function () { return renderOverview(); } },
   policies: { title: "Policies", render: function () { return renderPolicies(); } },
+  publication: { title: "Publication", render: function () { return renderPublication(); } },
   categories: { title: "Categories", render: function () { return renderCategories(); } },
   domains: { title: "Domain Management", render: function () { return renderDomains(); } },
   applications: { title: "Applications", render: function () { renderApplications(); return Promise.resolve(); } },
