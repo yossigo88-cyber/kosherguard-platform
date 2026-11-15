@@ -129,6 +129,50 @@ def _write_file_atomic(path: Path, content: bytes, token: str) -> None:
         raise
 
 
+def _safe_open_manifest_nofollow(manifest_path: Path):
+    """Descriptor-based safe open of a generation manifest, mirroring
+    dns_service._safe_open_manifest: os.open with O_NOFOLLOW (the final
+    path component cannot be a symlink of any kind), plus O_CLOEXEC and
+    O_NONBLOCK where available (so an unexpected FIFO cannot hang the
+    open); os.fstat on the OPENED descriptor must show a regular file
+    before any byte is read, and the caller reads from THAT descriptor
+    only - replacing the pathname after the check cannot change which
+    file is read (no time-of-check/time-of-use window).
+
+    Returns None only when the path is genuinely absent; raises
+    PublicationError for every present-but-unusable entry (any symlink
+    or broken symlink, directory, FIFO, socket, device, permission
+    error) and on platforms without O_NOFOLLOW (fail closed).
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        if os.path.lexists(manifest_path):
+            raise PublicationError(
+                f"manifest {manifest_path}: this platform lacks "
+                "O_NOFOLLOW; refusing to open")
+        return None
+    flags = os.O_RDONLY | nofollow
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)  # a FIFO cannot hang the open
+    try:
+        fd = os.open(manifest_path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PublicationError(
+            f"manifest {manifest_path}: cannot open safely ({exc})")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise PublicationError(
+                f"manifest {manifest_path} is not a regular file "
+                "(directory, FIFO, socket, device, or other "
+                "non-regular entry)")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 class Publisher:
     """Publishes validated engine configuration generations under a root."""
 
@@ -317,26 +361,33 @@ class Publisher:
         generation_dir = Path(generation_dir)
         manifest_path = generation_dir / "manifest.json"
         # Same rule as the engine (dns_service.load_validated_engine):
-        # the manifest path itself must be a regular file. lstat, never
-        # is_file: a symlink - even to a valid regular file - is
-        # rejected, along with directories and every other non-regular
-        # entry. A missing manifest in a generation directory the
-        # publisher itself wrote is equally a failure.
+        # descriptor-based safe open - os.open with O_NOFOLLOW (any
+        # symlink is rejected with ELOOP, broken or not), os.fstat on
+        # the OPENED descriptor must show a regular file, and the bytes
+        # are read from THAT descriptor only. Replacing the pathname
+        # after the check cannot change which file is read (no
+        # time-of-check/time-of-use window). A generation the publisher
+        # itself wrote MUST have a manifest: absence is a failure, as
+        # is every present-but-unusable entry (symlink, directory,
+        # FIFO, socket, device, permission error).
+        manifest_fd = _safe_open_manifest_nofollow(manifest_path)
+        if manifest_fd is None:
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest.json is "
+                "missing")
         try:
-            manifest_stat = os.lstat(manifest_path)
+            fh = os.fdopen(manifest_fd, "rb")
         except OSError as exc:
+            os.close(manifest_fd)
             raise PublicationError(
-                f"generation {generation_dir.name}: manifest.json: {exc}")
-        if not stat.S_ISREG(manifest_stat.st_mode):
-            raise PublicationError(
-                f"generation {generation_dir.name}: manifest.json is not "
-                "a regular file (symlink, directory, or other "
-                "non-regular entry)")
+                f"generation {generation_dir.name}: unreadable: {exc}")
         try:
+            with fh:
+                manifest_bytes = fh.read()
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
             policy_bytes = (generation_dir / "policy.json").read_bytes()
             categories_bytes = (generation_dir / "categories.json").read_bytes()
-            manifest = json.loads(manifest_path.read_text("utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise PublicationError(f"generation {generation_dir.name}: unreadable: {exc}")
         self._check_manifest(manifest, generation_dir, policy_bytes, categories_bytes)
         try:
