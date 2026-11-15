@@ -2,8 +2,9 @@
 
 One file-based SQLite database holds administrators, sessions,
 categories, domain records, policies, policy version history,
-publication state, published-configuration revisions, and the audit
-log. SQLite needs no server, no account, and no paid service, and it
+publication state, published-configuration revisions, the Stage 11A
+device registry (devices, associations, policy assignments), and the
+audit log. SQLite needs no server, no account, and no paid service, and it
 lives next to the code it serves, which fits a development-stage admin
 tool.
 
@@ -159,6 +160,82 @@ INITIAL_CATEGORIES = [
 ]
 
 
+# Stage 11A additions: the device registry. A "device" is a durable
+# administrative record - never identified by its current IP address -
+# that may represent one device OR a network/group (for example "Home
+# Wi-Fi"); device_type router/network names group entries honestly.
+# Associations are strictly separated by identity_class: network bindings
+# (ipv4, ipv6_prefix) are routing hints, never identity; credentials
+# (token_hash, a RESERVED kind in Stage 11A - no tokens are issued,
+# stored, or authenticated) are the only proof-bearing associations. The
+# combined CHECK constraint makes the permitted (kind, identity_class)
+# pairs a property of the database itself: SQLite aborts any INSERT or
+# UPDATE producing another combination, even if API validation is
+# bypassed. Adding a future credential kind is a deliberate table-rebuild
+# migration, never a silent widening. Binding values are stored ONLY in
+# the canonical form produced by the engine package's
+# address_canonicalization module, so the partial unique index below IS
+# the canonical duplicate check. Removal is soft (state = 'removed'):
+# bindings are retired and assignment history is kept, never hard-deleted.
+SCHEMA_STAGE11 = """
+CREATE TABLE IF NOT EXISTS devices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  device_type TEXT NOT NULL DEFAULT 'other',
+  os TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'active'
+    CHECK (state IN ('active','inactive','disabled','removed')),
+  management_status TEXT NOT NULL DEFAULT 'unmanaged'
+    CHECK (management_status IN ('unmanaged','enrolled')),
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  registered_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_seen_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS device_associations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id INTEGER NOT NULL REFERENCES devices(id),
+  kind TEXT NOT NULL CHECK (kind IN ('ipv4','ipv6_prefix','token_hash')),
+  -- network_binding: an address/prefix routing hint; never identity.
+  -- credential: proof-bearing identity (token_hash; MDM kinds later).
+  identity_class TEXT NOT NULL
+    CHECK (identity_class IN ('network_binding','credential')),
+  -- Stored ONLY in canonical form (plan 6.2); the unique index below is
+  -- therefore also the canonical duplicate check.
+  value TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  retired_at TEXT,
+  -- Database-enforced identity classes (plan 6.1): the ONLY permitted
+  -- (kind, identity_class) pairs. SQLite aborts any INSERT or UPDATE
+  -- producing another combination, even if API validation is bypassed.
+  CHECK (
+    (kind = 'ipv4'        AND identity_class = 'network_binding') OR
+    (kind = 'ipv6_prefix' AND identity_class = 'network_binding') OR
+    (kind = 'token_hash'  AND identity_class = 'credential')
+  )
+);
+-- One live association value maps to at most one device.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_live_association
+  ON device_associations (kind, value) WHERE retired_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS device_policy_assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id INTEGER NOT NULL REFERENCES devices(id),
+  policy_id INTEGER NOT NULL REFERENCES policies(id),
+  policy_version_at_assignment INTEGER NOT NULL,
+  assigned_by TEXT NOT NULL,
+  assigned_at TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
+);
+-- At most one active assignment per device.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_assignment
+  ON device_policy_assignments (device_id) WHERE active = 1;
+"""
+
+
 def connect(path) -> sqlite3.Connection:
     """Open (creating if needed) the database with safe pragmas."""
     path = Path(path)
@@ -176,6 +253,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     migration (idempotent)."""
     conn.executescript(SCHEMA)
     conn.executescript(SCHEMA_STAGE10)
+    conn.executescript(SCHEMA_STAGE11)
     _migrate_policy_versions(conn)
     now = utcnow()
     for slug, display, description in INITIAL_CATEGORIES:
