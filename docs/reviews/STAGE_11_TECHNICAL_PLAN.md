@@ -7,9 +7,9 @@ explicit approval before any Stage 11 implementation begins.**
 
 **Repository:** https://github.com/yossigo88-cyber/kosherguard-platform
 **Working branch:** `stage-9b-deployment-preparation`
-**Branch HEAD at inspection:** `7c42dc31dbd041afc31b45b0292c6fd068543b55`
-(verified 2026-11-15 by reading the branch tree through the GitHub API;
-every file reference below was read at that commit)
+**Branch HEAD at inspection (this revision):** `f4f8492d7f7e22058da018b4cd66b55c769978ea`
+(verified 2026-11-15 through the GitHub API; every source file
+referenced below was re-read at that commit for this revision)
 **Main (unchanged):** `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`
 
 This plan follows the Stage 10 Technical Roadmap
@@ -28,6 +28,64 @@ strictly separates **network/group bindings** (what the current engine
 can observe) from **authenticated per-device identity** (what the
 current engine cannot observe), and gates secure per-device enforcement
 on an authenticated transport or device channel.
+
+Revision note (2026-11-15, third commit): independent review requested
+four corrections, all applied in this revision and summarized in
+section 0: (1) association identity classes are now enforced by
+database CHECK constraints, not only API validation (6.1); (2) network
+addresses are canonicalized before storage, duplicate checking, and
+publication, with exact rules and planned tests (6.2); (3) the
+tighten-only rule for unauthenticated network bindings is now a
+mandatory security requirement with a deterministic, testable
+comparison method (4.5), replacing its earlier framing as an optional
+owner decision; (4) assigned, published, and enforced policy are now
+three formally distinct states (4.6), so a saved assignment is never
+implied to be active on an engine.
+
+---
+
+## 0. Corrections applied in this revision (2026-11-15)
+
+This revision applies the four corrections from independent review.
+Each is summarized here with a pointer to its full specification.
+
+1. **Identity classes are enforced in the database, not only in the
+   API.** `device_associations` gains a CHECK constraint permitting
+   exactly three (kind, identity_class) pairs: `ipv4` ->
+   `network_binding`, `ipv6_prefix` -> `network_binding`,
+   `token_hash` -> `credential`. The database itself rejects any other
+   combination, even if a future bug bypasses API validation. API
+   validation stays (the server derives `identity_class` from `kind`
+   and never accepts it from clients); the CHECK constraint is the
+   backstop. Future credential kinds are added only through a
+   deliberate table-rebuild schema migration. Full specification:
+   section 6.1.
+2. **Network addresses are canonicalized.** Every binding value is
+   parsed and stored in exactly one canonical form before duplicate
+   checking and before publication; malformed addresses, unexpected
+   prefix lengths, and ambiguous input are rejected. Duplicate
+   detection operates on canonical values only, and published
+   generations carry only canonical keys. Full specification and
+   planned tests: section 6.2.
+3. **Tighten-only is a mandatory security rule with a defined
+   comparison.** A policy assigned to a device reached through an
+   unauthenticated network binding must never be less restrictive than
+   the default policy. "Less restrictive" is decided by a
+   deterministic, testable comparison derived from the engine's actual
+   decision semantics (section 4.5) - never by policy names, labels,
+   or category counts. The check runs server-side at assignment, when
+   the default policy selection changes, and at publication; failure
+   rejects the operation. This resolves former open decision 12.6:
+   tighten-only is no longer optional.
+4. **Assigned, published, and enforced are three distinct states.**
+   The dashboard defines and displays them separately (section 4.6):
+   an assignment saved in the database (assigned), an assignment
+   contained in the latest successfully published immutable generation
+   (published), and a policy confirmed loaded by a running engine
+   through its own status output (enforced). Publication alone never
+   implies enforcement; with no engine connected - the current Oracle
+   staging truth - enforcement is reported as unavailable, never as
+   active.
 
 ---
 
@@ -312,9 +370,11 @@ device its own policy - in each of these conditions:
 4. **Untrusted users on the network:** source addresses are trivially
    spoofable - any client can configure a static address and inherit
    that address's policy. A child could claim a parent's address to
-   receive a looser policy. Bindings alone can never be the basis for
-   granting a LESS restrictive policy unless the operator knowingly
-   accepts that risk (12.6).
+   receive a looser policy. Bindings alone can therefore never be the
+   basis for granting a LESS restrictive policy. This is why the
+   tighten-only rule (4.5) is mandatory: an unauthenticated binding
+   may only apply a policy provably at least as restrictive as the
+   default.
 5. **VPNs and alternate resolvers on the device** bypass or re-source
    the traffic entirely.
 
@@ -410,6 +470,216 @@ implicitly: like every Stage 10 change, an assignment, binding, or
 state change becomes effective only after an explicit publish, and the
 dashboard's existing `unpublished_changes` indicator covers it (7.3).
 
+### 4.5 The tighten-only security rule (mandatory; review correction 3)
+
+**Rule.** A policy assigned to a device whose live associations are
+unauthenticated network bindings must never weaken the default policy
+(the Stage 10 `publication_state.selected_policy_id`). In Stage 11
+every association is a network binding, so the rule applies to every
+assignment. When authenticated credentials exist (7.6), devices
+reached ONLY through credentials are exempt, because their policy
+choice is backed by proof of identity.
+
+This rule is a mandatory security requirement, not an owner option.
+Review corrected the earlier framing, which had offered the override
+direction as open decision 12.6. A source address is trivially
+claimable (3.4 item 4), so a binding must never be a way to obtain
+looser filtering.
+
+**Why a real comparison, not labels.** Restrictiveness cannot be read
+off policy names, descriptions, or rule counts: a policy named
+"Strict" can allow what "Lenient" blocks, and a policy with more
+blocked categories can still allow a specific domain through an
+explicit allowlist entry (the allowlist beats a category block in the
+engine's precedence). The comparison below is defined directly on the
+engine's decision semantics in `filtering-engine/src/policy_engine.py`.
+
+**Decision semantics (from `PolicyEngine.decide`).** For a domain `d`
+under policy `P` the engine checks, in order: (1) explicit allowlist
+match (the domain itself or any subdomain of a listed entry) -> allow;
+(2) explicit blocklist match -> block; (3) any category of `d` in
+`category_block` -> block; (4) any category of `d` in
+`category_allow` -> allow; (5) `default_policy`. The decision
+therefore depends on exactly four inputs: whether `d` matches the
+allowlist (`al`), whether it matches the blocklist (`bl`), the
+category set of `d` (`C`), and the policy's rule data. Both policies
+in a comparison are evaluated against the same category universe, and
+both are first normalized by the engine's own `validate_policy()`, so
+comparison inputs are the exact data the engine would enforce.
+
+**Comparison definition.** Let `U` be the union of the four category
+rule lists of the two policies (`category_allow` and `category_block`
+of each). Categories outside `U` cannot fire a rule in either policy,
+so they cannot affect the outcome. For every `alA, blA, alB, blB` in
+`{0,1}` and every `C` that is a subset of `U`, compute
+`dec(A, alA, blA, C)` and `dec(B, alB, blB, C)` by the precedence
+above. Then:
+
+```
+A is AT LEAST AS RESTRICTIVE AS B
+  <=>  for every one of those combinations,
+       dec(B, ...) = block  implies  dec(A, ...) = block.
+```
+
+- **Sound:** every real domain induces concrete booleans and a concrete
+  category set, all covered by the enumeration, so a passing check
+  guarantees no domain is allowed by A that B blocks.
+- **Possibly over-strict:** the enumeration treats the four booleans
+  as independent and ranges over all subsets of `U`, including
+  combinations no real domain can produce (for example when the two
+  policies share allowlist entries, or a category the database never
+  assigns to any domain). Rejecting a pair over an unrealizable
+  combination is the safe direction and is documented behavior, not a
+  bug.
+- **Independent of category data:** because `C` ranges over ALL
+  subsets of `U`, the result holds for every possible category
+  database content; adding domains or categories never invalidates a
+  passing check. The check must be re-run only when a policy's RULES
+  change (every edit creates a new policy version) or when the default
+  policy selection changes - which are exactly enforcement points 2
+  and 3 below.
+- **Deterministic and testable:** a pure function of the two
+  normalized policy documents; same inputs, same answer. Cost is
+  `16 x 2^|U|` decision evaluations. The implementation caps `|U|` at
+  20 referenced categories (far above any realistic policy pair; the
+  seed catalogue has 11 categories in total); a pair exceeding the cap
+  cannot be compared safely and is REJECTED - fail safe, never
+  guessed.
+- **Invalid input:** a policy that fails `validate_policy()` cannot be
+  compared and is rejected.
+- **Placement:** the comparator lives in the filtering engine package
+  next to `policy_engine.py` and is re-exported through
+  `engine_bridge.py`, keeping policy logic single-sourced (1.3 item
+  4). The engine itself never runs the comparison; it only enforces
+  published documents.
+
+**Enforcement points (all server-side).**
+
+1. **Assignment** (`POST /api/devices/<id>/assign-policy`): the check
+   runs inside the same `_write_txn` as the assignment swap, comparing
+   the candidate policy's current version against the current default
+   policy's current version. Failure -> 409 naming the policy and the
+   reason; no assignment row is written. The UI displays the server's
+   verdict but never decides it.
+2. **Default policy change** (`select_policy_for_publication`):
+   changing the default changes the baseline every binding is measured
+   against. The selection endpoint re-runs the check for every active
+   assignment on a device with any live network binding, inside the
+   same write transaction that moves the selection pointer; if any
+   assignment would violate tighten-only, the selection change is
+   refused (409) naming the conflicting devices and policies. A
+   default-policy change can therefore never silently make an existing
+   network binding less restrictive.
+3. **Publication** (`publish_config`): assignments record the policy
+   version at assignment, but enforcement uses the latest published
+   version (4.1), and a policy can be edited between assignment and
+   publish. The publish path therefore re-runs the check for every
+   active binding-governed assignment against the freshly exported
+   current versions BEFORE any file is written. A violation fails the
+   whole publication: no generation is written, the previous
+   generation stays current, and the failure is recorded on the
+   revision row exactly like a validation failure today.
+4. **Policy disable/delete/rollback** keep their Stage 10 invariants;
+   the "referenced by an active assignment" check (4.2) is unchanged.
+
+**If comparison ever becomes impossible.** The current policy model
+supports the decidable comparison above, so custom policies on network
+bindings remain allowed under it. If a future policy feature (for
+example time-based rules) made decisions depend on inputs outside the
+enumeration, the comparison must be redesigned first; until such a
+safe mechanism exists, custom policies on network bindings are
+DISABLED and every binding falls back to the default policy. This plan
+does not claim that fallback is needed today.
+
+**Planned tests** (listed in section 10): stricter-than-default
+allowed; equivalent (identical rule data) allowed; less restrictive
+rejected at assignment, at default-policy change, and at publish;
+incomparable policies (each blocks something the other allows)
+rejected; invalid candidate rejected; category-precedence cases
+(category allow vs category block; an explicit allowlist entry
+overriding a category block; default allow vs default block interplay);
+cap-exceeded fail-safe rejection.
+
+### 4.6 Assigned vs published vs enforced policy (review correction 4)
+
+The dashboard must never imply that an assignment is active on the DNS
+engine merely because an administrator saved it. Three states are
+defined and never conflated:
+
+1. **Assigned** - the administrator's current intended assignment in
+   the dashboard database: the active `device_policy_assignments`
+   rows, plus the default policy pointer
+   (`publication_state.selected_policy_id`). Saving an assignment
+   changes nothing any engine does.
+2. **Published** - the assignment contained in the latest successfully
+   published immutable configuration generation: the
+   `config_revisions` row with `status = 'published'` named by
+   `publication_state.active_revision`, verifiable on disk through the
+   publisher's `current()` (symlink target plus manifest hash
+   re-verification). Publication remains the one explicit, audited
+   Stage 10 action; its atomic multi-document generation protocol is
+   unchanged.
+3. **Enforced** - the policy a running filtering engine has CONFIRMED
+   loaded, reported only from the engine's own status output. The
+   engine's `--status-file` (`engine-status.json`, written atomically
+   after every load attempt) records the active generation, revision,
+   per-document SHA-256 hashes, reload count, `loaded_at`, and
+   `last_error`; Stage 10's `Store.engine_status()` and
+   `config_status()` already read and compare it when dashboard and
+   engine share the publication root.
+
+Rules:
+
+- **Unpublished assignments are visibly marked.** The existing
+  `unpublished_changes` mechanism (a fresh in-memory export hashed
+  against the active revision's recorded hashes) extends to the
+  multi-document generation, so assignment, binding, and device-state
+  changes set it. The device list, the device page, and the
+  Publication page show an "unpublished" badge until a publish
+  succeeds.
+- **Publication success is not enforcement.** A completed publish
+  means a verified generation on disk. An engine loads it only on its
+  next SIGHUP/`--watch` reload, can reject it (last-known-good
+  retention), or can be stopped entirely. The dashboard never upgrades
+  "published" to "enforced" on publish success alone.
+- **Enforcement requires trustworthy status.** "Enforced" is reported
+  only when the engine's status output exists AND identifies a loaded
+  generation/revision whose content hashes match the active published
+  revision's recorded hashes. The multi-document generation extends
+  both the manifest and the status output to carry the hash of EVERY
+  file (7.1), so the comparison covers `devices.json` and every policy
+  document, not only the two Stage 10 files. A status that cannot
+  identify its loaded revision is not evidence of enforcement.
+- **No engine connected => unavailable, never active.** When the
+  status file is absent or unreadable (`Store.engine_status()` returns
+  None), enforcement is reported as "engine not connected /
+  enforcement unavailable". This is the current Oracle staging truth:
+  the VM runs the dashboard only, no filtering engine is connected,
+  and nothing in the UI or API may present any policy as enforced
+  there.
+- **Stale or inconsistent status is reported honestly.** If the status
+  names an older revision than the active one, or its hashes do not
+  match the active revision, or `last_error` records a rejected reload
+  after the last publish, the UI says so ("engine has not confirmed
+  revision N; last confirmed revision M", or "engine rejected the
+  latest generation") - never a green "active".
+- **API shape.** `GET /api/devices/<id>/effective-policy` returns the
+  three states distinctly, for example `{assigned: {policy,
+  version_at_assignment} | "default", published: {revision,
+  generation} | null, enforced: {revision, generation, confirmed_at} |
+  "unavailable" | "stale" | "rejected"}`. `config_status()` gains a
+  per-assignment view of the same three states; its existing
+  `engine_matches_active_revision` comparison generalizes to the
+  multi-document hash map.
+
+**Planned tests** (listed in section 10): an assignment saved but not
+published is marked unpublished; a successful publication with no
+engine reports enforced = unavailable (never active); engine status
+matching the active revision reports enforced; engine status on an
+older revision reports stale; a missing status file reports
+not-connected; a status whose `last_error` postdates the last publish
+reports the rejection.
+
 ---
 
 ## 5. Dashboard experience plan
@@ -446,9 +716,14 @@ and adds detail routes, reusing existing patterns: `api()` helper,
    details page.
 6. **Status indicators**: state badges; an "unpublished changes" hint
    consistent with the Publication page when assignments or bindings
-   changed since the last publish; a staleness hint when `last_seen_at`
+   changed since the last publish; the three-state
+   assigned/published/enforced display of 4.6 on the device page's
+   effective-policy card (enforcement shown as unavailable when no
+   engine is connected); a staleness hint when `last_seen_at`
    is old for an `active` device (possible sign of a DHCP change);
    a group hint when a binding is known to cover multiple devices.
+   Assignment attempts surface the server-side tighten-only verdict
+   (4.5) verbatim; the UI never pre-judges the comparison.
 7. **Honesty**: the page header keeps the existing honest note that no
    MDM enrollment exists, `management_status` is `unmanaged` for every
    device, and network bindings are labeled as not being device
@@ -487,6 +762,16 @@ CREATE TABLE IF NOT EXISTS device_associations (
   -- credential: proof-bearing identity (token_hash; MDM kinds later).
   identity_class TEXT NOT NULL
     CHECK (identity_class IN ('network_binding','credential')),
+  -- Database-enforced identity classes (6.1): the ONLY permitted
+  -- (kind, identity_class) pairs. SQLite aborts any INSERT or UPDATE
+  -- producing another combination, even if API validation is bypassed.
+  CHECK (
+    (kind = 'ipv4'        AND identity_class = 'network_binding') OR
+    (kind = 'ipv6_prefix' AND identity_class = 'network_binding') OR
+    (kind = 'token_hash'  AND identity_class = 'credential')
+  ),
+  -- Stored ONLY in canonical form (6.2); the unique index below is
+  -- therefore also the canonical duplicate check.
   value TEXT NOT NULL,
   created_at TEXT NOT NULL,
   retired_at TEXT
@@ -509,13 +794,97 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_active_assignment
   ON device_policy_assignments (device_id) WHERE active = 1;
 ```
 
+### 6.1 Database-enforced identity classes (review correction 1)
+
+The combined CHECK constraint above makes the permitted
+(kind, identity_class) pairs a property of the database, not of any
+application layer. Consequences:
+
+- **Backstop, not replacement.** API validation stays: the server
+  derives `identity_class` from `kind` (`ipv4`/`ipv6_prefix` ->
+  `network_binding`; `token_hash` -> `credential`) and never accepts
+  `identity_class` from the client, so legitimate users keep precise
+  field-level errors. The CHECK constraint exists for the day a future
+  code path forgets that rule: SQLite evaluates it on every INSERT and
+  UPDATE and aborts the statement inside the same `_write_txn`
+  transaction, so an invalid row can never be committed.
+- **A binding can never become a credential by edit.** The CHECK
+  covers UPDATEs too, so retire-and-replace remains the only path.
+- **Adding a future credential kind is a deliberate migration.**
+  SQLite cannot alter a CHECK constraint in place. A new kind (for
+  example an MDM certificate fingerprint) is added by an explicit,
+  separately reviewed migration in the `SCHEMA_STAGE*` style: create a
+  replacement table whose CHECK names the existing pairs PLUS the new
+  one, copy all rows, drop the old table, rename, and recreate the
+  indexes - the standard safe SQLite table rebuild, with the foreign
+  key pragma handled around it - plus migration tests proving existing
+  rows survive and invalid combinations are still rejected. The
+  migration must name the exact new pair; widening the constraint
+  "for flexibility" is forbidden, because every new pair is a security
+  statement about what counts as identity.
+
+### 6.2 Canonical network addresses (review correction 2)
+
+Every binding value is normalized to one canonical form BEFORE it is
+checked for duplicates, stored, or published. One piece of code does
+this everywhere: the canonicalizer lives in the filtering engine
+package (next to `policy_engine.py`) and is re-exported through
+`engine_bridge.py`, keeping validation single-sourced (1.3 item 4).
+Both the dashboard (at write time) and the engine (at lookup time)
+call the same function.
+
+Rules (specified against Python's `ipaddress` module):
+
+- **IPv4** (`kind = 'ipv4'`): parse with `ipaddress.IPv4Address` and
+  store `str(address)` - canonical dotted-quad (`192.168.1.50`). The
+  strict parser rejects leading zeros (`192.168.001.50`), non-dotted
+  forms (single integers, hex, octal), out-of-range octets, prefix
+  notation, and surrounding whitespace; rejected input is never
+  silently repaired, the API error names the field.
+- **IPv6 group prefix** (`kind = 'ipv6_prefix'`): parse with
+  `ipaddress.IPv6Network(value, strict=True)`. The prefix length MUST
+  be exactly 64 and the address part MUST be the network address
+  (strict parsing rejects host bits, so `2001:db8::1/64` is rejected
+  and the administrator writes `2001:db8::/64`). Store `str(network)`
+  - the canonical compressed lowercase form with the normalized
+  network address. Rejected: malformed addresses, any prefix length
+  other than /64, zone IDs (`fe80::%eth0/64`), IPv4-mapped or
+  IPv4-compatible forms (so IPv4 space has exactly one representation
+  and cannot be duplicated through the IPv6 kind), and empty or
+  whitespace-padded input.
+- **Duplicate detection operates on canonical values only.** Only
+  canonical strings are ever stored, so the partial unique index
+  `uq_live_association (kind, value) WHERE retired_at IS NULL` IS the
+  canonical duplicate check: two spellings of one network collide at
+  insert time with a 409, never silently coexist.
+- **Publication uses canonical keys.** `devices.json` binding keys are
+  the stored canonical strings (7.1). The engine normalizes every
+  observed source address with the same canonicalizer before lookup:
+  an IPv4 source maps to its dotted-quad key; an IPv6 source maps to
+  the `str()` of its /64 network. Lookup stays an exact string dict
+  lookup with no per-query parsing ambiguity.
+
+Planned tests (section 10): equivalent IPv6 spellings
+(`2001:0DB8:0000:0000:0000:0000:0000:0000/64`, `2001:DB8::/64`,
+`2001:db8:0:0::/64`) all store and publish as `2001:db8::/64`, and the
+second spelling of the same network is rejected as a duplicate;
+host-bits-set prefix (`2001:db8::1/64`) rejected; `/48`, `/128`, and
+`/32` on the IPv6 kind rejected; malformed input (`2001:::0/64`)
+rejected; zone ID rejected; IPv4-mapped rejected; IPv4 normalization
+(`192.168.1.50` stored unchanged; leading-zero `192.168.001.50`
+rejected, not corrected); duplicate normalized IPv4 rejected; exported
+`devices.json` contains only canonical keys; engine lookup matches a
+source address inside a canonical /64 binding.
+
 Security properties:
 
 - **No shared binding is ever a unique identity**: the
-  `identity_class` column is mandatory, and `ipv4`/`ipv6_prefix`
-  associations can only be created as `network_binding`. API and UI
-  copy reflects the class; a binding can never be upgraded to
-  `credential` by editing - only retired and replaced.
+  `identity_class` column is mandatory, its permitted combinations are
+  enforced by the database CHECK constraint (6.1) - not only by API
+  validation - and `ipv4`/`ipv6_prefix` associations can only exist as
+  `network_binding`. API and UI copy reflects the class; a binding can
+  never be upgraded to `credential` by editing - only retired and
+  replaced.
 - **Unique constraints**: device names unique; one live association
   value belongs to one device (partial unique index), so two registry
   entries cannot claim the same address at once; one active assignment
@@ -524,8 +893,9 @@ Security properties:
   Stage 10 uses.
 - **Spoofing and misattribution stance**: bindings are convenience
   routing, not access control. The spoofing risk (3.4 item 4) is
-  documented in the README and the UI, and the override-direction
-  decision (12.6) lets the owner choose the fail-safe rule.
+  documented in the README and the UI, and the mandatory tighten-only
+  rule (4.5) is the fail-safe: an unauthenticated binding can never
+  grant a policy less restrictive than the default.
 - **Foreign keys**: associations and assignments reference `devices`
   and `policies`; `PRAGMA foreign_keys = ON` is already set. Deletion
   is soft (state), so no cascading delete of history.
@@ -578,7 +948,8 @@ Today's generation is `policy.json` + `categories.json` +
 
 Only associations of `active` devices with an active assignment are
 exported; `credentials` is empty in Stage 11 and reserved for token/MDM
-identity. The dashboard builds every policy document through the same
+identity. Every key in `bindings` is a canonical string produced by the
+6.2 canonicalizer; no other spelling can appear in a generation. The dashboard builds every policy document through the same
 `_export_documents` path and validates each with the engine's own
 `validate_policy()` before anything is written. The publisher's atomic
 protocol is unchanged - temp files, re-read and re-verify from disk,
@@ -606,7 +977,10 @@ remain valid and verifiable).
 - **Client address threading**: `_serve` (UDP) and `_serve_tcp_conn`
   pass the already-available client address into
   `handle_packet(data, client_addr=None, ...)`. Binding resolution is a
-  dict lookup - no per-query database or file access.
+  dict lookup - no per-query database or file access. The observed
+  address is canonicalized with the 6.2 canonicalizer first (IPv4 to
+  its dotted-quad key, IPv6 to its /64 network key), so lookups always
+  match stored canonical bindings.
 - **Unknown or unregistered sources** get the default policy (the
   Stage 10 selected policy). No query is ever dropped for lack of a
   registry record.
@@ -624,12 +998,20 @@ documents for the default policy **and every policy referenced by an
 active assignment on an active device**, plus `devices.json`. Content
 hashes for the whole set land in `config_revisions` (schema gains hash
 columns for the association map, or a single combined hash - decided at
-implementation, recorded in the revision row either way).
+implementation, recorded in the revision row either way). Before any
+file is written, the publish path re-runs the tighten-only check (4.5,
+enforcement point 3) for every active binding-governed assignment
+against the freshly exported versions; a violation fails the
+publication, no generation is written, and the failure is recorded on
+the revision row exactly like a validation failure today.
 `config_status()` compares a fresh in-memory export with the active
 revision, so assignment and binding changes light up the existing
-`unpublished_changes` indicator. Rollback (`rollback_config`) works
-unchanged: the stored revision snapshot now includes `devices.json`
-and all policy documents.
+`unpublished_changes` indicator, and it reports the three states of
+4.6 - assigned (database), published (active revision on disk), and
+enforced (engine status hash comparison), with the honest
+not-connected, stale, and rejected substates. Rollback
+(`rollback_config`) works unchanged: the stored revision snapshot now
+includes `devices.json` and all policy documents.
 
 ### 7.4 Deployment note
 
@@ -684,10 +1066,10 @@ All under the existing session + CSRF rules; JSON in/out; errors as
 | `GET /api/devices/<id>` | Device detail: fields, associations (kind + identity_class), active assignment, policy history |
 | `PUT /api/devices/<id>` | Edit name/description/type/os/notes |
 | `POST /api/devices/<id>/state` | `{state: active\|inactive\|disabled\|removed}` transition with validation |
-| `POST /api/devices/<id>/associations` | Add association `{kind, value}`; server sets `identity_class` from kind (`ipv4`/`ipv6_prefix` => `network_binding` always) |
+| `POST /api/devices/<id>/associations` | Add association `{kind, value}`; server sets `identity_class` from kind (`ipv4`/`ipv6_prefix` => `network_binding` always); value canonicalized per 6.2 - malformed, ambiguous, or non-/64 input rejected (400), canonical duplicates rejected (409) |
 | `DELETE /api/devices/<id>/associations/<aid>` | Retire an association (sets `retired_at`) |
-| `GET /api/devices/<id>/effective-policy` | Resolved view: assigned policy (name, current version, version at assignment) or default policy, the association path that would apply, and its class |
-| `POST /api/devices/<id>/assign-policy` | `{policy_id}` transactional assignment (4.1); `{policy_id: null}` unassigns |
+| `GET /api/devices/<id>/effective-policy` | Resolved view: the association path that would apply and its class, plus the three distinct states of 4.6 - assigned policy (name, current version, version at assignment) or default policy; published revision/generation or null; enforced revision/generation or `unavailable`/`stale`/`rejected` |
+| `POST /api/devices/<id>/assign-policy` | `{policy_id}` transactional assignment (4.1) with the mandatory server-side tighten-only check (4.5), 409 on violation; `{policy_id: null}` unassigns |
 | `GET /api/devices/<id>/audit` | Per-device audit entries (filtered `audit_log` read) |
 
 `GET /api/overview` replaces the hardcoded `"devices": 0` with real
@@ -695,6 +1077,14 @@ counts by state. `/api/config` keeps `devices_connected: false` and
 `mdm_operational: false` until MDM exists; it gains
 `devices_registered: <count>` as an honest registry count. No response
 ever labels a network binding as identity.
+
+Two existing endpoints gain explicit duties under the corrections:
+`POST /api/policies/<id>/select` (Stage 10's default-policy selection)
+refuses (409) any selection change that would make an existing
+network-binding assignment violate tighten-only (4.5, enforcement
+point 2), and `GET /api/config/status` reports the
+assigned/published/enforced states of 4.6 for the default policy and
+every assignment.
 
 ---
 
@@ -748,9 +1138,13 @@ Target files: `dashboard/tests/test_devices.py`,
 | Database failures | Device queries with a corrupt/locked DB surface 500/`{"error"}` without stack traces; `/api/health` reports 503 |
 | Rollback | Policy rollback flows to assigned devices after republish; configuration rollback restores an earlier complete generation including `devices.json`; assignment history itself is never rewritten |
 | Shared binding = group, not identity | Two simulated clients behind the same mapped address/prefix receive the SAME policy; the effective-policy API reports the association class as `network_binding`; no test asserts a specific physical device was identified |
-| Spoofed source address | A client querying from a statically claimed address receives that binding's policy (documented behavior); test proves the default policy is what unbound sources get, and docs/tests pin the override-direction decision (12.6) |
+| Spoofed source address | A client querying from a statically claimed address receives that binding's policy (documented behavior); test proves the default policy is what unbound sources get, and docs/tests pin the mandatory tighten-only rule (4.5) |
 | Credential precedence (forward) | Once token identity exists: a query with a valid token gets the credential's policy even from an address bound to another device; a bad/absent token falls through to binding, then default |
 | Privacy | Decision log contains no client IP after all engine changes; status file carries device IDs and timestamps only |
+| Identity-class enforcement (correction 1) | API attempt to create an `ipv4`/`ipv6_prefix` association as `credential` -> 400 with a field-named error; direct-SQL INSERT and UPDATE with a mismatched (kind, identity_class) pair -> SQLite CHECK violation, the transaction aborts, no row is written; a table-rebuild migration test proves existing rows survive a future kind addition and invalid pairs stay rejected |
+| Address canonicalization (correction 2) | The full 6.2 matrix: equivalent IPv6 spellings collapse to one canonical stored value and publish key; a second spelling of the same network 409s as a duplicate; host-bits-set, wrong-length (/48, /128, /32), malformed, zone-ID, and IPv4-mapped IPv6 rejected; leading-zero and prefixed IPv4 rejected; exported `devices.json` keys all canonical; engine lookup matches a source inside a canonical /64 |
+| Tighten-only rule (correction 3) | The full 4.5 matrix: stricter and equivalent candidates accepted; less-restrictive, incomparable, invalid, and cap-exceeded candidates rejected at assignment, at default-policy selection change, and at publish; category-precedence cases (category allow vs block, an allowlist entry overriding a category block, default allow vs default block); a violating publish writes no generation and keeps the previous one current |
+| Assigned / published / enforced (correction 4) | Saved-but-unpublished assignment is badged unpublished; publish success with no engine -> enforcement reported unavailable (never active); matching engine status -> enforced; engine status on an older revision -> stale; missing status file -> not connected; `last_error` after a publish -> rejection surfaced; no UI or API state ever renders a saved assignment as enforced |
 
 Full existing suites must keep passing unchanged; README test counts
 updated honestly, including any flake.
@@ -762,21 +1156,28 @@ updated honestly, including any flake.
 Planning only - no phase has begun. Suggested breakdown, each phase
 independently reviewable and shippable on this branch:
 
-- **11A - Registry data model + API.** Migration, `Store` methods,
-  routes, audit actions, tests. No engine change; nothing published
-  changes. Depends on: nothing.
+- **11A - Registry data model + API.** Migration (including the
+  identity-class CHECK constraint, 6.1), the shared address
+  canonicalizer (6.2) and the tighten-only comparator (4.5) - both in
+  the engine package and re-exported through `engine_bridge.py` -
+  `Store` methods, routes with server-side tighten-only enforcement at
+  assignment and at default-policy selection, audit actions, tests. No
+  engine change; nothing published changes. Depends on: nothing.
 - **11B - Dashboard UI.** Device list, detail page, register/edit/
-  assign workflows, binding labeling, replacing the placeholder
+  assign workflows, binding labeling, the three-state
+  assigned/published/enforced display (4.6), replacing the placeholder
   `renderDevices()`. Depends on 11A.
 - **11C - Engine multi-policy support.** `load_validated_engine_set`,
-  client-address threading, binding resolution with the strict
-  credential > binding > default order, backward compatibility, engine
-  tests. Depends on: nothing (independent of 11A/11B, merges before
-  11D).
+  client-address threading, binding resolution with canonicalization of
+  observed source addresses (6.2) and the strict credential > binding >
+  default order, backward compatibility, engine tests. Depends on:
+  nothing (independent of 11A/11B, merges before 11D).
 - **11D - Publication extension + end-to-end.** Multi-document
-  generations, manifest extension, dashboard export, `config_status`
-  coverage, rollback coverage, e2e DNS-answer test (two simulated
-  client sources, different policies; shared-source group behavior).
+  generations, manifest extension (a hash for EVERY file), dashboard
+  export, the publish-time tighten-only re-check (4.5), `config_status`
+  coverage including the assigned/published/enforced states (4.6),
+  rollback coverage, e2e DNS-answer test (two simulated client sources,
+  different policies; shared-source group behavior).
   Depends on 11A + 11C.
 - **11E - Last-seen reporting + documentation.** Status-file device
   timestamps, dashboard merge, READMEs, runbook notes. Depends on 11D.
@@ -819,13 +1220,18 @@ possibly a new `engine_set.py`), `filtering-engine/tests/*`,
    the network's address assignment. Router DHCP reservations for
    managed devices are recommended where a LAN resolver is used, but
    are the owner's home-router configuration, outside this repository.
-6. **Override direction (spoofing stance).** Option A: a binding may
-   apply any policy, including one looser than the default - simple,
-   but a user who can set a static address can claim a looser policy.
-   Option B (recommended fail-safe): the default policy is the most
-   restrictive baseline and bindings may only apply policies the owner
-   marks as equally or more restrictive. This is a real security
-   trade-off and needs an explicit decision.
+6. **Override direction - RESOLVED (review correction 3).** The
+   earlier revision offered "bindings may apply any policy, including a
+   looser one" as an option. That option is removed: tighten-only is a
+   mandatory security requirement, with restrictiveness decided by the
+   deterministic comparison of 4.5 (never by names, labels, or rule
+   counts), enforced server-side at assignment, at default-policy
+   selection change, and at publication. A network binding may only
+   apply a policy provably at least as restrictive as the default; a
+   candidate that is less restrictive, incomparable, invalid, or too
+   large to compare safely is rejected. Looser per-device filtering
+   becomes possible only with authenticated identity (the token/DoH
+   stage, 7.6, or MDM).
 7. **Token/DoH identity as the next stage.** Recommended as the
    dedicated stage after 11 for genuine per-device enforcement (no
    Apple dependency). Confirm it stays out of Stage 11 scope.
@@ -860,6 +1266,24 @@ Stage 11 is complete only when ALL hold:
    enrollment, push, or remote management.
 7. Full dashboard and engine suites pass on a fresh clone; README
    counts match reality; `main` remains untouched throughout.
+8. **Identity-class enforcement (correction 1):** the database CHECK
+   constraint rejects every invalid (kind, identity_class) combination
+   even when the API is bypassed (direct SQL), proven by tests, and
+   the migration path for future credential kinds is documented and
+   test-covered.
+9. **Canonical addressing (correction 2):** the 6.2 normalization,
+   rejection, and duplicate-detection test matrix passes, and
+   published generations contain only canonical binding keys.
+10. **Tighten-only (correction 3):** the 4.5 comparison matrix
+    passes; a less-restrictive, incomparable, invalid, or
+    uncomparable candidate is rejected at assignment, at
+    default-policy change, and at publication; the UI never decides
+    the rule client-side.
+11. **Three-state honesty (correction 4):** assigned, published, and
+    enforced are returned and displayed distinctly; publication
+    without an engine reports enforcement as unavailable; stale,
+    missing, or inconsistent engine status is reported honestly; no UI
+    state ever shows a saved assignment as enforced.
 
 ---
 
