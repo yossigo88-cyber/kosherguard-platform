@@ -142,15 +142,17 @@ def _safe_open_manifest_nofollow(manifest_path: Path):
     Returns None only when the path is genuinely absent; raises
     PublicationError for every present-but-unusable entry (any symlink
     or broken symlink, directory, FIFO, socket, device, permission
-    error) and on platforms without O_NOFOLLOW (fail closed).
+    error). On a platform without O_NOFOLLOW there is no safe way to
+    distinguish "genuinely absent" from "replaced between check and
+    read", so it fails closed UNCONDITIONALLY; os.path.lexists() is
+    never consulted because its answer could change before the caller
+    continues.
     """
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
-        if os.path.lexists(manifest_path):
-            raise PublicationError(
-                f"manifest {manifest_path}: this platform lacks "
-                "O_NOFOLLOW; refusing to open")
-        return None
+        raise PublicationError(
+            f"manifest {manifest_path}: this platform lacks "
+            "O_NOFOLLOW, so no manifest path can be opened safely")
     flags = os.O_RDONLY | nofollow
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NONBLOCK", 0)  # a FIFO cannot hang the open
