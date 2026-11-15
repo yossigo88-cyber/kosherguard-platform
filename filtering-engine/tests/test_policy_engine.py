@@ -184,3 +184,29 @@ def test_category_in_both_lists_rejected():
             "default_policy": "allow",
             "category_rules": {"allow": ["news"], "block": ["news"]},
         }, make_db())
+
+
+def test_rule_category_missing_from_database_falls_to_default():
+    # The policy blocks a category that no database entry has: the rule
+    # can never match, so decisions fall through to the default policy
+    # instead of erroring or mis-matching.
+    engine = make_engine({
+        "default_policy": "allow",
+        "category_rules": {"allow": [], "block": ["no-such-category"]},
+    })
+    assert engine.decide("school.example").rule == "default"
+    assert engine.decide("adult-site.example").rule == "default"
+    assert engine.decide("anything-else.example").action == "allow"
+    engine_block = make_engine({
+        "default_policy": "block",
+        "category_rules": {"allow": [], "block": ["no-such-category"]},
+    })
+    assert engine_block.decide("school.example").action == "block"
+
+
+def test_domain_category_not_in_any_rule_uses_default_allow():
+    # A database category the policy never mentions must not affect the
+    # decision either way: the default policy applies.
+    engine = make_engine({"default_policy": "allow"})
+    d = engine.decide("news.example")  # category news: in neither list
+    assert (d.action, d.rule) == ("allow", "default")
