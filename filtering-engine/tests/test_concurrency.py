@@ -42,6 +42,8 @@ class SlowUpstream(threading.Thread):
         self.sock.bind(("127.0.0.1", 0))
         self.port = self.sock.getsockname()[1]
         self.running = True
+        self._received = 0
+        self._received_lock = threading.Lock()
 
     def run(self):
         while self.running:
@@ -49,8 +51,23 @@ class SlowUpstream(threading.Thread):
                 data, client = self.sock.recvfrom(4096)
             except OSError:
                 return
+            with self._received_lock:
+                self._received += 1
             threading.Thread(target=self._answer_later, args=(data, client),
                              daemon=True).start()
+
+    def wait_received(self, n=1, timeout=5):
+        """Bounded wait until at least n queries have reached this
+        upstream - deterministic synchronization on a real condition,
+        not a fixed sleep. False if the condition never happened."""
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._received_lock:
+                if self._received >= n:
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
 
     def _answer_later(self, data, client):
         time.sleep(self.delay)
@@ -118,7 +135,10 @@ def test_slow_upstream_does_not_delay_blocked_request(slow_upstream):
 
         t = threading.Thread(target=slow_query)
         t.start()
-        time.sleep(0.3)  # let the slow query reach a worker + the upstream
+        # Proven, not assumed: the slow query has reached the upstream,
+        # so a worker is definitely occupied with it.
+        assert slow_upstream.wait_received(1), (
+            "slow query never reached the upstream")
 
         started = time.monotonic()
         reply = query("blocked.example", service.config.listen_port)
@@ -184,11 +204,19 @@ def test_saturation_drops_safely_and_service_survives(slow_upstream):
         t1 = threading.Thread(target=lambda: results.__setitem__(
             "first", query("one.example", service.config.listen_port)))
         t1.start()
-        time.sleep(0.3)  # the single worker is now stuck on the slow upstream
+        # The single worker is now stuck on the slow upstream: proven by
+        # the query actually arriving there, not by a fixed wait.
+        assert slow_upstream.wait_received(1), (
+            "first query never reached the upstream")
         t2 = threading.Thread(target=lambda: results.__setitem__(
             "second", query("two.example", service.config.listen_port)))
         t2.start()
-        time.sleep(0.2)  # the one queue slot now holds the second request
+        # The one queue slot now holds the second request: wait for the
+        # real condition, never a fixed sleep.
+        deadline = time.monotonic() + 5
+        while service._queue.qsize() < 1:
+            assert time.monotonic() < deadline, "second request never queued"
+            time.sleep(0.01)
 
         # A third request exceeds the bound: it is dropped (no response),
         # not queued, and no extra thread is created for it.
@@ -225,7 +253,9 @@ def test_shutdown_closes_workers_while_request_in_flight(slow_upstream):
     t = threading.Thread(target=lambda: results.__setitem__(
         "slow", query("some-site.example", service.config.listen_port)))
     t.start()
-    time.sleep(0.3)  # request in flight against the slow upstream
+    # Proven in flight: the request has reached the slow upstream.
+    assert slow_upstream.wait_received(1), (
+        "request never reached the slow upstream")
     # Keep our own references: stop() prunes service._workers, so only
     # these saved threads can prove every worker really terminated.
     workers = list(service._workers)
@@ -255,8 +285,10 @@ def test_stop_reports_workers_that_fail_to_terminate(slow_upstream, caplog):
     the incomplete shutdown."""
     service = build_service(slow_upstream.port, max_workers=1)
     gate = threading.Event()
+    entered = threading.Event()
 
     def stuck(_data, **_kw):
+        entered.set()
         gate.wait(30)  # stuck far past any shutdown timeout
         return None
 
@@ -264,7 +296,8 @@ def test_stop_reports_workers_that_fail_to_terminate(slow_upstream, caplog):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.sendto(DNSRecord.question("blocked.example").pack(),
                 ("127.0.0.1", service.config.listen_port))
-    time.sleep(0.3)  # the single worker has the request and is stuck
+    # Proven: the single worker has the request and is stuck inside it.
+    assert entered.wait(5), "worker never picked up the request"
     service.config.upstream_timeout = 0.1
     service.config.tcp_idle_timeout = 0.1  # overall shutdown budget ~2.3s
     try:
@@ -290,8 +323,16 @@ def test_shutdown_deadline_is_overall_not_per_worker(slow_upstream):
     worker_count = 4
     service = build_service(slow_upstream.port, max_workers=worker_count)
     gate = threading.Event()
+    entered = threading.Event()
+    entered_lock = threading.Lock()
+    entered_count = 0
 
     def stuck(_data, **_kw):
+        nonlocal entered_count
+        with entered_lock:
+            entered_count += 1
+            if entered_count == worker_count:
+                entered.set()
         gate.wait(60)  # stuck far past any shutdown deadline
         return None
 
@@ -300,7 +341,8 @@ def test_shutdown_deadline_is_overall_not_per_worker(slow_upstream):
     for i in range(worker_count):
         sock.sendto(DNSRecord.question(f"stuck-{i}.example").pack(),
                     ("127.0.0.1", service.config.listen_port))
-    time.sleep(0.3)  # all four workers have a request and are stuck
+    # Proven: every worker has a request and is stuck inside it.
+    assert entered.wait(5), "not all workers picked up a request"
     service.config.upstream_timeout = 0.1
     service.config.tcp_idle_timeout = 0.1  # overall shutdown budget ~2.3s
     started = time.monotonic()
