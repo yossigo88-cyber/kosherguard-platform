@@ -777,3 +777,138 @@ summary message.
   no new GitHub permissions or OAuth scopes.
 - Stage 11 has not started. No commits squashed or rewritten.
 - Stage 10 is NOT claimed approved; independent review decides.
+
+## 18. Manifest open TOCTOU hardening: descriptor-based safe open (2026-11-15)
+
+Independent review found that even after the lstat+S_ISREG file-type
+check (section 17), both manifest-reading implementations still had a
+time-of-check/time-of-use (TOCTOU) window: the entry type was verified
+with a path-based `os.lstat()`, and the bytes were then read with a
+SEPARATE path-based open (`Path.read_text()`). Between the two, the
+pathname could be swapped so that the bytes read are not the entry
+that was verified.
+
+### Required implementation (done)
+
+Both manifest readers now use a descriptor-based safe open, with no
+later path-based read:
+
+- `os.open()` on the manifest path with `O_RDONLY | O_NOFOLLOW` (the
+  final path component cannot be a symlink of any kind; a symlink or
+  broken symlink fails the open itself with ELOOP), plus `O_CLOEXEC`
+  and `O_NONBLOCK` where the platform offers them. `O_NONBLOCK` means
+  an unexpected FIFO cannot hang the open.
+- `os.fstat()` on the OPENED descriptor, and `stat.S_ISREG()` must be
+  true before any byte is read.
+- The manifest bytes are read from THAT SAME descriptor only. There is
+  no separate path-based open after the safe open: the descriptor pins
+  the opened file, so swapping the pathname afterwards cannot change
+  which file is read.
+- The descriptor is closed on every path (success, parse failure,
+  read failure, fstat failure).
+- Fail closed if the platform has no `O_NOFOLLOW`: a present manifest
+  on such a platform is rejected; absence still means legacy mode for
+  the engine.
+- Engine (`dns_service._safe_open_manifest`): a genuinely absent
+  manifest path still loads unverified (legacy pre-publication
+  layout); a regular file is strictly validated exactly as before;
+  ANY other entry - symlink, broken symlink, directory, FIFO, socket,
+  device, permission error - is rejected, never silently treated as
+  "no manifest".
+- Publisher (`publishing._safe_open_manifest_nofollow`): identical
+  safe open. A generation the publisher itself wrote MUST have a
+  manifest: absence is a PublicationError. Publisher and engine accept
+  exactly the same entry types (regular files only).
+
+All existing strict checks are preserved unchanged: both SHA-256
+fields must be present, non-empty, 64-char lowercase hex, and equal
+the SHA-256 of the actual file bytes; revision must be a non-negative,
+non-bool int; generation must equal the revision as a string and equal
+the directory name; validation itself is not weakened anywhere.
+
+### Sweep for other check-then-open patterns
+
+Both manifest-reading implementations were inspected for other
+check-then-open patterns. None remain:
+
+- The engine reads `policy.json`/`categories.json` with a single
+  `Path.read_bytes()` each (one open, no preceding check) and hashes
+  those exact bytes; the manifest pins the hashes, so there is no
+  two-step window. The engine's `os.path.realpath()` on the generation
+  directory is only used to derive the directory-name identity check
+  (generation == directory name), not to open anything.
+- The publisher reads `policy.json`/`categories.json` the same way
+  after the manifest bytes are read from the verified descriptor.
+- Only `manifest.json` is the security gate, and it is now opened
+  exactly once, descriptor-verified, and read from that descriptor.
+
+### New regression tests
+
+- `test_manifest_read_from_opened_descriptor_only` (engine): rigging
+  `Path.read_text` to raise must not affect loading a valid manifest -
+  proves the manifest is never read via a path-based open after the
+  safe open (descriptor verified before parse).
+- `test_manifest_descriptor_unaffected_by_pathname_swap` (engine,
+  POSIX-guarded): safe-open the manifest, `os.replace()` the pathname
+  with a different file, then read from the returned descriptor: the
+  bytes are the ORIGINAL file's. Focused demonstration that the fd
+  pins the opened file; it does not claim to simulate a full race.
+- `test_publisher_rejects_missing_manifest` (dashboard): a generation
+  whose manifest.json was deleted fails verify_generation().
+- `test_publisher_manifest_descriptor_unaffected_by_pathname_swap`
+  (dashboard, POSIX-guarded): the publisher's safe open pins the file
+  the same way.
+- Existing coverage re-verified: absence loads legacy (engine), valid
+  accepted, symlink-to-valid rejected, broken symlink rejected,
+  directory rejected, FIFO rejected (the safe open uses O_NONBLOCK, so
+  the test completes without hanging), publisher rejects symlink
+  manifests, and a rejected reload keeps the last-known-good
+  configuration answering on both UDP and TCP.
+
+### Commits
+
+1. `9bc9f3d79136351dec3cc5d1ad014107d2e3f1c1` - manifest open:
+   descriptor-based safe open (O_NOFOLLOW + fstat), read from the same
+   fd (TOCTOU) (filtering-engine/src/dns_service.py)
+2. `ca16d1efd3e77ac7575835287ac080bcfb4a6989` - publisher manifest:
+   same descriptor-based safe open; missing manifest still a failure
+   (TOCTOU) (dashboard/src/publishing.py)
+3. `224bfa662785c21139528983616efc112e2664ab` - tests: manifest read
+   from the verified descriptor only; fd pins file after pathname swap
+   (filtering-engine/tests/test_reload.py)
+4. `5843a0e32ad2091750305309d667876606d1d5c0` - tests: publisher
+   rejects missing manifest; publisher safe-open fd pins file after
+   pathname swap (dashboard/tests/test_publishing.py)
+5. This document's own update commit follows; its SHA and the final
+   branch HEAD are in the final summary message.
+
+Post-commit byte-identity check: all four files on the branch are
+byte-identical to the tested tree (no editor whitespace repair needed
+this round).
+
+### Exact test commands and results (working tree, same content committed)
+
+- `python3 -m pytest filtering-engine/tests/test_reload.py -q` ->
+  26 passed in 8.28s (24 + 2 new)
+- `python3 -m pytest dashboard/tests/test_publishing.py -q` ->
+  23 passed in 13.81s (21 + 2 new)
+- `python3 -m pytest filtering-engine/tests -q` -> 145 passed in
+  57.87s (143 + 2 new); first run, no failures, no errors, no retries
+  needed
+- `python3 -m pytest dashboard/tests -q` -> 164 passed in 106.30s
+  (162 + 2 new); first run, no failures
+- `node --check dashboard/static/app.js` -> clean
+- `bash -n deploy/backup.sh deploy/restore.sh` -> clean
+
+Fresh-clone verification of the final committed branch (byte-identity
+of all changed files plus both full suites) is reported in the final
+summary message.
+
+### Confirmations
+
+- main remains untouched at
+  `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`.
+- Nothing merged, nothing deployed, no services provisioned, no costs,
+  no new GitHub permissions or OAuth scopes.
+- Stage 11 has not started. No commits squashed or rewritten.
+- Stage 10 is NOT claimed approved; independent review decides.
