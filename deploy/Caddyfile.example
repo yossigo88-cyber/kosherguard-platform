@@ -1,0 +1,32 @@
+# KosherGuard dashboard - example Caddy reverse-proxy configuration.
+#
+# Copy to /etc/caddy/Caddyfile, replace the domain with your own, and
+# reload Caddy (`systemctl reload caddy`). Caddy obtains and renews the
+# TLS certificate automatically.
+#
+# This pairs with these dashboard environment settings (see the systemd
+# unit and the runbook):
+#   KG_TRUSTED_PROXIES=127.0.0.1   Caddy connects from localhost and
+#                                  appends the real client address to
+#                                  X-Forwarded-For; the dashboard only
+#                                  trusts the header from this peer.
+#   KG_SECURE_COOKIES=1            the session cookie is HTTPS-only.
+#                                  (Without it the server REFUSES to
+#                                  start while a trusted proxy is
+#                                  configured.)
+# The dashboard itself stays bound to 127.0.0.1:8080 and is never
+# exposed directly.
+
+dashboard.example.com {
+    # Everything goes to the dashboard's localhost HTTP server.
+    # Caddy sets X-Forwarded-For automatically.
+    reverse_proxy 127.0.0.1:8080
+
+    # The dashboard already sends its own security headers; these are
+    # harmless duplicates kept for defense in depth.
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        -Server
+    }
+}
