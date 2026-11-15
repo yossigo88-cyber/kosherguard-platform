@@ -373,3 +373,217 @@ answers).
 - After review passes and the owner authorizes it: Stage 11 (honest
   device registry and per-client policy by IP, per the approved
   roadmap). No Stage 11 work has begun.
+
+## 15. Independent-review corrections (2026-11-15)
+
+After an independent ChatGPT review of the committed Stage 10 code, three
+defects were identified and fixed on this branch. This section is the
+complete correction record: defects, exact code changes, new regression
+tests, exact test results, and correction commit SHAs. Where test counts
+here differ from section 10, this section supersedes it (counts grew
+because regression tests were added).
+
+Starting HEAD for the corrections:
+`6c832a58a1883b2357ffbf6a44d05dd07f69d0f0`.
+
+### Defect 1: the selected-policy safety rule did not cover every
+### mutation path
+
+Before: `_require_not_selected()` was enforced only in
+`set_policy_enabled()` and `delete_policy()`. A selected policy could be
+disabled two other ways: an `update_policy()` payload with
+`enabled=false`, or a `rollback_policy()` to a historical version whose
+`enabled` field was false. In addition, the checks ran OUTSIDE the write
+transaction, so a concurrent select-for-publication could interleave
+between check and mutation.
+
+After (dashboard/src/store.py):
+
+- A new `_write_txn()` context manager runs mutations under
+  `BEGIN IMMEDIATE`: the database write lock is taken BEFORE the
+  invariant check, making check+mutation atomic against concurrent
+  requests.
+- `update_policy()` rejects a payload with `enabled=false` for the
+  selected policy (409, same message as an explicit disable).
+- `rollback_policy()` rejects rolling the selected policy back to a
+  disabled historical version (409).
+- `set_policy_enabled()` and `delete_policy()` now run their existing
+  checks under the write lock.
+- `select_policy_for_publication()` (the other side of the race) also
+  runs under the write lock and re-verifies the policy is still enabled
+  when the selection lands.
+- Sweep: every SQL path that can change a policy's `enabled` flag or
+  delete a policy was audited (INSERT on create cannot be selected yet;
+  the two UPDATEs and the DELETE are the only ones, and all are
+  guarded). Category enable/disable is unrelated state.
+- Rollbacks and updates that leave the selected policy enabled still
+  work; nothing silently changes or replaces the selection.
+
+New regression tests (dashboard/tests/test_publishing.py, +4 tests):
+
+- `test_update_selected_policy_with_enabled_false_rejected` - the update
+  API route cannot bypass the invariant; the policy stays enabled and
+  selected afterwards.
+- `test_rollback_selected_policy_to_disabled_version_rejected` - the
+  rollback route cannot bypass it either; state unchanged afterwards.
+- `test_selected_policy_normal_update_and_rollback_still_work` - normal
+  updates and rollbacks on the selected policy keep working.
+- `test_concurrent_disable_and_select_never_leave_selected_disabled` -
+  10 real concurrent disable/select requests; every answer is a clean
+  200 or 409 (never a 500), and whatever is selected at the end is
+  enabled.
+- (Selecting another enabled policy first, then disabling/deleting the
+  previous one, was already covered by
+  `test_selected_policy_cannot_be_disabled_or_deleted`.)
+
+### Defect 2: generation manifest verification was not fail-closed
+
+Before: `load_validated_engine()` in filtering-engine/src/dns_service.py
+compared a manifest hash only when the field was present and non-empty
+(`if expected and expected != actual`). A manifest with a missing or
+empty `policy_sha256`/`categories_sha256` silently bypassed content
+verification. Structure, hash format, and revision/generation
+consistency were never checked. The publisher's `verify_generation()`
+in dashboard/src/publishing.py compared hashes but also did not enforce
+structure or consistency.
+
+After:
+
+- New `_validate_generation_manifest()` in dns_service.py: when
+  manifest.json exists it MUST be a JSON object with both hashes present
+  as 64-character lowercase SHA-256 hex, a non-negative-integer
+  revision, a non-empty generation string equal to `str(revision)` and
+  equal to the resolved generation directory name, and both hashes
+  matching the actual file bytes exactly. Any missing, empty, malformed,
+  inconsistent, or mismatched data raises PolicyConfigError; there is no
+  silent fallback to unverified loading when a manifest exists.
+  (Non-negative, not positive: the dashboard's own bootstrap layout can
+  publish an initial generation 0, exercised by the end-to-end test.)
+- New `_check_manifest()` in publishing.py enforces the same rules, so
+  the publisher and the engine reject and accept the same things.
+- A configuration with NO manifest at all still loads unverified (the
+  pre-publication legacy layout), preserving compatibility.
+- Hash format is lowercase hex because that is what the publisher
+  writes; any other encoding is rejected as malformed.
+
+New tests (filtering-engine/tests/test_reload.py, +8 tests):
+
+- `test_manifest_missing_policy_hash_rejected`,
+  `test_manifest_missing_categories_hash_rejected`,
+  `test_manifest_empty_hashes_rejected`,
+  `test_manifest_malformed_hashes_rejected` - each rejected.
+- `test_corrupted_generation_rejected` (rewritten): a structurally valid
+  manifest with a wrong hash is rejected on the hash comparison itself
+  (the old version was rejected for the wrong reason - its metadata did
+  not match the directory either).
+- `test_manifest_inconsistent_metadata_rejected` - generation !=
+  str(revision), missing revision, non-integer revision, and a manifest
+  internally consistent but not matching its real directory: all
+  rejected.
+- `test_manifest_valid_accepted` - a complete correct manifest loads and
+  reports its generation/revision identity.
+- `test_legacy_config_without_manifest_accepted` - no manifest at all
+  still loads.
+- `test_invalid_manifest_reload_keeps_last_known_good` - a reload whose
+  files carry a defective manifest is rejected by the running service,
+  which keeps answering UDP and TCP with the last valid configuration.
+
+### Defect 3: the SIGHUP subprocess test had a vacuous assertion
+
+Before: `test_sighup_real_subprocess()` in
+filtering-engine/tests/test_reload.py contained
+`assert answer_a(query_udp(port, "blocked-one.test")) == UPSTREAM_A or True`,
+which always passes. The subprocess also was not pointed at the test's
+fake upstream resolver, which is why the assertion could not be made
+real at the time.
+
+After: the test starts the real fake-upstream resolver, passes
+`--upstream 127.0.0.1:<port>` to the subprocess, and now asserts real
+DNS answers on BOTH transports after the SIGHUP reload:
+`blocked-two.test` returns the sinkhole (UDP and TCP), `blocked-one.test`
+is forwarded to the upstream resolver (UDP and TCP), and the process is
+still healthy. The invalid-configuration follow-up still proves a failed
+SIGHUP reload retains POLICY_V2 as the last known-good configuration on
+both transports.
+
+Vacuous-assertion sweep: the whole Stage 10 test suite was searched for
+`or True`, `assert True`, unexpected skips, and xfails. This was the
+only vacuous assertion. The remaining `@pytest.mark.skipif` markers are
+deliberate POSIX-only guards (SIGHUP, fork, permission bits), not
+unexpected skips.
+
+### Correction commits (oldest first)
+
+1. `a9b2aecd4eae7b705dee86ded1c5e3fdcc11c406` - Stage 10 review fix:
+   enforce selected-policy invariant in update and rollback, under write
+   lock (dashboard/src/store.py)
+2. `9c50c1fd3d8225813d7d5ccba4a8cf7bbb1f5b14` - Stage 10 review fix:
+   fail-closed manifest verification in the publisher
+   (dashboard/src/publishing.py)
+3. `44b085645275a70757c21cdbc8793c3dc3176372` - Stage 10 review fix:
+   strict fail-closed generation manifest verification
+   (filtering-engine/src/dns_service.py)
+4. `d83eb1b179834301bdbe01efde3dab13ac00d23d` - Stage 10 review fix:
+   real SIGHUP assertions and strict manifest tests
+   (filtering-engine/tests/test_reload.py)
+5. `34e934702935d3351347051b2bf518da441c51b3` - Stage 10 review fix:
+   regression tests for the selected-policy invariant
+   (dashboard/tests/test_publishing.py)
+6. This document's own update commit follows; its SHA and the final
+   branch HEAD are reported in the final summary message (a file cannot
+   contain its own commit SHA).
+
+### Exact test commands and results after the fixes
+
+Working tree (identical content to the committed corrections):
+
+- `python3 -m pytest dashboard/tests/test_publishing.py -q` ->
+  20 passed (16 existing + 4 new)
+- `python3 -m pytest filtering-engine/tests/test_reload.py -q` ->
+  18 passed (10 existing incl. the fixed SIGHUP test + 8 new)
+- `python3 -m pytest dashboard/tests -q` -> 161 passed in 111.22s
+  (157 before the corrections + 4 new)
+- `python3 -m pytest filtering-engine/tests -q` -> first run: 136
+  passed, 1 failed in 56.67s; the failing test's name was not captured
+  before the cache cleared, but the pattern matches the known
+  pre-existing intermittent TCP-truncation flake
+  (test_truncated_udp_upstream_triggers_tcp_fallback /
+  test_truncated_udp_upstream_large_answer_complete_over_tcp_downstream,
+  both unchanged by this stage). Three subsequent full runs: 137 passed
+  in 57.3s, 137 passed in 57.01s, 137 passed in 56.98s. The two flake
+  candidates in isolation: 2 passed in 1.03s. Reported honestly: one
+  failure observed once, never reproduced in three later full runs, in a
+  test this stage did not touch.
+- `node --check dashboard/static/app.js` -> clean
+- `bash -n deploy/backup.sh deploy/restore.sh` -> clean
+- Combined targeted run (e2e + reload + publishing):
+  39 passed in 18.29s
+
+Fresh-clone verification of the final committed branch (after this
+document's commit) is reported in the final summary message alongside
+the final HEAD.
+
+### Remaining limitations (corrections)
+
+- The one intermittent pre-existing engine-suite flake above remains
+  what it was: environmental timing, unchanged by Stage 10 and by these
+  corrections.
+- No new limitations introduced. The stricter manifest rules reject
+  hand-written manifests that omit metadata the publisher always writes;
+  plain legacy file sets without any manifest are unaffected.
+
+### Confirmations
+
+- main remains untouched at
+  `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`.
+- Nothing was merged or deployed; no services provisioned, no costs
+  incurred.
+- No new GitHub permissions or OAuth scopes were requested; commits went
+  through the standard web file editor.
+- Stage 11 has not started.
+- Existing Stage 10 functionality and Stage 9B hardening preserved:
+  the full pre-existing suites pass, and no authentication, CSRF,
+  validation, audit, or filesystem-permission behavior was weakened
+  (the corrections only ADD checks).
+- Stage 10 is NOT claimed approved; that decision belongs to the
+  independent review of these commits.
