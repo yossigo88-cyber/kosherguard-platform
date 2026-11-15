@@ -651,6 +651,11 @@ class Store:
                 # like an explicit disable.
                 if not fields["enabled"]:
                     self._require_not_selected(conn, policy_id, "disable")
+                # Stage 11A correction: tighten-only on the proposed
+                # contents, before any write.
+                self._enforce_tighten_only_for_proposed_policy_locked(
+                    conn, policy_id, fields["name"], fields["engine"],
+                    "update")
                 conn.execute(
                     "UPDATE policies SET name = ?, description = ?, default_policy = ?,"
                     " enabled = ?, updated_at = ? WHERE id = ?",
@@ -882,6 +887,10 @@ class Store:
                 # checked under the write lock.
                 if not vrow["enabled"]:
                     self._require_not_selected(conn, policy_id, "disable")
+                # Stage 11A correction: tighten-only on the contents
+                # being RESTORED, before any live content changes.
+                self._enforce_tighten_only_for_proposed_policy_locked(
+                    conn, policy_id, vrow["name"], engine, "roll back")
                 conn.execute(
                     "UPDATE policies SET name = ?, description = ?, default_policy = ?,"
                     " enabled = ?, updated_at = ? WHERE id = ?",
@@ -1281,6 +1290,83 @@ class Store:
                 f"cannot select policy {new_default_name!r} as the default: "
                 "it would make existing network-binding assignments less "
                 "restrictive than the default (tighten-only rule). "
+                + " | ".join(violations), 409)
+
+    def _enforce_tighten_only_for_proposed_policy_locked(
+            self, conn: sqlite3.Connection, policy_id: int, policy_name: str,
+            proposed_engine: dict, operation: str) -> None:
+        """Stage 11A correction: policy-CONTENT mutations (update and
+        rollback) must preserve the invariant that every ACTIVE
+        assignment is proven at least as restrictive as the selected
+        default policy, evaluated on the ACTUAL PROPOSED contents.
+
+        Must be called inside _write_txn, before any write. Raises
+        StoreError(409) and writes nothing on any violation.
+
+        Cases (proposed_engine uses the stored engine-document shape):
+          - the edited policy IS the selected default: every active
+            assignment to another policy is compared against the proposed
+            default contents;
+          - the edited policy is actively assigned (and is not the
+            default): the proposed contents are compared against the
+            current default contents, once per assignment, so the
+            rejection names the registry entry;
+          - no selected default while an active assignment needs
+            validation: rejected (no baseline, fail closed);
+          - unassigned, non-default policies are unconstrained here.
+        Uses the same fail-closed at_least_as_restrictive comparator as
+        assignment; names, labels and rule counts are never compared.
+        """
+        assignments = conn.execute(
+            "SELECT a.policy_id, d.name AS device_name, p.name AS policy_name"
+            " FROM device_policy_assignments a"
+            " JOIN devices d ON d.id = a.device_id"
+            " JOIN policies p ON p.id = a.policy_id"
+            " WHERE a.active = 1 ORDER BY a.id"
+        ).fetchall()
+        if not assignments:
+            return
+        baseline_row = self._selected_default_policy(conn)
+        edited_is_default = (
+            baseline_row is not None and baseline_row["id"] == policy_id)
+        edited_assigned = any(a["policy_id"] == policy_id for a in assignments)
+        if not edited_is_default and not edited_assigned:
+            return  # the edit cannot affect any assignment or the baseline
+        if baseline_row is None:
+            raise StoreError(
+                f"cannot {operation} policy {policy_name!r}: it is actively "
+                "assigned but no policy is selected for publication as the "
+                "default policy, so the mandatory tighten-only comparison "
+                "has no baseline (failing closed); select a default policy "
+                "first", 409)
+        if edited_is_default:
+            baseline_doc = proposed_engine
+        else:
+            baseline_doc, _ = self._engine_doc_for_policy(conn, baseline_row["id"])
+        violations = []
+        for a in assignments:
+            if a["policy_id"] == baseline_row["id"]:
+                continue  # the default itself is trivially as restrictive
+            if a["policy_id"] == policy_id:
+                candidate_doc = proposed_engine
+            else:
+                candidate_doc, _ = self._engine_doc_for_policy(conn, a["policy_id"])
+            if candidate_doc is None or baseline_doc is None:
+                violations.append(
+                    f"registry entry {a['device_name']!r} / policy "
+                    f"{a['policy_name']!r}: policy content could not be read "
+                    "(failing closed)")
+                continue
+            verdict = at_least_as_restrictive(candidate_doc, baseline_doc)
+            if not verdict.allowed:
+                violations.append(
+                    f"registry entry {a['device_name']!r} is assigned policy "
+                    f"{a['policy_name']!r}: {verdict.reason}")
+        if violations:
+            raise StoreError(
+                f"cannot {operation} policy {policy_name!r}: the proposed "
+                "contents would leave an active assignment less restrictive "
+                "than the default policy (mandatory tighten-only rule). "
                 + " | ".join(violations), 409)
 
     def _assign_policy_locked(self, conn: sqlite3.Connection, admin: str,
