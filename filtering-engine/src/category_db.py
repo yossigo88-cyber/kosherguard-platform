@@ -124,8 +124,15 @@ class CategoryDB:
     def merge_records(
         self, records: Iterable[dict]
     ) -> Tuple[int, int]:
-        """Merge import records; returns (added_domains, updated_domains)."""
-        added = updated = 0
+        """Merge import records; returns (added_domains, updated_domains).
+
+        Every record is validated BEFORE anything changes: a malformed
+        record aborts the whole import with its line number and the
+        database is left exactly as it was. A partially applied import
+        would be a silently wrong database, so the documented abort
+        guarantee holds for the in-memory merge too, not only for the
+        CLI's file write."""
+        validated = []
         for i, record in enumerate(records, start=1):
             try:
                 domain = validate_domain(str(record["domain"]))
@@ -137,6 +144,9 @@ class CategoryDB:
                 raise CategoryDBError(f"import line {i}: malformed record ({exc})") from exc
             except CategoryDBError as exc:
                 raise CategoryDBError(f"import line {i}: {exc}") from exc
+            validated.append((domain, cats))
+        added = updated = 0
+        for domain, cats in validated:
             if domain in self._domains:
                 self._domains[domain] |= cats
                 updated += 1
