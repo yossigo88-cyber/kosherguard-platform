@@ -189,12 +189,28 @@ def canonical_source_key(source_address) -> str:
     An IPv4 source maps to its dotted-quad key; an IPv6 source maps to the
     canonical string of its /64 network (the group-binding key). Used by
     the engine's Stage 11C lookup path so lookups always match stored
-    canonical bindings with a plain string dict lookup. Provided in 11A so
-    the canonicalization rule stays single-sourced; the engine wiring
-    arrives in Stage 11C.
+    canonical bindings with a plain string dict lookup.
+
+    Two observed-source spellings are normalized so one network identity
+    always has exactly one lookup key (the same single-representation
+    rule as section 6.2):
+
+    - IPv4-mapped IPv6 forms ("::ffff:192.168.1.50", as a dual-stack
+      AF_INET6 socket may report an IPv4 client) map to the IPv4 key -
+      the same identity cannot dodge or miss its IPv4 binding by
+      arriving in mapped spelling.
+    - IPv6 zone/scope identifiers ("fe80::1%eth0", or the scope of an
+      AF_INET6 socket-address tuple's host) are stripped: a scope marks
+      the receiving interface, not a different network identity, so a
+      scoped spelling of an address resolves to the same /64 binding as
+      the bare address.
     """
     address = ipaddress.ip_address(source_address)
     if isinstance(address, ipaddress.IPv4Address):
         return f"ipv4:{address}"
+    if address.ipv4_mapped is not None:
+        return f"ipv4:{address.ipv4_mapped}"
+    if getattr(address, "scope_id", None) is not None:
+        address = ipaddress.IPv6Address(int(address))
     network = ipaddress.IPv6Network(f"{address}/64", strict=False)
     return f"ipv6:{network}"
