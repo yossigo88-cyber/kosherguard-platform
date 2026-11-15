@@ -22,13 +22,15 @@ dashboard/
     util.py           - small shared helpers
     db.py             - SQLite schema + seed categories
     auth.py           - PBKDF2 password hashing, sessions, login limiter
-    store.py          - validated policy/category/domain/audit operations
+    store.py          - validated policy/category/domain/audit operations,
+                        policy versioning, publication, rollback
+    publishing.py     - atomic generation-based engine configuration publication
     server.py         - stdlib HTTP server: JSON API + static files
   static/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 131 pytest tests against a real running server
+  tests/              - 157 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -177,13 +179,32 @@ schema are created on first run, with the starting category catalogue
 (11 categories, zero domains - a starting catalogue, not a complete
 URL database).
 
+## Publication API (Stage 10)
+
+- `GET /api/config/status` - selected policy, active published revision,
+  unpublished-changes flag, on-disk generation, and the engine's
+  self-reported status (when the engine shares the publication directory).
+- `POST /api/policies/<id>/select` - designate the policy to publish.
+  The selected policy cannot be disabled or deleted until another is
+  selected.
+- `POST /api/config/publish` - validate and atomically publish the
+  selected policy plus current domains/categories as a new immutable
+  configuration generation (audited).
+- `POST /api/config/rollback {"revision": N}` - republish a previous
+  revision's complete content as a new revision (audited).
+- `GET /api/config/revisions[/<n>]` - published configuration history,
+  with content hashes and the exact stored JSON.
+- `GET /api/policies/<id>/versions[/<n>]` - immutable per-policy version
+  history; `POST /api/policies/<id>/rollback {"version": n}` rolls the
+  draft back to a prior version by creating a new version.
+
 ## Testing
 
 ```bash
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-131 tests run the real server on an ephemeral localhost port with a
+157 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
