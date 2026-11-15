@@ -11,7 +11,14 @@ Request safety rules enforced here:
 - Every state-changing request (POST/PUT/DELETE) requires the
   X-KosherGuard-Request header; combined with the SameSite=Strict
   session cookie this blocks cross-site request forgery.
-- Request bodies are capped (Content-Length checked before reading).
+- Request bodies are capped: Content-Length must be a plain
+  non-negative decimal integer (checked before reading); malformed,
+  negative, or oversized values are rejected and the connection is
+  closed, so unread bytes cannot poison the next request on it.
+- Every connection has a per-read inactivity timeout AND a total
+  deadline for receiving one complete request, so a slow-trickle
+  client that keeps sending single bytes cannot hold a handler slot
+  forever.
 - All errors are returned as JSON {"error": ...}; no stack traces or
   internals are sent to clients.
 - Static files are served only from the static directory, with path
@@ -31,9 +38,12 @@ import argparse
 import ipaddress
 import json
 import os
+import io
 import re
+import socket
 import sys
 import threading
+import time
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -119,18 +129,93 @@ def _env_proxy_list(raw, name: str) -> frozenset:
     return frozenset(proxies)
 
 
+class _DeadlineRawIO(io.RawIOBase):
+    """Raw read side of the request socket with a TOTAL deadline.
+
+    A per-read inactivity timeout alone cannot stop a slow-trickle
+    client that sends one byte just before each timeout expires, and a
+    buffered reader can hide many tiny reads inside a single read()
+    call. Every recv therefore re-checks the request's total deadline
+    and is armed with the smaller of the inactivity timeout and the
+    time left until it; once the deadline passes, the read fails with
+    socket.timeout. BaseHTTPRequestHandler.handle_one_request catches
+    that exactly like an inactivity timeout: it closes the connection,
+    which releases the handler thread and its connection slot.
+    """
+
+    def __init__(self, handler, sock):
+        super().__init__()
+        self._handler = handler
+        self._sock = sock
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        remaining = self._handler._read_deadline - time.monotonic()
+        if remaining <= 0:
+            raise socket.timeout("total request deadline exceeded")
+        self._sock.settimeout(
+            min(self._handler.server.request_timeout, remaining))
+        return self._sock.recv_into(b)
+
+    def close(self):
+        # The socket is owned and closed by the server itself
+        # (shutdown_request); only stop wrapping it.
+        self._sock = None
+        super().close()
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True only for a known loopback bind address. An unresolvable
+    hostname fails safe: it is treated as a deployment bind."""
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip()).is_loopback
+    except ValueError:
+        return False
+
+
+def _require_cookie_safety(host: str, secure_cookies: bool, trusted_proxies) -> None:
+    """Refuse to start a deployment-shaped configuration with insecure
+    session cookies. Localhost development may omit KG_SECURE_COOKIES;
+    a configured trusted proxy or a non-loopback bind means the
+    dashboard is being deployed, and then Secure cookies must be
+    enabled explicitly so the setting can never be forgotten."""
+    if secure_cookies:
+        return
+    reasons = []
+    if trusted_proxies:
+        reasons.append("trusted proxies are configured (KG_TRUSTED_PROXIES)")
+    if not _is_loopback_host(host):
+        reasons.append(f"the bind address {host!r} is not loopback")
+    if reasons:
+        raise SystemExit(
+            "Refusing to start with insecure session cookies: "
+            + " and ".join(reasons)
+            + ". Set KG_SECURE_COOKIES=1 (HTTPS deployment) or bind "
+            "127.0.0.1 with no trusted proxies for local development."
+        )
+
+
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, db_path, admin_username, admin_password,
                  limiter=None, static_dir=STATIC_DIR, secure_cookies=False,
-                 trusted_proxies=(), max_connections=32, request_timeout=30.0):
+                 trusted_proxies=(), max_connections=32, request_timeout=30.0,
+                 total_request_timeout=60.0):
         self.store = Store(db_path)
         self.static_dir = Path(static_dir)
         self.limiter = limiter or auth.LoginLimiter()
         self.secure_cookies = bool(secure_cookies)
         self.trusted_proxies = frozenset(trusted_proxies)
         self.request_timeout = float(request_timeout)
+        self.total_request_timeout = float(total_request_timeout)
+        if self.total_request_timeout < self.request_timeout:
+            raise ValueError(
+                "total_request_timeout must be at least request_timeout")
         self._connection_slots = threading.BoundedSemaphore(max(1, int(max_connections)))
         conn = db_module.connect(db_path)
         try:
@@ -199,8 +284,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
         # Slow or incomplete clients (including idle keep-alive
-        # connections) cannot hold a handler thread forever.
+        # connections) cannot hold a handler thread forever: each read
+        # is bounded by the inactivity timeout, and the rfile wrapper
+        # additionally bounds the TOTAL time one request may take to
+        # arrive (headers plus body).
+        self._read_deadline = time.monotonic() + self.server.total_request_timeout
         self.request.settimeout(self.server.request_timeout)
+        # Replace the buffered reader with one whose raw layer enforces
+        # the total deadline on every single recv (see _DeadlineRawIO);
+        # nothing has been read yet, so the original buffer is empty.
+        self.rfile.close()
+        self.rfile = io.BufferedReader(
+            _DeadlineRawIO(self, self.request), io.DEFAULT_BUFFER_SIZE)
+
+    def handle_one_request(self):
+        # Each request on a keep-alive connection gets its own total
+        # receiving deadline; idle time between requests stays bounded
+        # by the per-read inactivity timeout.
+        self._read_deadline = time.monotonic() + self.server.total_request_timeout
+        self.request.settimeout(self.server.request_timeout)
+        super().handle_one_request()
 
     # -- plumbing ------------------------------------------------------
 
@@ -239,19 +342,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return self._cached_body
 
     def _read_body(self) -> dict:
-        length = self.headers.get("Content-Length")
-        if length is None:
+        header = self.headers.get("Content-Length")
+        if header is None:
+            # No declared length: if the client sent body bytes anyway,
+            # they would be parsed as the next request on this
+            # keep-alive connection, so close it.
+            self.close_connection = True
             raise StoreError("missing Content-Length", 411)
-        try:
-            length = int(length)
-        except ValueError:
+        text = header.strip()
+        # Only a plain non-negative decimal integer is accepted: no
+        # sign, no inner whitespace, no Unicode digits (int() would
+        # silently accept those), no trailing garbage. A negative or
+        # malformed value is rejected BEFORE any body byte is read.
+        if not re.fullmatch(r"[0-9]+", text):
+            # The true body length is unknowable: close the connection
+            # so unread bytes cannot poison the next request.
+            self.close_connection = True
             raise StoreError("invalid Content-Length", 400)
+        digits = text.lstrip("0") or "0"
+        if len(digits) > len(str(MAX_BODY_BYTES)):
+            # Far above the maximum (also keeps int() away from huge
+            # digit strings); rejected without reading the body.
+            self.close_connection = True
+            raise StoreError("request body too large", 413)
+        length = int(digits)
         if length > MAX_BODY_BYTES:
             # Reject without reading the oversized body; close the
             # connection so the unread bytes cannot poison the next request.
             self.close_connection = True
             raise StoreError("request body too large", 413)
         raw = self.rfile.read(length)
+        # The body is fully received: the total deadline no longer
+        # applies, so restore the plain inactivity timeout for the
+        # response.
+        self.request.settimeout(self.server.request_timeout)
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -313,6 +437,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        # Headers are fully received at this point; restore the plain
+        # inactivity timeout for producing and sending the response
+        # (the total deadline bounds RECEIVING the request only).
+        self.request.settimeout(self.server.request_timeout)
         path = self.path.split("?", 1)[0]
         try:
             if path.startswith("/api/"):
@@ -626,11 +754,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def make_server(host: str, port: int, db_path, admin_username: str = "admin",
                 admin_password: str | None = None, limiter=None,
                 secure_cookies: bool = False, trusted_proxies=(),
-                max_connections: int = 32, request_timeout: float = 30.0) -> DashboardServer:
+                max_connections: int = 32, request_timeout: float = 30.0,
+                total_request_timeout: float = 60.0) -> DashboardServer:
     return DashboardServer(
         (host, port), db_path, admin_username, admin_password, limiter=limiter,
         secure_cookies=secure_cookies, trusted_proxies=trusted_proxies,
         max_connections=max_connections, request_timeout=request_timeout,
+        total_request_timeout=total_request_timeout,
     )
 
 
@@ -652,10 +782,22 @@ def main(argv=None) -> int:
         os.environ.get("KG_MAX_CONNECTIONS"), "KG_MAX_CONNECTIONS", 32)
     request_timeout = _env_float(
         os.environ.get("KG_REQUEST_TIMEOUT"), "KG_REQUEST_TIMEOUT", 30.0)
+    total_request_timeout = _env_float(
+        os.environ.get("KG_TOTAL_REQUEST_TIMEOUT"), "KG_TOTAL_REQUEST_TIMEOUT", 60.0)
+    if total_request_timeout < request_timeout:
+        raise SystemExit(
+            "KG_TOTAL_REQUEST_TIMEOUT must be at least KG_REQUEST_TIMEOUT "
+            "(the total deadline must cover each individual read)"
+        )
+    # A deployment-shaped configuration (trusted proxies or a
+    # non-loopback bind) must not start with Secure cookies disabled
+    # just because KG_SECURE_COOKIES was omitted.
+    _require_cookie_safety(args.host, secure_cookies, trusted_proxies)
     server = make_server(
         args.host, args.port, args.db, username, password,
         secure_cookies=secure_cookies, trusted_proxies=trusted_proxies,
         max_connections=max_connections, request_timeout=request_timeout,
+        total_request_timeout=total_request_timeout,
     )
     print(f"KosherGuard admin dashboard (development) on http://{args.host}:{args.port}")
     print("No Apple MDM connection exists; this dashboard manages local policy data only.")
