@@ -28,7 +28,7 @@ dashboard/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 120 pytest tests against a real running server
+  tests/              - 129 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -183,7 +183,7 @@ URL database).
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-120 tests run the real server on an ephemeral localhost port with a
+129 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
@@ -202,7 +202,12 @@ guard (localhost default, explicit deployment opt-in, refusal cases),
 and the deployment scripts: `deploy/backup.sh` and `deploy/restore.sh`
 run as real subprocesses - a full round trip (back up a live server,
 mutate, restore, restart, and verify every kind of data through the
-API), corrupt-backup refusal, overwrite refusal, missing files, and
+API), corrupt-backup refusal, overwrite refusal, the required
+--service-stopped restore confirmation (refusal leaves the database
+byte-for-byte unchanged), failed-backup cleanup (no partial file is
+left looking like a valid backup), rotation including invalid-KEEP
+refusal, and file/directory permission checks (backup dir 0700,
+backup files and restored database 0600), missing files, and valid
 rotation. No sleeps are used for synchronization; the server socket is
 bound before the test client connects.
 
@@ -222,9 +227,14 @@ Nothing here is deployed. Stage 9B prepared the deployment assets:
   unprivileged user, sandboxing directives). Reviewed but NOT yet
   tested on a live system.
 - `deploy/backup.sh` / `deploy/restore.sh` - consistent online SQLite
-  backups with integrity check and rotation, and a verified atomic
-  restore. Both are exercised by automated tests, including failure
-  cases, but have NOT run on a production server.
+  backups written to a temporary file and published only after an
+  integrity check, validated rotation, and a verified atomic restore
+  that requires an explicit --service-stopped confirmation. Backup
+  directories and files and restored databases are forced private
+  (0700/0600); the systemd unit sets UMask=0077 and
+  StateDirectoryMode=0700. Both scripts are exercised by automated
+  tests, including failure cases, but have NOT run on a production
+  server.
 
 This is preparation, not a production-ready deployment: the unit,
 proxy config, and backup schedule still need to be verified on a real
@@ -237,8 +247,12 @@ bounds above reduce abuse impact; they do not replace a proxy.
 - Single-admin model (the schema supports more, but there is no user
   management interface yet), with no self-service password recovery: a
   lost password means editing the database directly.
-- No automated backup or restore mechanism yet; the SQLite file is a
-  single point of failure until Stage 9B adds one.
+- Backup and restore scripts exist (`deploy/backup.sh` and
+  `deploy/restore.sh`; see `docs/deployment/RUNBOOK.md`), but
+  automatic scheduling and off-site backup storage are not configured
+  automatically - the operator sets those up (the runbook says how).
+  Until then the single SQLite file remains a single point of
+  failure.
 - No device synchronization of any kind (requires Apple MDM
   authorization, which does not exist).
 - The interface is English-only, desktop and mobile responsive.
