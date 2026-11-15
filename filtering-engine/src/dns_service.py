@@ -89,6 +89,7 @@ import json
 import logging
 import os
 import queue
+import re
 import socket
 import threading
 import time
@@ -134,6 +135,66 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _validate_generation_manifest(manifest, policy_path, categories_path,
+                                  policy_sha256, categories_sha256):
+    """Fail-closed validation of a generation manifest.
+
+    When a manifest.json exists it MUST be complete, well-formed, and
+    internally consistent with the generation being loaded; anything
+    less is a corrupted or tampered publication and is rejected rather
+    than silently falling back to unverified file loading. Required:
+    a JSON object; both content hashes present and each a 64-character
+    lowercase SHA-256 hexadecimal string; a non-negative-integer revision;
+    a non-empty generation string equal to str(revision) AND to the
+    resolved generation directory name; and both hashes matching the
+    actual file bytes exactly. Raises PolicyConfigError on any defect.
+    """
+    manifest_path = Path(policy_path).parent / "manifest.json"
+    if not isinstance(manifest, dict):
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path} is not a JSON object; "
+            "refusing to load")
+    for key, path in (("policy_sha256", policy_path),
+                      ("categories_sha256", categories_path)):
+        value = manifest.get(key)
+        if not isinstance(value, str) or not _SHA256_HEX.fullmatch(value):
+            raise PolicyConfigError(
+                f"generation manifest {manifest_path}: {key} is missing or "
+                "not a valid 64-character SHA-256 hexadecimal value; "
+                "refusing to load")
+    revision = manifest.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: revision is missing or "
+            "not a non-negative integer; refusing to load")
+    generation = manifest.get("generation")
+    if not isinstance(generation, str) or not generation:
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: generation is missing or "
+            "not a non-empty string; refusing to load")
+    if generation != str(revision):
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: generation {generation!r} "
+            f"is inconsistent with revision {revision}; refusing to load")
+    directory = os.path.basename(os.path.dirname(os.path.realpath(policy_path)))
+    if generation != directory:
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: generation {generation!r} "
+            f"does not match its directory {directory!r} (mixed-generation "
+            "or relocated file set); refusing to load")
+    if manifest["policy_sha256"] != policy_sha256:
+        raise PolicyConfigError(
+            f"{policy_path} does not match its generation manifest "
+            "(corrupted or mixed-generation file); refusing to load")
+    if manifest["categories_sha256"] != categories_sha256:
+        raise PolicyConfigError(
+            f"{categories_path} does not match its generation manifest "
+            "(corrupted or mixed-generation file); refusing to load")
+
+
 def load_validated_engine(policy_path, categories_path):
     """Build a COMPLETE replacement engine from configuration files.
 
@@ -158,23 +219,19 @@ def load_validated_engine(policy_path, categories_path):
     }
     manifest_path = Path(policy_path).parent / "manifest.json"
     if manifest_path.is_file():
+        # A manifest that exists but is invalid is NEVER ignored: no
+        # silent fallback to unverified loading. Only a configuration
+        # with no manifest at all loads unverified (legacy layout).
         try:
             manifest = json.loads(manifest_path.read_text("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise PolicyConfigError(
                 f"unreadable generation manifest {manifest_path}: {exc}")
-        expected_policy = manifest.get("policy_sha256")
-        expected_categories = manifest.get("categories_sha256")
-        if expected_policy and expected_policy != info["policy_sha256"]:
-            raise PolicyConfigError(
-                f"{policy_path} does not match its generation manifest "
-                "(corrupted or mixed-generation file); refusing to load")
-        if expected_categories and expected_categories != info["categories_sha256"]:
-            raise PolicyConfigError(
-                f"{categories_path} does not match its generation manifest "
-                "(corrupted or mixed-generation file); refusing to load")
-        info["generation"] = manifest.get("generation")
-        info["manifest_revision"] = manifest.get("revision")
+        _validate_generation_manifest(
+            manifest, policy_path, categories_path,
+            info["policy_sha256"], info["categories_sha256"])
+        info["generation"] = manifest["generation"]
+        info["manifest_revision"] = manifest["revision"]
     try:
         policy = json.loads(policy_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
