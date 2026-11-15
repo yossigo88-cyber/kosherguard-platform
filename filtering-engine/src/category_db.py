@@ -52,6 +52,9 @@ class CategoryDBError(ValueError):
 
 
 def validate_domain(domain: str) -> str:
+    if not isinstance(domain, str):
+        raise CategoryDBError(
+            f"domain must be a string, got {type(domain).__name__} ({domain!r})")
     domain = normalize_domain(domain)
     if not DOMAIN_RE.match(domain):
         raise CategoryDBError(f"invalid domain name: {domain!r}")
@@ -59,6 +62,9 @@ def validate_domain(domain: str) -> str:
 
 
 def validate_category(category: str) -> str:
+    if not isinstance(category, str):
+        raise CategoryDBError(
+            f"category must be a string, got {type(category).__name__} ({category!r})")
     category = category.strip().lower()
     if not CATEGORY_RE.match(category):
         raise CategoryDBError(f"invalid category name: {category!r}")
@@ -135,7 +141,9 @@ class CategoryDB:
         validated = []
         for i, record in enumerate(records, start=1):
             try:
-                domain = validate_domain(str(record["domain"]))
+                # Non-string domains are rejected as invalid records,
+                # never silently stringified into something unintended.
+                domain = validate_domain(record["domain"])
                 cats = record["categories"]
                 if not isinstance(cats, list) or not cats:
                     raise CategoryDBError("categories must be a non-empty list")
@@ -165,9 +173,17 @@ def main(argv: list | None = None) -> int:
     imp.add_argument("--out", help="where to write the merged database (default: in place)")
     args = parser.parse_args(argv)
 
-    db = CategoryDB.load(args.db)
+    try:
+        db = CategoryDB.load(args.db)
+    except (CategoryDBError, OSError, json.JSONDecodeError) as exc:
+        print(f"error: cannot load {args.db}: {exc}", file=sys.stderr)
+        return 1
     if args.command == "import":
-        lines = Path(args.records).read_text(encoding="utf-8").splitlines()
+        try:
+            lines = Path(args.records).read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            print(f"error: cannot read {args.records}: {exc}", file=sys.stderr)
+            return 1
         records = []
         for i, line in enumerate(lines, start=1):
             if not line.strip():
