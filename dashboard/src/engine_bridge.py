@@ -39,3 +39,15 @@ from policy_engine import (  # noqa: E402,F401  (re-exported intentionally)
     normalize_domain,
     validate_policy,
 )
+from address_canonicalization import (  # noqa: E402,F401  (Stage 11A)
+    BINDING_KINDS,
+    BindingValidationError,
+    canonicalize_binding,
+    canonicalize_ipv4,
+    canonicalize_ipv6_prefix,
+    identity_class_for_kind,
+)
+from policy_comparison import (  # noqa: E402,F401  (Stage 11A)
+    ComparisonResult,
+    at_least_as_restrictive,
+)
