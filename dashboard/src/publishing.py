@@ -67,6 +67,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -314,10 +315,27 @@ class Publisher:
         consistency, and hashes). Returns the manifest.
         Raises PublicationError on any mismatch."""
         generation_dir = Path(generation_dir)
+        manifest_path = generation_dir / "manifest.json"
+        # Same rule as the engine (dns_service.load_validated_engine):
+        # the manifest path itself must be a regular file. lstat, never
+        # is_file: a symlink - even to a valid regular file - is
+        # rejected, along with directories and every other non-regular
+        # entry. A missing manifest in a generation directory the
+        # publisher itself wrote is equally a failure.
+        try:
+            manifest_stat = os.lstat(manifest_path)
+        except OSError as exc:
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest.json: {exc}")
+        if not stat.S_ISREG(manifest_stat.st_mode):
+            raise PublicationError(
+                f"generation {generation_dir.name}: manifest.json is not "
+                "a regular file (symlink, directory, or other "
+                "non-regular entry)")
         try:
             policy_bytes = (generation_dir / "policy.json").read_bytes()
             categories_bytes = (generation_dir / "categories.json").read_bytes()
-            manifest = json.loads((generation_dir / "manifest.json").read_text("utf-8"))
+            manifest = json.loads(manifest_path.read_text("utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise PublicationError(f"generation {generation_dir.name}: unreadable: {exc}")
         self._check_manifest(manifest, generation_dir, policy_bytes, categories_bytes)
@@ -349,4 +367,4 @@ class Publisher:
             "generation": resolved.name,
             "path": str(resolved),
             "manifest": manifest,
-        }
+                       }
