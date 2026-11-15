@@ -4,7 +4,9 @@ KosherGuard is an iPhone filtering and management platform under development. Th
 
 ## Status
 
-Stage 5 (full testing and verification) is complete for the core filtering engine. What exists today is the backend filtering core in [filtering-engine/](filtering-engine/README.md): the central policy engine, the DNS filtering service (UDP and TCP), the website category database, structured decision logging, and a 119-test automated suite. The administrator dashboard, device enrollment, push-triggered policy updates, iPhone management, and reset recovery described in the [project charter](docs/PROJECT_CHARTER.md) are not built yet. Nothing in this repository currently filters or manages an iPhone; there is no Apple commercial MDM authorization and no real-device test environment (see the [technical investigation](docs/GENTECH_TECHNICAL_INVESTIGATION.md)).
+Stage 5 (full testing and verification) is complete for the core filtering engine. What exists today is the backend filtering core in [filtering-engine/](filtering-engine/README.md): the central policy engine, the DNS filtering service (UDP and TCP), the website category database, structured decision logging, and a 119-test automated suite. Device enrollment, push-triggered policy updates, iPhone management, and reset recovery described in the [project charter](docs/PROJECT_CHARTER.md) are not built yet. Nothing in this repository currently filters or manages an iPhone; there is no Apple commercial MDM authorization and no real-device test environment (see the [technical investigation](docs/GENTECH_TECHNICAL_INVESTIGATION.md)).
+
+Stage 7 added the [admin dashboard](dashboard/README.md): a development application (stdlib Python backend API, SQLite storage, session authentication, audit logging, browser interface) for managing filtering policies, categories, and domain records, with an 84-test automated suite. Policy evaluation is performed by the existing filtering engine. The dashboard manages local policy data only: no devices are enrolled, no Apple MDM connection exists, and no remote policy push is available. It is not deployed anywhere.
 
 Stage 6 (iPhone enrollment and push notifications) was attempted as a preparation stage. The prerequisite audit found that none of the four required Apple prerequisites exist (Apple MDM vendor selection, an MDM APNs push certificate, Apple Business enrollment credentials, and an approved test iPhone), so no MDM, enrollment, or push code was written. The architecture, required credentials, security requirements, enrollment and push flows, and exact remaining blockers are documented in [docs/MDM_ENROLLMENT_AND_PUSH.md](docs/MDM_ENROLLMENT_AND_PUSH.md).
 
@@ -13,6 +15,7 @@ Stage 6 (iPhone enrollment and push notifications) was attempted as a preparatio
 - [Project charter](docs/PROJECT_CHARTER.md) - goals, scope, and working principles
 - [Repository handoff test](docs/REPO_HANDOFF_TEST.md) - initialization record for this repository
 - [MDM enrollment and push preparation](docs/MDM_ENROLLMENT_AND_PUSH.md) - Stage 6 prerequisite audit, architecture, and blockers
+- [Admin dashboard](dashboard/README.md) - Stage 7 dashboard: architecture, security model, and development instructions
 
 ## Repository rules
 
