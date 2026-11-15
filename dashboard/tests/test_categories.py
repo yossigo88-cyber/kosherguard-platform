@@ -39,6 +39,67 @@ def test_create_rejects_duplicate(client):
     assert status == 409
 
 
+def test_create_defaults_enabled_when_omitted(client):
+    status, body = client.post("/api/categories", {
+        "name": "default-on", "display_name": "Default on"})
+    assert status == 201, body
+    assert body["enabled"] == 1
+
+
+def test_create_accepts_real_boolean_false(client):
+    status, body = client.post("/api/categories", {
+        "name": "starts-off", "display_name": "Starts off", "enabled": False})
+    assert status == 201, body
+    assert body["enabled"] == 0
+    status, body = client.get("/api/categories?search=starts-off")
+    assert body["categories"][0]["enabled"] == 0
+
+
+def test_create_rejects_string_false(client):
+    status, body = client.post("/api/categories", {
+        "name": "string-false", "display_name": "String false", "enabled": "false"})
+    assert status == 400
+    assert "enabled" in body["error"]
+    status, body = client.get("/api/categories?search=string-false")
+    assert body["categories"] == []
+
+
+def test_create_rejects_string_true(client):
+    status, body = client.post("/api/categories", {
+        "name": "string-true", "display_name": "String true", "enabled": "true"})
+    assert status == 400
+    assert "enabled" in body["error"]
+
+
+def test_create_rejects_integer_enabled(client):
+    for value in (0, 1):
+        status, body = client.post("/api/categories", {
+            "name": f"int-{value}", "display_name": "Int", "enabled": value})
+        assert status == 400, value
+        assert "enabled" in body["error"]
+
+
+def test_create_rejects_null_enabled(client):
+    status, body = client.post("/api/categories", {
+        "name": "null-enabled", "display_name": "Null", "enabled": None})
+    assert status == 400
+    assert "enabled" in body["error"]
+
+
+def test_invalid_enabled_writes_no_audit_entry(client):
+    status, body = client.get("/api/audit")
+    before = [e for e in body["entries"] if e["action"] == "category.create"]
+    for value in ("false", "true", 0, 1, None):
+        status, _ = client.post("/api/categories", {
+            "name": "no-audit", "display_name": "No audit", "enabled": value})
+        assert status == 400, value
+    status, body = client.get("/api/audit")
+    after = [e for e in body["entries"] if e["action"] == "category.create"]
+    assert after == before
+    status, body = client.get("/api/categories?search=no-audit")
+    assert body["categories"] == []
+
+
 def test_update_display_name_and_description(client):
     status, body = client.put("/api/categories/news", {
         "display_name": "News and current events",
