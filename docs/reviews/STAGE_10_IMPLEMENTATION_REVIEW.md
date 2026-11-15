@@ -736,7 +736,16 @@ itself was not required to be a regular file.
 4. `501c78ad3272bd78d979382c94279ef63e1efeca` - Stage 10 review fix:
    publisher symlink-manifest test
    (dashboard/tests/test_publishing.py)
-5. This document's own update commit follows; its SHA and the final
+5. `0ac47a5f66379a8907738f0848ef71158c536195` - Stage 10 review fix:
+   repair whitespace mangled by the editor fill (again)
+   (dashboard/src/publishing.py). Editorial repair only, zero behavior
+   change: the web editor's auto-indent re-indented the final line of
+   the file during commit 2's form fill (same known editor behavior as
+   the repair recorded in section 15; syntactically valid either way,
+   caught again by the post-commit byte-identity check against the
+   tested tree). This commit restores the exact tested bytes; verified
+   against the live raw file after commit.
+6. This document's own update commit follows; its SHA and the final
    branch HEAD are in the final summary message.
 
 ### Exact test commands and results (working tree, same content committed)
