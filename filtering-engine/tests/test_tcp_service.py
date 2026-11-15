@@ -156,7 +156,10 @@ class FakeUpstream:
             pass
 
     def _serve_tcp(self):
-        self.tcp_sock.settimeout(0.2)
+        try:
+            self.tcp_sock.settimeout(0.2)
+        except OSError:
+            return  # stopped before the loop began
         while self.running:
             try:
                 conn, _ = self.tcp_sock.accept()
@@ -403,7 +406,13 @@ def test_idle_connection_closed_after_timeout(upstream):
 
 
 def test_max_messages_per_connection_enforced(upstream):
-    service = build_service(upstream.port, tcp_max_messages=2)
+    # High idle timeout: the per-connection message cap is the only
+    # mechanism that can close this connection. A third message is never
+    # sent: the server closes after the cap without reading further
+    # input, and unread client data in its buffer would turn the close
+    # into a RST, making the assertion below a race.
+    service = build_service(upstream.port, tcp_max_messages=2,
+                            tcp_idle_timeout=30.0)
     try:
         sock = socket.create_connection(
             ("127.0.0.1", service.config.listen_port), timeout=5)
@@ -414,9 +423,8 @@ def test_max_messages_per_connection_enforced(upstream):
                 sock.sendall(framed)
                 header = _read_exact(sock, 2, 5)
                 _read_exact(sock, struct.unpack("!H", header)[0], 5)
-            sock.sendall(framed)  # message 3: over the limit
             sock.settimeout(5)
-            assert sock.recv(4096) == b""  # closed, no third answer
+            assert sock.recv(4096) == b""  # cap reached: closed promptly
         finally:
             sock.close()
     finally:
@@ -831,11 +839,11 @@ def test_oversized_opt_dropped_to_fit_udp_limit():
 
 
 def test_worker_closes_connection_dequeued_after_shutdown_began(upstream):
-    """Race regression: a worker is already waiting inside
-    _tcp_conn_queue.get() when shutdown sets _stopping; the get then
-    returns a queued connection. That connection was never genuinely
-    served, so the worker must close it without calling
-    _serve_tcp_conn()."""
+    """Race regression, fully synchronized: the TCP worker is provably
+    inside _tcp_conn_queue.get() (having passed its loop's shutdown
+    check) when shutdown sets _stopping; the get then returns a queued
+    connection. That connection was never genuinely served, so the
+    worker must close it without calling _serve_tcp_conn()."""
     service = build_service(upstream.port, tcp_workers=1, tcp_queued=4)
     served = []
     real_serve = service._serve_tcp_conn
@@ -845,19 +853,39 @@ def test_worker_closes_connection_dequeued_after_shutdown_began(upstream):
         return real_serve(conn)
 
     service._serve_tcp_conn = spy
+
+    # Instrument the queue's get(): the first call signals that the
+    # worker passed its loop's shutdown check and entered the queue
+    # read, then holds it there until the test has set _stopping and
+    # enqueued the connection. No sleeps stand in for synchronization;
+    # the wait timeouts are failure bounds, not timing assumptions.
+    entered_get = threading.Event()
+    release_get = threading.Event()
+    real_get = service._tcp_conn_queue.get
+
+    def instrumented_get(*args, **kwargs):
+        entered_get.set()
+        assert release_get.wait(5), "test never released the worker"
+        return real_get(*args, **kwargs)
+
+    service._tcp_conn_queue.get = instrumented_get
     try:
-        time.sleep(0.3)  # the one worker is parked inside queue.get
-        # Simulate the race window deterministically with a socketpair:
-        # the server end plays the accepted, tracked, still-queued
-        # connection; shutdown begins, and only then does the waiting
-        # worker's get() return it.
+        assert entered_get.wait(5), "worker never reached the queue read"
+        assert service._tcp_workers[0].is_alive()
+        # The worker is now held inside get(). Begin shutdown, then
+        # enqueue a tracked, never-served connection (socketpair: the
+        # server end plays the accepted connection).
         server_end, client_end = socket.socketpair()
         with service._conns_lock:
             service._active_conns.add(server_end)
         service._stopping.set()
         service._tcp_conn_queue.put_nowait(server_end)
+        release_get.set()  # worker's get() now returns the connection
         try:
-            time.sleep(0.5)  # several get() cycles
+            # Closed without being served: wait until the worker has
+            # finished with it (it exits its loop right after).
+            assert service._tcp_workers[0].join(5) is None
+            assert not service._tcp_workers[0].is_alive()
             assert served == []  # never served after shutdown began
             client_end.settimeout(5)
             assert client_end.recv(64) == b""  # closed by the worker
@@ -865,7 +893,7 @@ def test_worker_closes_connection_dequeued_after_shutdown_began(upstream):
         finally:
             client_end.close()
     finally:
-        service._stopping.clear()  # let stop() run its normal path
+        release_get.set()  # never leave the worker stuck on failure
         survivors = service.stop()
     assert survivors == []  # clean shutdown, no surviving worker
 
