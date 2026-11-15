@@ -449,6 +449,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._serve_static(path)
             else:
                 self._error(404, "not found")
+        except (socket.timeout, TimeoutError):
+            # The per-read inactivity timeout or the total receiving
+            # deadline fired while reading this request's BODY (header
+            # timeouts never reach here: handle_one_request catches
+            # them itself). The request is incomplete, so its unread
+            # bytes must never be parsed as a subsequent request, and a
+            # client timeout is not an internal server error. Close the
+            # connection immediately, without a response - exactly like
+            # the header-phase path in handle_one_request.
+            self.close_connection = True
+            self.log_message("request body timed out; connection closed")
+            return
         except StoreError as exc:
             self._error(exc.status, str(exc))
         except auth.AuthError as exc:
