@@ -27,6 +27,9 @@ Environment=KG_TRUSTED_PROXIES=127.0.0.1
 Environment=KG_MAX_CONNECTIONS=32
 Environment=KG_REQUEST_TIMEOUT=30
 Environment=KG_TOTAL_REQUEST_TIMEOUT=60
+# Where engine configuration generations are published (Stage 10).
+# The engine unit reads the same directory; both run as user kosherguard.
+Environment=KG_PUBLISH_DIR=/var/lib/kosherguard/published
 EnvironmentFile=-/etc/kosherguard/dashboard.env
 
 ExecStart=/usr/bin/python3 /opt/kosherguard/dashboard/src/server.py --host 127.0.0.1 --port 8080 --db /var/lib/kosherguard/dashboard.db
