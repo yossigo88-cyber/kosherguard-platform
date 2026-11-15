@@ -194,3 +194,52 @@ Back up before updating.
 - The dashboard is single-admin; a lost password means re-seeding the
   admin row by hand (delete the row in SQLite while stopped, then start
   with `KG_ADMIN_PASSWORD` set) - treat the password accordingly.
+
+
+---
+
+## Stage 10: the publication loop (dashboard -> engine)
+
+The dashboard and the DNS engine connect through a shared publication
+directory (default: `/var/lib/kosherguard/published` in the systemd
+units). The dashboard writes immutable configuration generations; the
+engine reads them through the `current` pointer.
+
+Directory layout:
+
+    published/
+        generations/<revision>/   policy.json, categories.json,
+                                  manifest.json (revision + SHA-256s)
+        current -> generations/<N>   atomic symlink pointer
+        engine-status.json           written by the engine after every load
+
+Publishing (from the dashboard UI or API):
+
+1. Select a policy for publication (Publication page, or
+   `POST /api/policies/<id>/select`).
+2. Publish (`POST /api/config/publish` or the Publish button). The
+   dashboard validates the complete configuration with the engine's own
+   validators, writes a new generation, verifies it from disk, and
+   atomically switches `current`. A failed publish keeps the previous
+   generation live.
+3. The engine picks up the new generation within `--watch` seconds, or
+   immediately on `sudo systemctl reload kosherguard-engine` (SIGHUP).
+   An invalid or corrupted generation is rejected and the engine keeps
+   serving the last valid configuration; the rejection is in the engine
+   log and in `engine-status.json` (`last_error`).
+4. The dashboard's Publication page shows the engine as live only when
+   the engine's status file confirms it is enforcing the published
+   revision.
+
+Rollback: `POST /api/config/rollback {"revision": N}` (or the button on
+the Publication page) publishes the complete stored content of revision
+N as a NEW revision. History is never modified.
+
+Operational rules:
+
+- Both services must run as the same user (the units use `kosherguard`):
+  generations are 0700 directories with 0600 files.
+- Never edit files under `generations/` by hand; publish or roll back
+  through the dashboard.
+- If `current` is ever missing or broken, the engine keeps its last
+  valid configuration; publish again from the dashboard to restore it.
