@@ -74,24 +74,42 @@ configuration identity (paths, hashes, generation, reload count, last
 error) after every load attempt, so the dashboard can show what the
 engine is actually enforcing.
 
+Multi-policy engine sets (Stage 11C): the immutable reference the
+service holds is one complete ENGINE SET (engine_set.EngineSet) - a
+default policy, one validated PolicyEngine per published policy ID,
+and a validated network-binding map. The query's source address,
+already available at the socket layer, is threaded through both
+transports into handle_packet and canonicalized with the shared
+Stage 11A canonicalizer (IPv4 to its dotted-quad key, IPv6 to its /64
+network key), so policy selection is a plain dict lookup on the
+query's single engine-set snapshot: no per-query database, file, or
+network access, and a query can never observe a partially loaded or
+mixed configuration. Resolution order is strict: (1) authenticated
+credential - a reserved extension point that can never fire in Stage
+11C (no tokens exist); (2) exact IPv4 binding; (3) IPv6 /64 group
+binding; (4) the default policy. Legacy Stage 10 generations load
+unchanged as a single-policy set. Bindings are network/group ROUTING
+HINTS, never authenticated device identity. See engine_set.py and
+README.md.
+
 Scope, stated plainly: DNS filtering controls access to *domains*. It
 cannot block individual URLs, pages, or paths, and it cannot see or filter
 the contents of encrypted HTTPS traffic. See README.md.
 
 Privacy by design: the client IP address is intentionally NOT recorded in
 the decision log. Logs contain the requested domain, the decision, and why.
+Stage 11C uses the source address ONLY for in-memory policy routing: it
+is never written to the decision log, the status file, or any other
+persistent output, and no credentials or tokens exist to protect.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import queue
-import re
 import socket
-import stat
 import threading
 import time
 from dataclasses import dataclass, field
@@ -101,8 +119,15 @@ from typing import List, Optional, Tuple
 
 from dnslib import AAAA, A, QTYPE, RCODE, DNSHeader, DNSRecord, RR
 
-from category_db import CategoryDB, CategoryDBError
-from policy_engine import PolicyConfigError, PolicyEngine, normalize_domain
+from engine_set import EngineSet, load_validated_engine, load_validated_engine_set
+from generation_io import (  # noqa: F401  (re-exported for existing callers/tests)
+    _SHA256_HEX,
+    _read_manifest_fd,
+    _safe_open_manifest,
+    _sha256,
+    _validate_generation_manifest,
+)
+from policy_engine import normalize_domain
 
 log = logging.getLogger("kosherguard.dns")
 
@@ -132,195 +157,13 @@ class DecisionLogger:
             self._stream.flush()
 
 
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
-
-
-def _safe_open_manifest(manifest_path):
-    """Open a generation manifest fail-closed and return its descriptor.
-
-    os.open with O_NOFOLLOW (the final path component cannot be a
-    symlink of any kind), plus O_CLOEXEC and O_NONBLOCK where the
-    platform offers them (so an unexpected FIFO cannot hang the open).
-    os.fstat on the OPENED descriptor must show a regular file before
-    any byte is read, and the caller reads from THIS descriptor only -
-    there is no later path-based reopen, so replacing the pathname
-    after the check cannot change which file is read (no
-    time-of-check/time-of-use window).
-
-    Returns None only when the path is genuinely absent (the legacy
-    pre-publication layout). Raises PolicyConfigError for every
-    present-but-unusable entry: any symlink or broken symlink (ELOOP),
-    directory, FIFO, socket, device, permission error, or an
-    uninspectable descriptor. On a platform without O_NOFOLLOW there
-    is no safe way to distinguish "genuinely absent" from "replaced
-    between check and read", so it fails closed UNCONDITIONALLY - even
-    a path that looks absent is rejected, which deliberately means
-    legacy no-manifest loading is unavailable there. os.path.lexists()
-    is never consulted: its answer could change before the caller
-    continues.
-    """
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is None:
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: this platform lacks "
-            "O_NOFOLLOW, so no manifest path can be opened safely; "
-            "refusing to load (legacy no-manifest loading is "
-            "unavailable on this platform)")
-    flags = os.O_RDONLY | nofollow
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NONBLOCK", 0)  # a FIFO cannot hang the open
-    try:
-        fd = os.open(manifest_path, flags)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: cannot open safely "
-            f"({exc}); refusing to load")
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise PolicyConfigError(
-                f"generation manifest {manifest_path} exists but is not "
-                "a regular file (directory, FIFO, socket, device, or "
-                "other non-regular entry); refusing to load")
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
-
-
-def _read_manifest_fd(fd, manifest_path):
-    """Read and parse the manifest from the already-verified
-    descriptor; close the descriptor on every path."""
-    try:
-        fh = os.fdopen(fd, "rb")
-    except OSError as exc:
-        os.close(fd)
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: cannot read: {exc}")
-    try:
-        with fh:
-            data = fh.read()
-    except OSError as exc:
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: cannot read: {exc}")
-    try:
-        return json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PolicyConfigError(
-            f"unreadable generation manifest {manifest_path}: {exc}")
-
-
-def _validate_generation_manifest(manifest, policy_path, categories_path,
-                                  policy_sha256, categories_sha256):
-    """Fail-closed validation of a generation manifest.
-
-    When a manifest.json exists it MUST be complete, well-formed, and
-    internally consistent with the generation being loaded; anything
-    less is a corrupted or tampered publication and is rejected rather
-    than silently falling back to unverified file loading. Required:
-    a JSON object; both content hashes present and each a 64-character
-    lowercase SHA-256 hexadecimal string; a non-negative-integer revision;
-    a non-empty generation string equal to str(revision) AND to the
-    resolved generation directory name; and both hashes matching the
-    actual file bytes exactly. Raises PolicyConfigError on any defect.
-    """
-    manifest_path = Path(policy_path).parent / "manifest.json"
-    if not isinstance(manifest, dict):
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path} is not a JSON object; "
-            "refusing to load")
-    for key, path in (("policy_sha256", policy_path),
-                      ("categories_sha256", categories_path)):
-        value = manifest.get(key)
-        if not isinstance(value, str) or not _SHA256_HEX.fullmatch(value):
-            raise PolicyConfigError(
-                f"generation manifest {manifest_path}: {key} is missing or "
-                "not a valid 64-character SHA-256 hexadecimal value; "
-                "refusing to load")
-    revision = manifest.get("revision")
-    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: revision is missing or "
-            "not a non-negative integer; refusing to load")
-    generation = manifest.get("generation")
-    if not isinstance(generation, str) or not generation:
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: generation is missing or "
-            "not a non-empty string; refusing to load")
-    if generation != str(revision):
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: generation {generation!r} "
-            f"is inconsistent with revision {revision}; refusing to load")
-    directory = os.path.basename(os.path.dirname(os.path.realpath(policy_path)))
-    if generation != directory:
-        raise PolicyConfigError(
-            f"generation manifest {manifest_path}: generation {generation!r} "
-            f"does not match its directory {directory!r} (mixed-generation "
-            "or relocated file set); refusing to load")
-    if manifest["policy_sha256"] != policy_sha256:
-        raise PolicyConfigError(
-            f"{policy_path} does not match its generation manifest "
-            "(corrupted or mixed-generation file); refusing to load")
-    if manifest["categories_sha256"] != categories_sha256:
-        raise PolicyConfigError(
-            f"{categories_path} does not match its generation manifest "
-            "(corrupted or mixed-generation file); refusing to load")
-
-
-def load_validated_engine(policy_path, categories_path):
-    """Build a COMPLETE replacement engine from configuration files.
-
-    Both files are read, parsed, validated with the engine's own
-    validators, and - when a generation manifest.json sits next to the
-    policy file (the dashboard's Stage 10 publication layout) - their
-    content hashes are verified against it, so a corrupted or
-    mixed-generation file set is rejected rather than loaded. Returns
-    (engine, info); raises OSError, PolicyConfigError, CategoryDBError,
-    or ValueError on any problem. Nothing is mutated anywhere: the
-    caller decides whether to activate the result.
-    """
-    policy_path = str(policy_path)
-    categories_path = str(categories_path)
-    policy_bytes = Path(policy_path).read_bytes()
-    categories_bytes = Path(categories_path).read_bytes()
-    info = {
-        "policy_path": policy_path,
-        "categories_path": categories_path,
-        "policy_sha256": _sha256(policy_bytes),
-        "categories_sha256": _sha256(categories_bytes),
-    }
-    manifest_path = Path(policy_path).parent / "manifest.json"
-    manifest_fd = _safe_open_manifest(manifest_path)
-    if manifest_fd is not None:
-        # Verified regular on the opened descriptor inside
-        # _safe_open_manifest; the bytes come from that SAME
-        # descriptor. A present-but-invalid manifest is NEVER ignored;
-        # only a genuinely absent path (None) loads unverified.
-        manifest = _read_manifest_fd(manifest_fd, manifest_path)
-        _validate_generation_manifest(
-            manifest, policy_path, categories_path,
-            info["policy_sha256"], info["categories_sha256"])
-        info["generation"] = manifest["generation"]
-        info["manifest_revision"] = manifest["revision"]
-    try:
-        policy = json.loads(policy_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PolicyConfigError(f"{policy_path}: invalid JSON: {exc}")
-    try:
-        categories_raw = json.loads(categories_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CategoryDBError(f"{categories_path}: invalid JSON: {exc}")
-    if not isinstance(categories_raw, dict) or not isinstance(categories_raw.get("domains"), dict):
-        raise CategoryDBError(
-            f"{categories_path}: expected an object with a 'domains' object")
-    engine = PolicyEngine(
-        policy, CategoryDB(categories_raw["domains"], meta=categories_raw.get("_meta", {})))
-    return engine, info
+# The fail-closed generation file I/O helpers (descriptor-based safe
+# opens, manifest reading/validation, SHA-256) live in generation_io.py,
+# shared with the Stage 11C multi-policy loader; the legacy single-policy
+# loader load_validated_engine and the immutable engine set live in
+# engine_set.py. All of them are imported below, which also re-exports
+# them: existing callers and tests using dns_service._safe_open_manifest
+# or dns_service.load_validated_engine keep working unchanged.
 
 
 def config_identity(policy_path, categories_path):
@@ -377,10 +220,15 @@ class DNSFilteringService:
 
     def __init__(
         self,
-        engine: PolicyEngine,
+        engine,
         config: Optional[ServiceConfig] = None,
         decision_logger: Optional[DecisionLogger] = None,
     ) -> None:
+        # engine is either a Stage 11C EngineSet (one immutable
+        # multi-policy set; the production shape) or a bare PolicyEngine
+        # (the historical shape, still accepted so existing callers and
+        # tests behave exactly as before: every client gets that one
+        # policy). A reload always installs a complete EngineSet.
         self.engine = engine
         self.config = config or ServiceConfig()
         if self.config.block_mode not in ("sinkhole", "nxdomain"):
@@ -423,12 +271,26 @@ class DNSFilteringService:
         self._tcp_workers: List[threading.Thread] = []
         self._active_conns: set = set()
         self._conns_lock = threading.Lock()
+        # Accepted-connection peer addresses for Stage 11C policy
+        # routing, held under the same lock as _active_conns and dropped
+        # on close. Never logged or persisted (privacy by design).
+        self._conn_addrs: dict = {}
 
     # -- packet handling (pure, separately testable) -----------------------
 
-    def handle_packet(self, data: bytes, downstream_udp: bool = False) -> Optional[bytes]:
+    def handle_packet(self, data: bytes, client_addr=None,
+                      downstream_udp: bool = False) -> Optional[bytes]:
         """Process one DNS query packet; returns the response packet to
         send back, or None when the input was unrecoverably malformed.
+
+        client_addr is the query's source address exactly as the socket
+        layer reported it (an AF_INET or AF_INET6 address tuple, or a
+        bare address string); it selects the client's policy through the
+        active engine set's binding map. Callers that supply no client
+        address keep the historical behavior: the default policy
+        applies. The address is used for routing ONLY - it is never
+        written to the decision log, the status file, or anywhere else
+        (privacy by design).
 
         downstream_udp=True applies the downstream UDP size rules (client
         EDNS0 payload size capped by max_udp_response, truncation with TC
@@ -449,9 +311,14 @@ class DNSFilteringService:
             "domain": qname,
             "qtype": qtype_name,
         }
-        # Read the engine reference ONCE: even if a reload swaps it
-        # mid-query, this query completes against one complete engine.
+        # Read the active engine-set reference ONCE and resolve this
+        # query's policy from that ONE snapshot: even if a reload swaps
+        # the set mid-query, this query completes against one complete,
+        # consistent engine configuration. A bare PolicyEngine (the
+        # historical construction shape) applies to every client.
         engine = self.engine
+        if isinstance(engine, EngineSet):
+            engine = engine.policy_for_client(client_addr)
         try:
             decision = engine.decide(qname)
         except ValueError:
@@ -629,18 +496,22 @@ class DNSFilteringService:
 
     def reload_from_paths(self, policy_path, categories_path,
                           trigger: str = "manual") -> bool:
-        """Build and activate a replacement engine, fail-safe.
+        """Build and activate a replacement engine set, fail-safe.
 
         The replacement is fully loaded and validated BEFORE anything
-        changes; the swap is a single reference assignment. On ANY
-        failure the previous engine keeps serving, the rejection is
-        logged loudly, the failed configuration is never reported as
-        active, and the method returns False. In-flight queries are
-        never interrupted: they already hold their own reference to the
-        previous engine object, which is never mutated.
+        changes - every policy document, binding, reference, and
+        manifest hash of a multi-document generation, or the legacy
+        single-policy file set - and the swap is a single reference
+        assignment. On ANY failure the previous engine set keeps
+        serving, the rejection is logged loudly, the failed
+        configuration is never reported as active, and the method
+        returns False. In-flight queries are never interrupted: they
+        already hold their own reference to the previous engine set
+        object, which is never mutated, so a query can never observe a
+        partially loaded or mixed configuration.
         """
         try:
-            engine, info = load_validated_engine(policy_path, categories_path)
+            engine, info = load_validated_engine_set(policy_path, categories_path)
         except Exception as exc:
             self.last_reload_error = {
                 "error": str(exc),
@@ -658,9 +529,10 @@ class DNSFilteringService:
         self.reload_count += 1
         self.last_reload_error = None
         log.info(
-            "configuration reload accepted (%s): generation=%s revision=%s "
-            "policy_sha256=%s categories_sha256=%s",
-            trigger, info.get("generation"), info.get("manifest_revision"),
+            "configuration reload accepted (%s): format=%s generation=%s "
+            "revision=%s policy_sha256=%s categories_sha256=%s",
+            trigger, info.get("format", "single-policy"),
+            info.get("generation"), info.get("manifest_revision"),
             info["policy_sha256"][:12], info["categories_sha256"][:12])
         self._write_status(trigger)
         return True
@@ -693,7 +565,15 @@ class DNSFilteringService:
                 "categories_sha256": self.active_config["categories_sha256"],
                 "generation": self.active_config.get("generation"),
                 "revision": self.active_config.get("manifest_revision"),
+                "format": self.active_config.get("format", "single-policy"),
             })
+            # Stage 11C multi-policy identity: counts and hashes only.
+            # No client addresses, binding keys, or credentials are ever
+            # written to the status file.
+            for key in ("default_policy_id", "policy_count",
+                        "binding_count", "device_count", "devices_sha256"):
+                if self.active_config.get(key) is not None:
+                    status[key] = self.active_config[key]
         path = Path(self._status_path)
         try:
             tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
@@ -818,7 +698,8 @@ class DNSFilteringService:
             except queue.Empty:
                 continue
             try:
-                response = self.handle_packet(data, downstream_udp=True)
+                response = self.handle_packet(data, client_addr=client,
+                                              downstream_udp=True)
             except Exception:
                 log.exception("unexpected error handling query")
                 continue
@@ -835,16 +716,19 @@ class DNSFilteringService:
         connection arriving at a full queue is closed and logged."""
         while self._running.is_set():
             try:
-                conn, _addr = self._tcp_sock.accept()
+                conn, addr = self._tcp_sock.accept()
             except socket.timeout:
                 continue
             except OSError:
                 break
             # Account for the connection from the moment it is accepted,
             # so shutdown can always find and close it - whether it is
-            # waiting in the queue or being served by a worker.
+            # waiting in the queue or being served by a worker. The peer
+            # address travels alongside (Stage 11C policy routing); it is
+            # dropped when the connection is closed.
             with self._conns_lock:
                 self._active_conns.add(conn)
+                self._conn_addrs[conn] = addr
             if self._stopping.is_set():
                 # Accepted just as shutdown began: never enqueue a
                 # connection nobody will drain.
@@ -886,6 +770,7 @@ class DNSFilteringService:
         """Close one tracked connection and drop it from the active set."""
         with self._conns_lock:
             self._active_conns.discard(conn)
+            self._conn_addrs.pop(conn, None)
         try:
             conn.close()
         except OSError:
@@ -904,10 +789,18 @@ class DNSFilteringService:
                 return
             self._close_tracked_conn(conn)
 
-    def _serve_tcp_conn(self, conn: socket.socket) -> None:
+    def _serve_tcp_conn(self, conn: socket.socket, client_addr=None) -> None:
         """Serve one connection: length-prefixed messages in order, until
         the client closes, the read/idle timeout expires, the message
-        limit is reached, or shutdown closes the connection."""
+        limit is reached, or shutdown closes the connection.
+
+        The peer address recorded at accept time selects the policy for
+        every message on the connection through the active engine set
+        (Stage 11C routing only - it is never logged). An explicit
+        client_addr argument overrides the recorded one (tests); a
+        connection with no recorded address gets the default policy."""
+        if client_addr is None:
+            client_addr = self._conn_addrs.get(conn)
         for _ in range(self.config.tcp_max_messages):
             # One absolute deadline per complete message: the two-byte
             # length prefix and the message body share it, so one message
@@ -927,7 +820,7 @@ class DNSFilteringService:
             data = self._recv_exact(conn, length, deadline)
             if data is None:
                 return  # client gone, idle, or never finished the message
-            response = self.handle_packet(data)
+            response = self.handle_packet(data, client_addr=client_addr)
             if response is None:
                 return  # unrecoverably malformed; close safely
             if len(response) > DNS_TCP_MAX_MESSAGE:
@@ -1062,7 +955,11 @@ def main(argv: Optional[list] = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="KosherGuard DNS filtering service")
-    parser.add_argument("--policy", required=True, help="policy JSON file")
+    parser.add_argument("--policy", required=True,
+                        help="policy JSON file (legacy single-policy "
+                             "generation) or a multi-policy generation "
+                             "directory (Stage 11C; typically the "
+                             "publisher's 'current' symlink)")
     parser.add_argument("--categories", required=True, help="category database JSON file")
     parser.add_argument("--listen", default="127.0.0.1:5353", help="host:port to bind")
     parser.add_argument("--upstream", action="append",
@@ -1101,7 +998,7 @@ def main(argv: Optional[list] = None) -> int:
                         format="%(asctime)s %(levelname)s %(message)s")
     # Startup load is validation-first too: an invalid or corrupted
     # initial configuration stops the service instead of mis-filtering.
-    engine, info = load_validated_engine(args.policy, args.categories)
+    engine, info = load_validated_engine_set(args.policy, args.categories)
 
     host, _, port = args.listen.partition(":")
     upstreams = None
