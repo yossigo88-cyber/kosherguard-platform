@@ -4,46 +4,80 @@
 # Verifies a backup file (SQLite integrity check AND the expected
 # dashboard tables), then atomically puts it in place as dashboard.db.
 #
-# IMPORTANT: stop the dashboard service FIRST
-# (systemctl stop kosherguard-dashboard). The server keeps its database
-# file open; swapping the file underneath it would leave it writing to
-# the old file.
+# IMPORTANT: the dashboard service MUST be stopped first
+# (systemctl stop kosherguard-dashboard), and this script refuses to
+# run until the operator explicitly confirms that with
+# --service-stopped. The server keeps its database file open; swapping
+# the file underneath it would leave it writing to the old file.
+# --force alone only covers overwriting an existing database - it does
+# NOT confirm that the service is stopped.
 #
 # Usage:
-#   bash deploy/restore.sh BACKUP_FILE [DATA_DIR] [--force]
-#     BACKUP_FILE  a file written by backup.sh
-#     DATA_DIR     directory holding dashboard.db (default /var/lib/kosherguard)
-#     --force      overwrite an existing dashboard.db without asking
+#   bash deploy/restore.sh BACKUP_FILE [DATA_DIR] --service-stopped [--force]
+#     BACKUP_FILE        a file written by backup.sh
+#     DATA_DIR           directory holding dashboard.db (default /var/lib/kosherguard)
+#     --service-stopped  REQUIRED: explicit confirmation that the
+#                        dashboard service has been stopped
+#     --force            overwrite an existing dashboard.db without asking
 #
 # Failure behavior: any failed check exits non-zero and the existing
 # dashboard.db (if any) is left byte-for-byte untouched.
 set -euo pipefail
 
-if [ $# -lt 1 ]; then
-    echo "usage: bash deploy/restore.sh BACKUP_FILE [DATA_DIR] [--force]" >&2
+usage() {
+    echo "usage: bash deploy/restore.sh BACKUP_FILE [DATA_DIR] --service-stopped [--force]" >&2
     exit 2
-fi
+}
 
-BACKUP="$1"
-DATA_DIR="${2:-/var/lib/kosherguard}"
-FORCE="${3:-}"
+BACKUP=""
+DATA_DIR=""
+FORCE=0
+SERVICE_STOPPED=0
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=1 ;;
+        --service-stopped) SERVICE_STOPPED=1 ;;
+        --*) echo "restore: unknown option: $arg" >&2; usage ;;
+        *)
+            if [ -z "$BACKUP" ]; then
+                BACKUP="$arg"
+            elif [ -z "$DATA_DIR" ]; then
+                DATA_DIR="$arg"
+            else
+                echo "restore: unexpected argument: $arg" >&2
+                usage
+            fi
+            ;;
+    esac
+done
+[ -n "$BACKUP" ] || usage
+DATA_DIR="${DATA_DIR:-/var/lib/kosherguard}"
 DEST="$DATA_DIR/dashboard.db"
 TMP="$DATA_DIR/.dashboard.db.restore-in-progress"
+
+# The restored database holds password hashes and session tokens:
+# keep it owner-only.
+umask 077
 
 if [ ! -f "$BACKUP" ]; then
     echo "restore: backup file not found: $BACKUP" >&2
     exit 1
 fi
 
-if [ -e "$DEST" ] && [ "$FORCE" != "--force" ]; then
+if [ "$SERVICE_STOPPED" != "1" ]; then
+    echo "restore: refusing without confirmation that the dashboard service is stopped" >&2
+    echo "restore: stop it first (systemctl stop kosherguard-dashboard), then re-run with --service-stopped" >&2
+    exit 1
+fi
+
+if [ -e "$DEST" ] && [ "$FORCE" != "1" ]; then
     echo "restore: $DEST already exists; re-run with --force to overwrite it" >&2
     exit 1
 fi
 
-echo "restore: make sure the dashboard service is stopped (systemctl stop kosherguard-dashboard)"
-
 rm -f "$TMP"
 cp "$BACKUP" "$TMP"
+chmod 0600 "$TMP"
 
 python3 - "$TMP" <<'PY'
 import sqlite3
@@ -84,5 +118,6 @@ PY
 # Atomic rename into place; the existing database stays untouched
 # until this moment.
 mv -f "$TMP" "$DEST"
+chmod 0600 "$DEST"
 echo "restore: installed $BACKUP as $DEST"
 echo "restore: now start the service again (systemctl start kosherguard-dashboard)"
