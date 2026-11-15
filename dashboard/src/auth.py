@@ -32,6 +32,7 @@ from util import utcnow
 
 PBKDF2_ITERATIONS = 200_000
 SESSION_LIFETIME_SECONDS = 12 * 60 * 60  # 12 hours
+MIN_PASSWORD_LENGTH = 12
 
 
 class AuthError(Exception):
@@ -112,6 +113,19 @@ def destroy_session(conn: sqlite3.Connection, token: str | None) -> None:
     if token:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
         conn.commit()
+
+
+def cleanup_expired_sessions(conn: sqlite3.Connection) -> int:
+    """Delete expired session rows; returns how many were removed.
+
+    Expired sessions are invalid whether or not this cleanup has run:
+    resolve_session() rejects them on use. Cleanup only reclaims
+    storage. It runs at server startup (a documented safe point), so
+    there is deliberately no background thread to shut down.
+    """
+    cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (utcnow(),))
+    conn.commit()
+    return cur.rowcount
 
 
 class LoginLimiter:
