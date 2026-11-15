@@ -417,9 +417,19 @@ race guard (including a worker that is parked inside the connection
 queue's get() when shutdown begins: a connection it then dequeues is
 closed, never served), UDP bind-failure cleanup, the max_udp_response
 512-byte minimum, and oversized-OPT truncation that never exceeds the
-limit.
+limit. Stage 5 adds: first-upstream timeout failover to the next
+upstream, an unrecoverable packet dropped with no response (service
+survives), a questionless packet answered REFUSED, a root-name query
+answered REFUSED, non-A/AAAA queries for blocked domains answered
+NXDOMAIN in sinkhole mode, decision-log write failures that cannot
+crash request processing, a policy rule naming a category the database
+does not have, category-database file validation (missing file,
+missing or mistyped `domains` key), duplicate-domain records in one
+import file, import atomicity (a malformed record leaves the database
+unchanged), and concurrency tests synchronized on real events and
+conditions instead of fixed sleeps.
 
-Latest local run: **99 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
+Latest local run: **113 passed** (Python 3.10, pytest 8.4, dnslib 0.9).
 
 ## Security notes
 
