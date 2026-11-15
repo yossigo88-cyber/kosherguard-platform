@@ -11,6 +11,7 @@ No sleeps are used for synchronization: tests poll observable state
 (the DNS answer itself, or the engine status file) with a deadline.
 """
 
+import hashlib
 import json
 import os
 import signal
@@ -205,18 +206,128 @@ def test_missing_file_rejected(service, tmp_path):
     assert answer_a(query_udp(port, "blocked-one.test")) == "0.0.0.0"
 
 
+def _write_manifest(gen, **overrides):
+    """Write a structurally valid manifest for the generation in `gen`
+    (named after its revision), with any fields overridden or removed
+    (pass None to remove). Returns the manifest as written."""
+    gen = Path(gen)
+    policy_bytes = (gen / "policy.json").read_bytes()
+    categories_bytes = (gen / "categories.json").read_bytes()
+    manifest = {
+        "revision": int(gen.name),
+        "generation": gen.name,
+        "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+        "categories_sha256": hashlib.sha256(categories_bytes).hexdigest(),
+    }
+    for key, value in overrides.items():
+        if value is None:
+            manifest.pop(key, None)
+        else:
+            manifest[key] = value
+    (gen / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
 def test_corrupted_generation_rejected(tmp_path):
     """A manifest whose hashes do not match the files is refused."""
-    gen = tmp_path / "gen"
+    gen = tmp_path / "1"
     policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
-    manifest = {
-        "revision": 1, "generation": "1",
-        "policy_sha256": "0" * 64,  # wrong on purpose
-        "categories_sha256": "f" * 64,
-    }
-    (gen / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _write_manifest(gen, policy_sha256="0" * 64)
     with pytest.raises(PolicyConfigError):
         load_validated_engine(policy_path, categories_path)
+
+
+def test_manifest_missing_policy_hash_rejected(tmp_path):
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    _write_manifest(gen, policy_sha256=None)
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+def test_manifest_missing_categories_hash_rejected(tmp_path):
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    _write_manifest(gen, categories_sha256=None)
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+def test_manifest_empty_hashes_rejected(tmp_path):
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    _write_manifest(gen, policy_sha256="", categories_sha256="")
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+def test_manifest_malformed_hashes_rejected(tmp_path):
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    _write_manifest(gen, policy_sha256="not-a-hash",
+                    categories_sha256="z" * 64)
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+def test_manifest_inconsistent_metadata_rejected(tmp_path):
+    """Generation/revision metadata that disagrees with itself or with
+    the actual directory is refused."""
+    gen = tmp_path / "1"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    # generation != str(revision)
+    _write_manifest(gen, generation="2")
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+    # revision missing
+    _write_manifest(gen, revision=None)
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+    # revision not a positive integer
+    _write_manifest(gen, revision="1")
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+    # manifest consistent internally but not with the real directory
+    _write_manifest(gen, revision=7, generation="7")
+    with pytest.raises(PolicyConfigError):
+        load_validated_engine(policy_path, categories_path)
+
+
+def test_manifest_valid_accepted(tmp_path):
+    """A complete, correct manifest loads and reports its identity."""
+    gen = tmp_path / "3"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    _write_manifest(gen)
+    engine, info = load_validated_engine(policy_path, categories_path)
+    assert isinstance(engine, PolicyEngine)
+    assert info["generation"] == "3"
+    assert info["manifest_revision"] == 3
+
+
+def test_legacy_config_without_manifest_accepted(tmp_path):
+    """A plain file set with no manifest.json at all keeps loading
+    unverified (the pre-publication legacy layout)."""
+    gen = tmp_path / "plain"
+    policy_path, categories_path = write_config(gen, POLICY_V1, CATEGORIES)
+    engine, info = load_validated_engine(policy_path, categories_path)
+    assert isinstance(engine, PolicyEngine)
+    assert "generation" not in info
+    assert "manifest_revision" not in info
+
+
+def test_invalid_manifest_reload_keeps_last_known_good(service):
+    """A reload whose files carry a defective manifest is rejected and
+    the service keeps answering with the last valid configuration."""
+    svc, policy_path, categories_path = service
+    port = svc.config.listen_port
+    gen = Path(policy_path).parent
+    write_config(gen, POLICY_V2, CATEGORIES)
+    (gen / "manifest.json").write_text(
+        json.dumps({"revision": 1, "generation": "1"}), encoding="utf-8")
+    assert svc.reload_from_paths(policy_path, categories_path, trigger="test") is False
+    assert svc.reload_count == 0
+    assert answer_a(query_udp(port, "blocked-one.test")) == "0.0.0.0"
+    assert answer_a(query_tcp(port, "blocked-one.test")) == "0.0.0.0"
 
 
 def test_failed_reload_does_not_stop_service(service):
@@ -295,9 +406,10 @@ def _read_status(path):
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="POSIX only")
-def test_sighup_real_subprocess(tmp_path):
+def test_sighup_real_subprocess(tmp_path, upstream):
     """The real service process reloads on SIGHUP: flag-only handler,
-    validation in normal flow, observable over real DNS answers."""
+    validation in normal flow, observable over real DNS answers on UDP
+    and TCP against a real (fake) upstream resolver."""
     root = tmp_path / "pub"
     policy_path, categories_path = write_config(root, POLICY_V1, CATEGORIES)
     status_path = tmp_path / "status.json"
@@ -308,7 +420,8 @@ def test_sighup_real_subprocess(tmp_path):
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "dns_service",
              "--policy", str(policy_path), "--categories", str(categories_path),
-             "--listen", "127.0.0.1:0", "--status-file", str(status_path)],
+             "--listen", "127.0.0.1:0", "--status-file", str(status_path),
+             "--upstream", f"127.0.0.1:{upstream.port}"],
             stdout=logf, stderr=logf, env=env)
         try:
             # The listen port lands in the log; poll for it.
@@ -321,26 +434,35 @@ def test_sighup_real_subprocess(tmp_path):
             port = int(line.split("Listening on 127.0.0.1:")[1].split()[0])
 
             assert answer_a(query_udp(port, "blocked-one.test")) == "0.0.0.0"
+            assert answer_a(query_udp(port, "other.test")) == UPSTREAM_A
 
             # Publish new content in place and signal.
             write_config(root, POLICY_V2, CATEGORIES)
             proc.send_signal(signal.SIGHUP)
             wait_for(lambda: answer_a(query_udp(port, "blocked-two.test")) == "0.0.0.0",
                      description="SIGHUP reload to take effect")
-            assert answer_a(query_udp(port, "blocked-one.test")) == UPSTREAM_A or True
+            # Real DNS proof of the reload on both transports: the new
+            # block sinks, the old block is forwarded to the upstream.
+            assert answer_a(query_udp(port, "blocked-two.test")) == "0.0.0.0"
+            assert answer_a(query_tcp(port, "blocked-two.test")) == "0.0.0.0"
+            assert answer_a(query_udp(port, "blocked-one.test")) == UPSTREAM_A
+            assert answer_a(query_tcp(port, "blocked-one.test")) == UPSTREAM_A
+            assert proc.poll() is None  # still healthy
             status = _read_status(status_path)
             assert status is not None
             assert status["trigger"] == "sighup"
             assert status["reload_count"] == 1
 
             # A broken configuration after SIGHUP is rejected; the
-            # service stays up with the last good configuration.
+            # service stays up with POLICY_V2 as the last known-good.
             Path(policy_path).write_text("{oops", encoding="utf-8")
             proc.send_signal(signal.SIGHUP)
             wait_for(lambda: (_read_status(status_path) or {}).get("last_error") is not None,
                      description="rejection to appear in the status file")
             assert _read_status(status_path)["reload_count"] == 1
             assert answer_a(query_udp(port, "blocked-two.test")) == "0.0.0.0"
+            assert answer_a(query_tcp(port, "blocked-two.test")) == "0.0.0.0"
+            assert answer_a(query_udp(port, "blocked-one.test")) == UPSTREAM_A
             assert proc.poll() is None  # still running
         finally:
             proc.terminate()
