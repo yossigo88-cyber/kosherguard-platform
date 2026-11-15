@@ -305,7 +305,11 @@ class DNSFilteringService:
         """Truncate a response to max_size by dropping whole records from
         the end of the answer, then non-OPT additional, then authority
         sections - never cutting mid-record - and set the TC flag so the
-        client retries over TCP. The OPT record is preserved."""
+        client retries over TCP. The OPT record is preserved when it
+        fits; when the OPT record itself prevents the response from
+        fitting, it is dropped instead (OPT is advisory) rather than
+        sending an oversized message. TC is set whenever anything was
+        removed."""
         removed = False
         while len(reply.pack()) > max_size:
             if reply.rr:
@@ -539,6 +543,14 @@ class DNSFilteringService:
             try:
                 conn = self._tcp_conn_queue.get(timeout=0.1)
             except queue.Empty:
+                continue
+            if self._stopping.is_set():
+                # Shutdown began while this worker was waiting inside
+                # get(): the connection was still waiting in the queue,
+                # never genuinely served. Close it like a drained one;
+                # stop() only drains what is still queued, so a
+                # dequeued-but-unserved connection is this worker's job.
+                self._close_tracked_conn(conn)
                 continue
             try:
                 self._serve_tcp_conn(conn)
