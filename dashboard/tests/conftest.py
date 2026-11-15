@@ -78,7 +78,8 @@ class Client:
 
 @pytest.fixture
 def server(tmp_path):
-    srv = make_server("127.0.0.1", 0, tmp_path / "test.db", ADMIN_USERNAME, ADMIN_PASSWORD)
+    srv = make_server("127.0.0.1", 0, tmp_path / "test.db", ADMIN_USERNAME, ADMIN_PASSWORD,
+                     publish_dir=tmp_path / "published")
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     yield srv
