@@ -6,6 +6,7 @@ import http.client
 import json
 import socket
 import threading
+import time
 
 import pytest
 
@@ -306,3 +307,196 @@ def test_existing_api_behavior_preserved(client):
     status, body = client.get("/api/overview")
     assert status == 200
     assert "categories" in body
+
+
+# -- Content-Length strictness ------------------------------------------
+
+def _raw_response(port, request: bytes, read_timeout: float = 10.0) -> bytes:
+    """Send raw request bytes and read the full response until the
+    server closes the connection (blocking recv with a failure bound,
+    never a sleep)."""
+    sock = socket.create_connection(("127.0.0.1", port), timeout=read_timeout)
+    sock.sendall(request)
+    sock.settimeout(read_timeout)
+    chunks = []
+    try:
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        sock.close()
+    return b"".join(chunks)
+
+
+def test_content_length_negative_rejected_without_reading_body(custom_server):
+    """A negative Content-Length is rejected BEFORE any body byte is
+    read (a plain int() would accept it, and read() would then wait for
+    an unbounded body). The prompt 400 - long before the 30-second
+    inactivity timeout could fire - proves no body read happened."""
+    _, client = custom_server()
+    response = _raw_response(
+        client.port,
+        b"POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Length: -5\r\n\r\n")
+    assert b" 400 " in response.split(b"\r\n", 1)[0]
+    assert b"invalid Content-Length" in response
+
+
+def test_content_length_malformed_rejected(custom_server):
+    _, client = custom_server()
+    for bad in (b"abc", b"1.5", b"+5", b"12x"):
+        response = _raw_response(
+            client.port,
+            b"POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Length: "
+            + bad + b"\r\n\r\n")
+        assert b" 400 " in response.split(b"\r\n", 1)[0], bad
+        assert b"invalid Content-Length" in response, bad
+
+
+def test_content_length_oversized_rejected_and_connection_closed(custom_server):
+    """The 1 MB cap still holds, the rejected connection is closed so
+    unread bytes cannot be parsed as the next request (the helper only
+    returns at EOF), and the server keeps serving afterwards."""
+    _, client = custom_server()
+    response = _raw_response(
+        client.port,
+        b"POST /api/login HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Length: 1048577\r\n\r\n")
+    assert b" 413 " in response.split(b"\r\n", 1)[0]
+    assert b"request body too large" in response
+    conn = http.client.HTTPConnection("127.0.0.1", client.port, timeout=10)
+    conn.request("GET", "/api/health")
+    assert conn.getresponse().status == 200
+    conn.close()
+
+
+# -- slow-trickle total deadline ----------------------------------------
+
+def _wait_slot_released(port):
+    """The killed trickle connection releases its slot just after the
+    client observes EOF, so poll for recovery (bounded) instead of
+    sleeping a fixed guess."""
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/health")
+            status = conn.getresponse().status
+            conn.close()
+            if status == 200:
+                return
+        except (ConnectionError, OSError, http.client.HTTPException):
+            pass
+        if time.monotonic() > deadline:
+            raise AssertionError("connection slot was not released")
+        time.sleep(0.05)
+
+
+def test_slow_trickle_terminated_by_total_deadline(custom_server):
+    """A client sending one byte well inside every 3-second inactivity
+    window would hold its connection forever under a per-read timeout
+    alone. The total request deadline (6s here) terminates it and the
+    slot is released - in both the header and the body phase."""
+    _, client = custom_server(max_connections=1, request_timeout=3.0,
+                              total_request_timeout=6.0)
+    port = client.port
+
+    def trickle(first_bytes: bytes) -> float:
+        overall = time.monotonic() + 20
+        while True:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+            sock.sendall(first_bytes)
+            started = time.monotonic()
+            closed_after = None
+            try:
+                while True:
+                    # Poll for the server closing the connection; the
+                    # recv timeout paces the trickle far inside the
+                    # 3-second inactivity window (a byte about every
+                    # 0.1s), so only a multi-second scheduler stall
+                    # could trip the inactivity timeout instead. No
+                    # fixed sleeps: EOF is the synchronization.
+                    sock.settimeout(0.1)
+                    try:
+                        data = sock.recv(4096)
+                    except socket.timeout:
+                        data = None
+                    except ConnectionResetError:
+                        # The server killed the connection with our
+                        # trickled bytes still unread, so the close
+                        # arrives as a RST rather than a clean FIN.
+                        data = b""
+                    if data == b"":
+                        closed_after = time.monotonic() - started
+                        break
+                    if time.monotonic() - started > 30:
+                        raise AssertionError(
+                            "server did not terminate the slow-trickle request")
+                    sock.sendall(b"x")
+            finally:
+                sock.close()
+            # An instant EOF means the single slot was still held by
+            # the previous recovery check and this connection was
+            # refused: retry, bounded. A real deadline kill takes
+            # seconds.
+            if closed_after is not None and closed_after > 0.5:
+                return closed_after
+            if time.monotonic() > overall:
+                raise AssertionError("could not start a trickle connection")
+            time.sleep(0.05)
+
+    # Header phase: request line and one header, never completed.
+    # The kill must come from the 6s total deadline, not the 3s
+    # inactivity timeout: it outlasts an inactivity window but stays
+    # far below the 30s guard.
+    elapsed = trickle(b"POST /api/login HTTP/1.1\r\nHost: x\r\n")
+    assert elapsed > 3.5, f"killed early by inactivity timeout? {elapsed:.2f}s"
+    assert elapsed < 20, f"total deadline not enforced? {elapsed:.2f}s"
+    _wait_slot_released(port)
+
+    # Body phase: complete headers, then a body that never completes.
+    elapsed = trickle(
+        b"POST /api/login HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Length: 50\r\nContent-Type: application/json\r\n\r\n{}")
+    assert elapsed > 3.5, f"killed early by inactivity timeout? {elapsed:.2f}s"
+    assert elapsed < 20, f"total deadline not enforced? {elapsed:.2f}s"
+    _wait_slot_released(port)
+
+
+def test_total_deadline_must_cover_inactivity_timeout(tmp_path):
+    with pytest.raises(ValueError):
+        make_server("127.0.0.1", 0, tmp_path / "t.db", ADMIN_USERNAME,
+                    ADMIN_PASSWORD, request_timeout=10.0,
+                    total_request_timeout=5.0)
+
+
+# -- cookie deployment guard ----------------------------------------------
+
+def test_cookie_guard_localhost_omitted_ok():
+    # Local development without KG_SECURE_COOKIES keeps working.
+    server_module._require_cookie_safety("127.0.0.1", False, frozenset())
+    server_module._require_cookie_safety("localhost", False, frozenset())
+    server_module._require_cookie_safety("::1", False, frozenset())
+
+
+def test_cookie_guard_deployment_with_secure_ok():
+    # HTTPS/proxy deployment with Secure cookies explicitly enabled.
+    server_module._require_cookie_safety("0.0.0.0", True, frozenset())
+    server_module._require_cookie_safety(
+        "127.0.0.1", True, frozenset({"127.0.0.1"}))
+
+
+def test_cookie_guard_refuses_insecure_deployment():
+    # Trusted proxies configured but Secure cookies omitted/disabled.
+    with pytest.raises(SystemExit):
+        server_module._require_cookie_safety(
+            "127.0.0.1", False, frozenset({"127.0.0.1"}))
+    # Explicit non-loopback binds without Secure cookies.
+    for host in ("0.0.0.0", "192.168.1.20", "dashboard.example.internal"):
+        with pytest.raises(SystemExit):
+            server_module._require_cookie_safety(host, False, frozenset())
+    # Both signals at once.
+    with pytest.raises(SystemExit):
+        server_module._require_cookie_safety(
+            "0.0.0.0", False, frozenset({"10.0.0.2"}))
