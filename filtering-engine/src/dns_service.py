@@ -139,6 +139,78 @@ def _sha256(data: bytes) -> str:
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
+def _safe_open_manifest(manifest_path):
+    """Open a generation manifest fail-closed and return its descriptor.
+
+    os.open with O_NOFOLLOW (the final path component cannot be a
+    symlink of any kind), plus O_CLOEXEC and O_NONBLOCK where the
+    platform offers them (so an unexpected FIFO cannot hang the open).
+    os.fstat on the OPENED descriptor must show a regular file before
+    any byte is read, and the caller reads from THIS descriptor only -
+    there is no later path-based reopen, so replacing the pathname
+    after the check cannot change which file is read (no
+    time-of-check/time-of-use window).
+
+    Returns None only when the path is genuinely absent (the legacy
+    pre-publication layout). Raises PolicyConfigError for every
+    present-but-unusable entry: any symlink or broken symlink (ELOOP),
+    directory, FIFO, socket, device, permission error, an
+    uninspectable descriptor, or a platform without O_NOFOLLOW.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        # Without no-follow support a present manifest cannot be opened
+        # safely: fail closed. Absence still means legacy mode.
+        if os.path.lexists(manifest_path):
+            raise PolicyConfigError(
+                f"generation manifest {manifest_path}: this platform "
+                "lacks O_NOFOLLOW; refusing to open")
+        return None
+    flags = os.O_RDONLY | nofollow
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)  # a FIFO cannot hang the open
+    try:
+        fd = os.open(manifest_path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: cannot open safely "
+            f"({exc}); refusing to load")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise PolicyConfigError(
+                f"generation manifest {manifest_path} exists but is not "
+                "a regular file (directory, FIFO, socket, device, or "
+                "other non-regular entry); refusing to load")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read_manifest_fd(fd, manifest_path):
+    """Read and parse the manifest from the already-verified
+    descriptor; close the descriptor on every path."""
+    try:
+        fh = os.fdopen(fd, "rb")
+    except OSError as exc:
+        os.close(fd)
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: cannot read: {exc}")
+    try:
+        with fh:
+            data = fh.read()
+    except OSError as exc:
+        raise PolicyConfigError(
+            f"generation manifest {manifest_path}: cannot read: {exc}")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PolicyConfigError(
+            f"unreadable generation manifest {manifest_path}: {exc}")
+
+
 def _validate_generation_manifest(manifest, policy_path, categories_path,
                                   policy_sha256, categories_sha256):
     """Fail-closed validation of a generation manifest.
@@ -219,31 +291,13 @@ def load_validated_engine(policy_path, categories_path):
         "categories_sha256": _sha256(categories_bytes),
     }
     manifest_path = Path(policy_path).parent / "manifest.json"
-    if os.path.lexists(manifest_path):
-        # lstat + S_ISREG, never Path.is_file(): is_file() FOLLOWS
-        # symlinks, so a symlink to a valid regular file would pass it.
-        # The manifest path itself must be a regular file: a symlink of
-        # any kind (even to a valid file), a directory, FIFO, socket,
-        # device, broken symlink, or any other non-regular entry is a
-        # present-but-invalid manifest and is rejected, never silently
-        # treated as "no manifest". Only a genuinely absent manifest
-        # path loads unverified (the legacy pre-publication layout).
-        try:
-            manifest_stat = os.lstat(manifest_path)
-        except OSError as exc:
-            raise PolicyConfigError(
-                f"generation manifest {manifest_path}: cannot inspect "
-                f"the entry: {exc}")
-        if not stat.S_ISREG(manifest_stat.st_mode):
-            raise PolicyConfigError(
-                f"generation manifest {manifest_path} exists but is not "
-                "a regular file (symlink, directory, or other "
-                "non-regular entry); refusing to load")
-        try:
-            manifest = json.loads(manifest_path.read_text("utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PolicyConfigError(
-                f"unreadable generation manifest {manifest_path}: {exc}")
+    manifest_fd = _safe_open_manifest(manifest_path)
+    if manifest_fd is not None:
+        # Verified regular on the opened descriptor inside
+        # _safe_open_manifest; the bytes come from that SAME
+        # descriptor. A present-but-invalid manifest is NEVER ignored;
+        # only a genuinely absent path (None) loads unverified.
+        manifest = _read_manifest_fd(manifest_fd, manifest_path)
         _validate_generation_manifest(
             manifest, policy_path, categories_path,
             info["policy_sha256"], info["categories_sha256"])
