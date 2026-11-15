@@ -9,9 +9,15 @@
 #
 # Safety properties:
 #   - The copy is written to a temporary file whose name never matches
-#     the dashboard-*.db backup pattern, and renamed to its final name
-#     only after the integrity check passes: a failed run never leaves
-#     a partial file that looks like a valid completed backup.
+#     the dashboard-*.db backup pattern, and published only after the
+#     integrity check passes: a failed run never leaves a partial file
+#     that looks like a valid completed backup.
+#   - Publication is atomic and never overwrites: the verified file is
+#     hard-linked to its final name (link(2) fails atomically if the
+#     name exists), with collision retry, so concurrent backup processes
+#     can never clobber each other's completed backups. If the
+#     filesystem cannot hard-link, the script fails clearly instead of
+#     falling back to an unsafe overwrite.
 #   - Everything created here is private: the backup directory is
 #     forced to 0700 (including a pre-existing world-readable one) and
 #     backup files are 0600. Backups contain the full dashboard
@@ -65,11 +71,6 @@ if [ -O "$DATA_DIR" ]; then
 fi
 
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
-DEST="$BACKUP_DIR/dashboard-$STAMP.db"
-if [ -e "$DEST" ]; then
-    # Two backups within the same second: keep both.
-    DEST="$BACKUP_DIR/dashboard-$STAMP-$$.db"
-fi
 
 # Write to a temporary name that never matches dashboard-*.db, then
 # publish by rename only after verification. The trap removes the
@@ -101,7 +102,39 @@ if result != "ok":
 PY
 
 chmod 0600 "$TMP"
-mv "$TMP" "$DEST"
+
+# Publish atomically and NEVER overwrite: ln(1) hard-links the verified
+# temporary file to its final name and fails atomically if that name
+# already exists (link(2) EEXIST), so concurrent backups can never
+# overwrite one another - the loser retries with the next free name.
+# The temporary file and the backup live in the same directory, so a
+# hard link is guaranteed to be same-filesystem. If hard links are not
+# supported at all, fail clearly rather than silently falling back to
+# an unsafe overwrite.
+DEST=""
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+    if [ "$attempt" -eq 0 ]; then
+        candidate="$BACKUP_DIR/dashboard-$STAMP.db"
+    else
+        candidate="$BACKUP_DIR/dashboard-$STAMP-$attempt.db"
+    fi
+    if ln "$TMP" "$candidate" 2>/dev/null; then
+        DEST="$candidate"
+        break
+    fi
+    if [ ! -e "$candidate" ]; then
+        echo "backup: cannot publish safely: hard links not supported on $BACKUP_DIR" >&2
+        exit 1
+    fi
+    # Name already taken (another backup won the race): try the next one.
+    attempt=$((attempt + 1))
+done
+if [ -z "$DEST" ]; then
+    echo "backup: no free backup filename after 100 attempts; refusing to overwrite" >&2
+    exit 1
+fi
+rm -f "$TMP"
 trap - EXIT
 echo "backup: wrote $DEST"
 
