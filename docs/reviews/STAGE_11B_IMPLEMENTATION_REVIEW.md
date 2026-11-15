@@ -7,12 +7,12 @@
 **Working branch:** `stage-9b-deployment-preparation`
 **Starting SHA (approved):** `fe07b0cd8199167e691a707de9d6284296de5f24`
 **Main (verified unchanged before work):** `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`
-**Final SHA:** this report is the last commit of Stage 11B; the branch
-HEAD on GitHub after this commit is the final SHA. The implementation
-and tests are in the commits immediately preceding this report commit;
-the fresh-clone verification in section 10 ran on a clone of the
-pre-report implementation commit and was re-verified file-identical
-against the final branch (only this report differs).
+**Final SHA:** the branch HEAD at this report's commit; the completion
+message records it. The last commit touching any code, test, or other
+documentation file is `f17cb6ba472954a8c446f5d1dbfed43a56778b0d`. The
+fresh-clone verification in section 10 ran on a clone of the final
+branch and was verified file-identical to the tested implementation
+tree.
 
 Stage 11B replaces the Devices placeholder with a complete device-registry
 management interface. It is a frontend-only stage: no backend file,
@@ -234,12 +234,26 @@ commit (and repeated on the fresh clone in section 10):
 
 ## 10. Fresh-clone verification
 
-(Completed after the implementation commit; results recorded below and
-in the completion message. The clone of the final branch was verified
-`git diff`-identical to the tested implementation tree except this
-report file, and the suites above were re-run on the clone: dashboard
-276 passed across two invocations, engine 209 passed, Node UI 22
-passed, py_compile and node --check clean.)
+Completed after every commit above landed. A fresh single-branch clone
+of the final branch was verified `diff -r`-identical to the tested
+implementation tree (only `.pytest_cache` artifact directories
+differed). All suites were re-run on the clone:
+
+- Dashboard pytest: 98 passed + 178 passed = **276 passed** across two
+  invocations (split only to fit execution time limits).
+- Node UI suite: **22 passed, 0 failed**.
+- `python3 -m py_compile dashboard/src/server.py
+  dashboard/src/store.py` and `node --check
+  dashboard/static/app.js`: clean.
+- Engine suite, first run on the clone: **208 passed, 1 error**
+  (57.51s): setup of `tests/test_reload.py::
+  test_failed_reload_does_not_stop_service` raised `OSError: [Errno
+  98] Address already in use` on a TCP socket bind - the same
+  intermittent socket-bind failure class seen in the working-tree first
+  attempt (section 9). Isolated rerun of `tests/test_reload.py`: **27
+  passed**. Across runs, all 209 engine tests pass. No engine file was
+  changed in Stage 11B; this is environmental, recorded, and not
+  hidden.
 
 ## 11. Stage 11A backend files not modified
 
