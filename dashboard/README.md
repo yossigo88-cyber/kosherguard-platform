@@ -28,7 +28,7 @@ dashboard/
     index.html        - interface shell (login view + app shell)
     styles.css        - design system
     app.js            - interface logic (vanilla JS, hash routing)
-  tests/              - 129 pytest tests against a real running server
+  tests/              - 131 pytest tests against a real running server
 ```
 
 Technology choices, per the Stage 7 requirement to fit the existing
@@ -183,7 +183,7 @@ URL database).
 cd dashboard && python3 -m pytest tests/ -q
 ```
 
-129 tests run the real server on an ephemeral localhost port with a
+131 tests run the real server on an ephemeral localhost port with a
 throwaway database: policy CRUD and validation, rule precedence and
 conflicts, category management, domain validation and duplicates, the
 import process (including atomic abort and line-numbered errors),
@@ -204,11 +204,13 @@ run as real subprocesses - a full round trip (back up a live server,
 mutate, restore, restart, and verify every kind of data through the
 API), corrupt-backup refusal, overwrite refusal, the required
 --service-stopped restore confirmation (refusal leaves the database
-byte-for-byte unchanged), failed-backup cleanup (no partial file is
-left looking like a valid backup), rotation including invalid-KEEP
-refusal, and file/directory permission checks (backup dir 0700,
-backup files and restored database 0600), missing files, and valid
-rotation. No sleeps are used for synchronization; the server socket is
+byte-for-byte unchanged), restore temporary-file cleanup on success
+and on failure, failed-backup cleanup (no partial file is left looking
+like a valid backup), genuinely concurrent backup processes (collision-
+safe unique publication, nothing overwritten, every backup integrity-
+checked), rotation including invalid-KEEP refusal, and file/directory
+permission checks (backup dir 0700, backup files and restored database
+0600), missing files, and valid rotation. No sleeps are used for synchronization; the server socket is
 bound before the test client connects.
 
 ## Deployment (prepared, not done)
@@ -227,9 +229,11 @@ Nothing here is deployed. Stage 9B prepared the deployment assets:
   unprivileged user, sandboxing directives). Reviewed but NOT yet
   tested on a live system.
 - `deploy/backup.sh` / `deploy/restore.sh` - consistent online SQLite
-  backups written to a temporary file and published only after an
+  backups written to a temporary file and published atomically without
+  overwrite (hard-link publication with collision retry) only after an
   integrity check, validated rotation, and a verified atomic restore
-  that requires an explicit --service-stopped confirmation. Backup
+  that requires an explicit --service-stopped confirmation and always
+  cleans up its temporary file. Backup
   directories and files and restored databases are forced private
   (0700/0600); the systemd unit sets UMask=0077 and
   StateDirectoryMode=0700. Both scripts are exercised by automated
