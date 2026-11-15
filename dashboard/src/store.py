@@ -160,6 +160,9 @@ class Store:
             raise StoreError(f"name: {exc}")
         display_name = _check_text(data.get("display_name"), "display_name", MAX_NAME_LEN)
         description = _check_text(data.get("description", ""), "description", MAX_DESCRIPTION_LEN, required=False)
+        enabled = data.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise StoreError("enabled must be a boolean")
         conn = self._conn()
         try:
             if conn.execute("SELECT 1 FROM categories WHERE name = ?", (name,)).fetchone():
@@ -169,7 +172,7 @@ class Store:
                 conn.execute(
                     "INSERT INTO categories (name, display_name, description, enabled, builtin,"
                     " created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                    (name, display_name, description, 1 if data.get("enabled", True) else 0, now, now),
+                    (name, display_name, description, 1 if enabled else 0, now, now),
                 )
                 self.audit(conn, admin, "category.create", f"created category {name}")
             return dict(self.get_category(conn, name))
