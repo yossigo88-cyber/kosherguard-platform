@@ -31,6 +31,15 @@ from .models import (AuthSession, LoginAttempt,
                      PendingMfaEnrollment, Role, User, Tenant)
 
 
+class DelegationBody(BaseModel):
+    capabilities: list[str]
+
+
+class GroupBody(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    policy_id: int | None = None
+
+
 class PolicyPreviewBody(BaseModel):
     domain: str
     at: datetime | None = None
@@ -262,6 +271,12 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=403,
                     detail="verified MFA required; enroll then sign in with a code")
+        # Serialize tenant configuration writes with publication/default
+        # changes. The lock lives through the same request DB transaction.
+        if request.method in {"POST", "PUT", "DELETE", "PATCH"} and request.url.path.startswith(("/api/policies", "/api/devices", "/api/groups", "/api/publications")):
+            from .models import PublicationState
+            session.scalar(select(PublicationState).where(
+                PublicationState.tenant_id == user.tenant_id).with_for_update())
         return user
 
     @app.middleware("http")
@@ -337,7 +352,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "tenant_id": user.tenant_id,
                 "mfa_enabled": user.totp_secret is not None,
                 "privileged": user.role != Role.viewer or user.is_platform_admin,
-                "mfa_verified": request.state.mfa_verified}
+                "mfa_verified": request.state.mfa_verified,
+                "delegated_settings": json.loads(user.delegated_settings)}
 
     # -- Tenant audit log viewer (spec Part 10: Settings > logs) --------
     # Append-only audit events, tenant-scoped, newest first. Any
@@ -462,9 +478,28 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                          IssuedCredential, MDMEnrollment, Policy,
                          PolicyVersion, PublicationState)
 
-    def require_guardian(user: User) -> JSONResponse | None:
-        if user.role.value not in ("owner", "guardian"):
+    GUARDIAN_CAPABILITIES = {"policies", "schedules", "devices", "groups", "apps", "publish"}
+
+    def require_guardian(user: User, capability="devices") -> JSONResponse | None:
+        if user.role == Role.owner:
+            return None
+        if user.role != Role.guardian:
             return error(403, "viewers cannot change configuration")
+        try:grants = json.loads(user.delegated_settings)
+        except (ValueError, TypeError):grants = []
+        if capability not in grants:
+            return error(403, "owner has not delegated this setting")
+        return None
+
+    def guard_baseline(user, session, policy, proposed=None):
+        if user.role == Role.owner:return None
+        baseline = policy_ops.selected_default(session, user.tenant_id)
+        if baseline is None:return error(409, "owner must select a protected baseline first")
+        if policy is not None and policy.id == baseline.id:
+            return error(403, "protected baseline is owner-controlled")
+        if proposed is not None:
+            try:policy_ops.prove_tighten_only(proposed, baseline)
+            except policy_ops.PolicyError as exc:return error(exc.status,str(exc))
         return None
 
     def policy_json(policy, session):
@@ -476,6 +511,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"id": policy.id, "name": policy.name,
                 "description": policy.description,
                 "enabled": policy.enabled, "versions": versions,
+                "protected_baseline": bool(policy_ops.selected_default(session,policy.tenant_id) and policy_ops.selected_default(session,policy.tenant_id).id==policy.id),
                 "default_policy": doc["default_policy"],
                 "allowlist": doc["allowlist"], "blocklist": doc["blocklist"],
                 "category_allow": doc["category_rules"]["allow"],
@@ -492,12 +528,14 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def create_policy(body: PolicyBody,
                       user: User = Depends(current_user),
                       session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_guardian(user, "policies")
         if denied is not None:
             return denied
         import json as _json
         try:
             doc = policy_ops.normalize_engine_doc(body.model_dump())
+            denied = guard_baseline(user, session, None, doc)
+            if denied is not None:return denied
         except policy_ops.PolicyError as exc:
             return error(exc.status, str(exc))
         existing = session.scalar(select(Policy).where(
@@ -528,13 +566,15 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def update_policy(policy_id: int, body: PolicyBody,
                       user: User = Depends(current_user),
                       session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_guardian(user, "policies")
         if denied is not None:
             return denied
         import json as _json
         policy = get_tenant_policy(session, user.tenant_id, policy_id)
         if policy is None:
             return error(404, "policy not found")
+        denied = guard_baseline(user, session, policy)
+        if denied is not None:return denied
         try:
             doc = policy_ops.normalize_engine_doc(body.model_dump())
             # A general policy update must not silently drop the
@@ -546,6 +586,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                     _json.loads(policy.engine_doc))
                 if existing:
                     doc = schedule_ops.with_schedules(doc, existing)
+            denied = guard_baseline(user, session, policy, doc)
+            if denied is not None:return denied
             policy_ops.enforce_on_content_mutation(
                 session, user.tenant_id, policy, doc)
             if not body.enabled:
@@ -579,17 +621,21 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         change goes through the exact same versioned, audited,
         tighten-only-checked mutation path as every other policy
         content change."""
-        denied = require_guardian(user)
+        denied = require_guardian(user, "schedules")
         if denied is not None:
             return denied
         import json as _json
         policy = get_tenant_policy(session, user.tenant_id, policy_id)
         if policy is None:
             return error(404, "policy not found")
+        denied = guard_baseline(user, session, policy)
+        if denied is not None:return denied
         doc = _json.loads(policy.engine_doc)
         try:
             normalized = schedule_ops.validate_schedules(body.schedules)
             candidate = schedule_ops.with_schedules(doc, normalized)
+            denied = guard_baseline(user, session, policy, candidate)
+            if denied is not None:return denied
             policy_ops.enforce_on_content_mutation(
                 session, user.tenant_id, policy, candidate)
         except schedule_ops.ScheduleError as exc:
@@ -611,7 +657,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def select_default_policy(policy_id: int,
                               user: User = Depends(current_user),
                               session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_owner(user)
         if denied is not None:
             return denied
         policy = get_tenant_policy(session, user.tenant_id, policy_id)
@@ -634,6 +680,74 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             "as the tenant default", actor_user_id=user.id)
         session.commit()
         return {"status": "selected", "policy_id": policy.id}
+
+    from .models import DeviceGroup, GroupMembership
+    from . import group_ops
+
+    @app.get("/api/groups")
+    def list_groups(user: User = Depends(current_user), session: Session = Depends(db_session)):
+        return {"groups": [group_ops.group_json(session,row) for row in session.scalars(
+            select(DeviceGroup).where(DeviceGroup.tenant_id==user.tenant_id).order_by(DeviceGroup.id))]}
+
+    @app.post("/api/groups", dependencies=[Depends(require_csrf_header)])
+    def create_group(body: GroupBody, user: User = Depends(current_user), session: Session = Depends(db_session)):
+        denied=require_guardian(user, "groups")
+        if denied is not None:return denied
+        if not body.name.strip():return error(400,"group name required")
+        if session.scalar(select(DeviceGroup).where(DeviceGroup.tenant_id==user.tenant_id,DeviceGroup.name==body.name.strip())):
+            return error(409,"group name already exists")
+        try:group_ops.checked_policy(session,user.tenant_id,body.policy_id)
+        except policy_ops.PolicyError as exc:return error(exc.status,str(exc))
+        row=DeviceGroup(tenant_id=user.tenant_id,name=body.name.strip(),policy_id=body.policy_id)
+        session.add(row);session.flush()
+        ScopedSession(session,user.tenant_id).audit("group.create",f"group {row.id}",actor_user_id=user.id)
+        return group_ops.group_json(session,row)
+
+    @app.put("/api/groups/{group_id}", dependencies=[Depends(require_csrf_header)])
+    def update_group(group_id: int, body: GroupBody, user: User = Depends(current_user), session: Session = Depends(db_session)):
+        denied=require_guardian(user, "groups")
+        if denied is not None:return denied
+        try:
+            row=group_ops.scoped_group(session,user.tenant_id,group_id)
+            group_ops.checked_policy(session,user.tenant_id,body.policy_id)
+        except policy_ops.PolicyError as exc:return error(exc.status,str(exc))
+        name=body.name.strip()
+        if not name:return error(400,"group name required")
+        other=session.scalar(select(DeviceGroup).where(DeviceGroup.tenant_id==user.tenant_id,DeviceGroup.name==name,DeviceGroup.id!=group_id))
+        if other:return error(409,"group name already exists")
+        row.name=name;row.policy_id=body.policy_id
+        ScopedSession(session,user.tenant_id).audit("group.update",f"group {row.id} policy {body.policy_id}",actor_user_id=user.id)
+        return group_ops.group_json(session,row)
+
+    @app.put("/api/groups/{group_id}/devices/{device_id}", dependencies=[Depends(require_csrf_header)])
+    def join_group(group_id: int, device_id: int, user: User = Depends(current_user), session: Session = Depends(db_session)):
+        denied=require_guardian(user, "groups")
+        if denied is not None:return denied
+        try:
+            row=group_ops.scoped_group(session,user.tenant_id,group_id)
+            group_ops.checked_policy(session,user.tenant_id,row.policy_id)
+        except policy_ops.PolicyError as exc:return error(exc.status,str(exc))
+        device=session.get(Device,device_id)
+        if device is None or device.tenant_id!=user.tenant_id:return error(404,"device not found")
+        member=session.scalar(select(GroupMembership).where(GroupMembership.device_id==device_id))
+        if member is not None and member.tenant_id!=user.tenant_id:return error(409,"invalid membership")
+        if member is None:session.add(GroupMembership(tenant_id=user.tenant_id,group_id=group_id,device_id=device_id))
+        else:member.group_id=group_id
+        session.flush()
+        ScopedSession(session,user.tenant_id).audit("group.join",f"device {device_id} group {group_id}",actor_user_id=user.id)
+        return group_ops.group_json(session,row)
+
+    @app.delete("/api/groups/{group_id}/devices/{device_id}", dependencies=[Depends(require_csrf_header)])
+    def leave_group(group_id: int, device_id: int, user: User = Depends(current_user), session: Session = Depends(db_session)):
+        denied=require_guardian(user, "groups")
+        if denied is not None:return denied
+        try:row=group_ops.scoped_group(session,user.tenant_id,group_id)
+        except policy_ops.PolicyError as exc:return error(exc.status,str(exc))
+        member=session.scalar(select(GroupMembership).where(GroupMembership.tenant_id==user.tenant_id,GroupMembership.group_id==group_id,GroupMembership.device_id==device_id))
+        if member is None:return error(404,"membership not found")
+        session.delete(member);session.flush()
+        ScopedSession(session,user.tenant_id).audit("group.leave",f"device {device_id} group {group_id}",actor_user_id=user.id)
+        return group_ops.group_json(session,row)
 
     @app.post("/api/devices", dependencies=[Depends(require_csrf_header)])
     def create_device(body: DeviceBody,
@@ -680,6 +794,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return error(404, "policy not found")
         if not policy.enabled:
             return error(409, "a disabled policy cannot be assigned")
+        if user.role != Role.owner and policy_ops.selected_default(session,user.tenant_id) is None:
+            return error(409,"owner must select a protected baseline first")
         try:
             policy_ops.enforce_on_new_assignment(
                 session, user.tenant_id, policy)
@@ -764,6 +880,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         denied = require_guardian(user)
         if denied is not None:
             return denied
+        if user.role != Role.owner and body.command not in {"DeviceInformation", "ProfileList", "InstalledApplicationList", "ManagedApplicationList"}:
+            return error(403,"profile/application/system changes require owner approval")
         try:
             row = mdm_ops.issue_command(
                 session, user.tenant_id, enrollment_pk, body.command,
@@ -864,9 +982,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def put_app_policy(device_id: int, body: AppPolicyBody,
                        user: User = Depends(current_user),
                        session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_guardian(user, "apps")
         if denied is not None:
             return denied
+        if user.role != Role.owner:
+            return error(403,"app baseline changes are owner-only until a tightening proof exists")
         try:
             result = app_ops.put_policy(session, user.tenant_id, device_id,
                                         body.mode, body.bundle_ids, user.id)
@@ -880,9 +1000,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def apply_app_policy(device_id: int,
                          user: User = Depends(current_user),
                          session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_guardian(user, "apps")
         if denied is not None:
             return denied
+        if user.role != Role.owner:
+            return error(403,"app baseline changes are owner-only until a tightening proof exists")
         try:
             row = app_ops.apply_policy(session, user.tenant_id, device_id,
                                        user.id, adapter=make_adapter())
@@ -896,9 +1018,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def queue_app_command(device_id: int, body: AppCommandBody,
                           user: User = Depends(current_user),
                           session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_guardian(user, "apps")
         if denied is not None:
             return denied
+        if user.role != Role.owner and body.action not in {"list", "managed-list"}:
+            return error(403,"app installation/removal/configuration is owner-only")
         try:
             row = app_ops.queue_app_command(
                 session, user.tenant_id, device_id, body.action, user.id,
@@ -1104,12 +1228,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return error(400, "scope must be 'dataset', 'proxy' or 'doh'")
         policy_id = None
         if scope == "proxy":
-            assignment = session.execute(select(DeviceAssignment).where(
-                DeviceAssignment.device_id == device.id,
-                DeviceAssignment.active.is_(True))).scalar_one_or_none()
-            if assignment is not None:
-                policy_id = assignment.policy_id
-            else:
+            try:
+                policy_id = group_ops.effective_assignments(session,user.tenant_id).get(device.id)
+            except policy_ops.PolicyError as exc:
+                return error(exc.status,str(exc))
+            if policy_id is None:
                 pub = session.get(PublicationState, user.tenant_id)
                 if pub is not None and pub.selected_policy_id is not None:
                     policy_id = pub.selected_policy_id
@@ -1362,7 +1485,20 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def user_json(row):
         return {"id": row.id, "email": row.email, "role": row.role.value,
                 "mfa_enrolled": row.totp_secret is not None,
+                "delegated_settings": json.loads(row.delegated_settings),
                 "created_at": row.created_at.isoformat()}
+
+    @app.put("/api/guardians/{user_id}/delegation", dependencies=[Depends(require_csrf_header)])
+    def set_delegation(user_id: int, body: DelegationBody, user: User = Depends(current_user), session: Session = Depends(db_session)):
+        denied=require_owner(user)
+        if denied is not None:return denied
+        target=session.get(User,user_id)
+        if target is None or target.tenant_id!=user.tenant_id:return error(404,"guardian not found")
+        if target.role != Role.guardian:return error(400,"delegation is for guardian accounts only")
+        if not set(body.capabilities) <= GUARDIAN_CAPABILITIES:return error(400,"unsupported delegated capability")
+        target.delegated_settings=json.dumps(sorted(set(body.capabilities)))
+        ScopedSession(session,user.tenant_id).audit("guardian.delegation",f"user {user_id}: {target.delegated_settings}",actor_user_id=user.id)
+        return {"id":target.id,"delegated_settings":json.loads(target.delegated_settings)}
 
     @app.get("/api/guardians")
     def list_guardians(user: User = Depends(current_user),
@@ -1497,7 +1633,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     from .models import CategoryRule
 
     def require_platform_admin(user: User) -> JSONResponse | None:
-        if not getattr(user, "is_platform_admin", False):
+        if user.role != Role.owner or not getattr(user, "is_platform_admin", False):
             return error(403, "platform admin required")
         return None
 
@@ -1611,7 +1747,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     @app.post("/api/publications", dependencies=[Depends(require_csrf_header)])
     def publish(user: User = Depends(current_user),
                 session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_guardian(user, "publish")
         if denied is not None:
             return denied
         try:
@@ -1665,7 +1801,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def enqueue_publication(body: PublicationJobBody,
                             user: User = Depends(current_user),
                             session: Session = Depends(db_session)):
-        denied = require_guardian(user)
+        denied = require_guardian(user, "publish")
         if denied is not None:
             return denied
         from .worker import enqueue
