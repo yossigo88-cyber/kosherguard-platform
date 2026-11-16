@@ -1,6 +1,7 @@
 """DDM serving endpoints (spec Part 10). Wire shapes verified against
-KMFDDM ddm/items.go, ddm/token.go, ddm/declaration.go and the NanoMDM
-operations guide -dm flag documentation (both fetched 2026-11-16)."""
+KMFDDM ddm/items.go, ddm/token.go, ddm/declaration.go, ddm/status/
+status.go and the NanoMDM operations guide -dm flag documentation
+(all fetched/cloned 2026-11-16)."""
 
 import base64
 import hashlib
@@ -23,10 +24,21 @@ from app.models import (DDMStatusReport, Device, MDMEnrollment,  # noqa: E402
 
 PASSWORD = "a long enough password"
 HDR = {"X-KosherGuard-Request": "1"}
+HMAC_KEY = "ddm-secret"
 
 
-@pytest.fixture()
-def client(engine, extra_env=None):
+def sig(body: bytes = b""):
+    return base64.b64encode(
+        hmac.new(HMAC_KEY.encode(), body, hashlib.sha256).digest()).decode()
+
+
+def ddm_headers(body: bytes = b"", enrollment="ENR-1", key=HMAC_KEY):
+    signature = base64.b64encode(
+        hmac.new(key.encode(), body, hashlib.sha256).digest()).decode()
+    return {"X-Enrollment-ID": enrollment, "X-Hmac-Signature": signature}
+
+
+def make_client(engine, env_extra=None):
     with session_scope(engine) as s:
         tenant = Tenant(name="family-ddm")
         s.add(tenant)
@@ -41,12 +53,18 @@ def client(engine, extra_env=None):
                             enrollment_id="ENR-1", state="enrolled"))
     env = {"KG_DATABASE_URL": "postgresql://placeholder",
            "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"}
+    env.update(env_extra or {})
     c = TestClient(create_app(Settings(env), engine=engine))
     r = c.post("/api/auth/login",
                json={"email": "ddm@example.com", "password": PASSWORD},
                headers=HDR)
     assert r.status_code == 200
     return c
+
+
+@pytest.fixture()
+def client(engine):
+    return make_client(engine, {"KG_DDM_HMAC_KEY": HMAC_KEY})
 
 
 def put_policy(c):
@@ -61,7 +79,7 @@ def put_policy(c):
 class TestDDMServing:
     def test_full_sync_flow(self, client):
         put_policy(client)
-        h = {"X-Enrollment-ID": "ENR-1"}
+        h = ddm_headers()
         items = client.get("/api/ddm/declaration-items", headers=h).json()
         configs = items["Declarations"]["Configurations"]
         assert len(configs) == 1
@@ -80,7 +98,7 @@ class TestDDMServing:
 
     def test_token_changes_when_policy_changes(self, client):
         put_policy(client)
-        h = {"X-Enrollment-ID": "ENR-1"}
+        h = ddm_headers()
         first = client.get("/api/ddm/declaration-items", headers=h).json()
         dev = put_policy(client)
         r = client.put(f"/api/devices/{dev}/app-policy", headers=HDR,
@@ -93,41 +111,77 @@ class TestDDMServing:
                 != second["Declarations"]["Configurations"][0]["Identifier"])
 
     def test_no_policy_empty_configurations(self, client):
-        h = {"X-Enrollment-ID": "ENR-1"}
-        items = client.get("/api/ddm/declaration-items", headers=h).json()
+        items = client.get("/api/ddm/declaration-items",
+                           headers=ddm_headers()).json()
         assert items["Declarations"]["Configurations"] == []
 
     def test_unknown_or_missing_enrollment_rejected(self, client):
-        assert client.get("/api/ddm/declaration-items").status_code == 400
+        # unknown enrollment id, valid HMAC -> 404
         assert client.get("/api/ddm/declaration-items",
-                          headers={"X-Enrollment-ID": "NOPE"}).status_code == 404
+                          headers=ddm_headers(enrollment="NOPE")
+                          ).status_code == 404
+        # known enrollment id, no HMAC -> 401 (id alone is not auth)
+        assert client.get("/api/ddm/declaration-items",
+                          headers={"X-Enrollment-ID": "ENR-1"}
+                          ).status_code == 401
+        # known id, wrong key -> 401
+        assert client.get("/api/ddm/declaration-items",
+                          headers=ddm_headers(key="wrong-key")
+                          ).status_code == 401
+
+    def test_fail_closed_without_hmac_key(self, engine):
+        """Reproduction guard: before the fix, no KG_DDM_HMAC_KEY meant
+        X-Enrollment-ID ALONE served declarations and accepted forged
+        status reports. Now every route is 503 when unconfigured."""
+        c = make_client(engine)  # no KG_DDM_HMAC_KEY
+        assert c.get("/api/ddm/declaration-items",
+                     headers={"X-Enrollment-ID": "ENR-1"}).status_code == 503
+        assert c.get("/api/ddm/tokens",
+                     headers={"X-Enrollment-ID": "ENR-1"}).status_code == 503
+        assert c.put("/api/ddm/status", content=b"{}",
+                     headers={"X-Enrollment-ID": "ENR-1"}).status_code == 503
 
     def test_status_report_stored_and_seen(self, client, engine):
-        h = {"X-Enrollment-ID": "ENR-1"}
         report = {"StatusItems": {"management.declarations": {}}}
-        r = client.put("/api/ddm/status", headers=h, content=json.dumps(report))
+        body = json.dumps(report).encode()
+        r = client.put("/api/ddm/status", headers=ddm_headers(body),
+                       content=body)
         assert r.status_code == 200
         with session_scope(engine) as s:
             rows = s.query(DDMStatusReport).all()
             assert len(rows) == 1
             assert rows[0].enrollment_id == "ENR-1"
+            assert rows[0].declaration_states == "{}"
             enr = s.query(MDMEnrollment).filter_by(enrollment_id="ENR-1").one()
             assert enr.last_seen_at is not None
-        assert client.put("/api/ddm/status", headers=h,
+        bad = json.dumps({"x": 1}).encode()
+        # unsigned status with a known enrollment id is NOT accepted
+        assert client.put("/api/ddm/status", content=bad,
+                          headers={"X-Enrollment-ID": "ENR-1"}
+                          ).status_code == 401
+        badsig = ddm_headers(b"not json")
+        assert client.put("/api/ddm/status", headers=badsig,
                           content=b"not json").status_code == 400
 
-    def test_hmac_enforced_when_configured(self, client, engine):
-        env = {"KG_DATABASE_URL": "postgresql://placeholder",
-               "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
-               "KG_DDM_HMAC_KEY": "ddm-secret"}
-        c = TestClient(create_app(Settings(env), engine=engine))
-        # no signature -> rejected
-        assert c.get("/api/ddm/tokens",
-                     headers={"X-Enrollment-ID": "ENR-1"}).status_code == 401
-        body = json.dumps({"StatusItems": {}}).encode()
-        sig = base64.b64encode(
-            hmac.new(b"ddm-secret", body, hashlib.sha256).digest()).decode()
-        r = c.put("/api/ddm/status", content=body,
-                  headers={"X-Enrollment-ID": "ENR-1",
-                           "X-Hmac-Signature": sig})
+    def test_status_declaration_states_extracted_receipt_not_application(
+            self, client, engine):
+        put_policy(client)
+        items = client.get("/api/ddm/declaration-items",
+                           headers=ddm_headers()).json()
+        cfg = items["Declarations"]["Configurations"][0]
+        # a report that only LISTS the declaration, invalid + inactive:
+        # receipt is recorded, but nothing here evidences application
+        report = {"StatusItems": {"management": {"declarations": {
+            "configurations": [{"identifier": cfg["Identifier"],
+                                "server-token": cfg["ServerToken"],
+                                "active": False, "valid": "unknown"}]}}}}
+        body = json.dumps(report).encode()
+        r = client.put("/api/ddm/status", headers=ddm_headers(body),
+                       content=body)
         assert r.status_code == 200
+        with session_scope(engine) as s:
+            row = s.query(DDMStatusReport).one()
+            states = json.loads(row.declaration_states)
+            st = states[cfg["Identifier"]]
+            assert st["server_token"] == cfg["ServerToken"]
+            assert st["active"] is False and st["valid"] == "unknown"
