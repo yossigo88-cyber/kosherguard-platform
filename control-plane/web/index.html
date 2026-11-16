@@ -270,6 +270,17 @@ h2 { margin-bottom:.4rem; }
     </div>
     <button id="mfa-start">Set up two-factor authentication</button>
   </section>
+  <section class="panel hidden" id="audit-logs-panel">
+    <h2>System logs</h2>
+    <p class="muted">Append-only audit of account and policy actions in this
+    family account, newest first.</p>
+    <p class="muted" id="audit-logs-status"></p>
+    <table id="audit-logs-table" class="hidden">
+      <thead><tr><th>Time</th><th>Action</th><th>By</th><th>Detail</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <section class="panel hidden" id="signout-panel"><button id="signout">Sign out</button></section>
 </main>
 <script src="/web/app.js"></script>
