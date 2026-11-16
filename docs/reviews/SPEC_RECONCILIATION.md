@@ -281,11 +281,14 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   check-in sync; supervision never caller-claimed) and credential
   revocation registry - all published af763a7..c8e09bf with
   regression tests. Full report: docs/reviews/SECURITY_FIXES_2026-11-16.md.
-  Revocation distribution + consumption now implemented and
-  exercised (this head): scoped-token feed, RevocationFeed in-place
-  set, proxy-edge revoked-token refusal, all with tests.
-  INCOMPLETE (explicit): check-in sync deployment wiring;
-  device-side behavior BUILT-UNVERIFIED.
+  Revocation distribution + consumption implemented and exercised
+  at the runtime construction points (this head): scoped-token feed,
+  RevocationFeed background refresh loop, consumption in
+  url-filter-server create_app, proxy-edge FilteringProxy and dns-edge
+  doh identity, with tenant-set isolation, renewal and bounded
+  fail-open startup tests. device_udid migration 0007 + upgrade test
+  from the preserved prior schema. INCOMPLETE (explicit): check-in
+  sync deployment wiring; device-side behavior BUILT-UNVERIFIED.
 - Secrets: none in repo; credentials redacted from logs by design
   (device_auth never logs token values, tested).
 
