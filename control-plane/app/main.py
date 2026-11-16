@@ -26,6 +26,13 @@ from .config import Settings
 from .db import ScopedSession, make_engine
 from .models import AuthSession, LoginAttempt, User
 
+
+class CategoryRuleBody(BaseModel):
+    domain: str
+    category: str
+    verdict: str = "block"
+    source: str = "manual-review"
+
 SESSION_COOKIE = "kg_session"
 CSRF_HEADER = "x-kosherguard-request"
 MAX_FAILURES = 5
@@ -479,6 +486,121 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         except mdm_ops.MDMError as exc:
             return error(exc.status, str(exc))
         return command_json(row)
+
+    # -- Platform category dataset administration (M6) -----------------
+    # Approved fallback for the commercial category feed: a
+    # human-reviewed seed dataset managed through these routes.
+    # Platform-admin only (is_platform_admin is set out of band, never
+    # via the API); guardians get 403.
+    from .models import CategoryRule
+
+    def require_platform_admin(user: User) -> JSONResponse | None:
+        if not getattr(user, "is_platform_admin", False):
+            return error(403, "platform admin required")
+        return None
+
+    def rule_json(row):
+        return {
+            "id": row.id, "domain": row.domain, "category": row.category,
+            "verdict": row.verdict, "source": row.source,
+            "active": row.active,
+            "added_by_user_id": row.added_by_user_id,
+            "created_at": row.created_at.isoformat(),
+            "deactivated_at": (
+                row.deactivated_at.isoformat()
+                if row.deactivated_at else None),
+        }
+
+    @app.get("/api/admin/categories")
+    def admin_list_categories(user: User = Depends(current_user),
+                              session: Session = Depends(db_session)):
+        denied = require_platform_admin(user)
+        if denied is not None:
+            return denied
+        rows = session.execute(
+            select(CategoryRule).order_by(CategoryRule.domain)).scalars().all()
+        return {"rules": [rule_json(r) for r in rows]}
+
+    @app.post("/api/admin/categories",
+              dependencies=[Depends(require_csrf_header)])
+    def admin_add_category(body: CategoryRuleBody,
+                           user: User = Depends(current_user),
+                           session: Session = Depends(db_session)):
+        denied = require_platform_admin(user)
+        if denied is not None:
+            return denied
+        domain = body.domain.strip().lower().rstrip(".")
+        if not domain or "/" in domain or " " in domain:
+            return error(400, "invalid domain")
+        if body.verdict not in ("block", "allow"):
+            return error(400, "verdict must be block or allow")
+        existing = session.execute(
+            select(CategoryRule).where(
+                CategoryRule.domain == domain)).scalar_one_or_none()
+        if existing is not None and existing.active:
+            return error(409, "domain already has an active rule")
+        if existing is not None:
+            # Reactivate with the new assignment; provenance updates.
+            existing.category = body.category
+            existing.verdict = body.verdict
+            existing.source = body.source
+            existing.added_by_user_id = user.id
+            existing.active = True
+            existing.deactivated_at = None
+            row = existing
+        else:
+            row = CategoryRule(
+                domain=domain, category=body.category,
+                verdict=body.verdict, source=body.source,
+                added_by_user_id=user.id)
+            session.add(row)
+        session.flush()
+        ScopedSession(session, user.tenant_id).audit(
+            "admin.category.upsert",
+            f"{domain} -> {row.verdict}:{row.category} ({row.source})",
+            actor_user_id=user.id)
+        session.commit()
+        return rule_json(row)
+
+    @app.delete("/api/admin/categories/{rule_id}",
+                dependencies=[Depends(require_csrf_header)])
+    def admin_deactivate_category(rule_id: int,
+                                  user: User = Depends(current_user),
+                                  session: Session = Depends(db_session)):
+        denied = require_platform_admin(user)
+        if denied is not None:
+            return denied
+        row = session.get(CategoryRule, rule_id)
+        if row is None or not row.active:
+            return error(404, "rule not found")
+        row.active = False
+        row.deactivated_at = utcnow()
+        ScopedSession(session, user.tenant_id).audit(
+            "admin.category.deactivate", row.domain, actor_user_id=user.id)
+        session.commit()
+        return rule_json(row)
+
+    @app.get("/api/admin/categories/export")
+    def admin_export_categories(user: User = Depends(current_user),
+                                session: Session = Depends(db_session)):
+        """Active rules in the exact shape the publication pipeline's
+        categories file (KG_CATEGORIES_FILE) carries, so the DB can
+        become the dataset source of truth."""
+        denied = require_platform_admin(user)
+        if denied is not None:
+            return denied
+        rows = session.execute(
+            select(CategoryRule).where(
+                CategoryRule.active.is_(True))).scalars().all()
+        import json as _json
+        return JSONResponse(content=_json.loads(_json.dumps({
+            "version": 1,
+            "rules": [
+                {"domain": r.domain, "category": r.category,
+                 "verdict": r.verdict, "source": r.source}
+                for r in rows
+            ],
+        })))
 
     # -- Front ends (Milestone 2) --------------------------------------
     from fastapi.staticfiles import StaticFiles
