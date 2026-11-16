@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["overview-panel", "policies-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -34,6 +34,7 @@ async function refresh() {
   refreshCustomers();
   const policies = await api("/api/policies");
   policyList = policies.body.policies || [];
+  refreshSchedules();
   document.querySelector("#policies tbody").innerHTML = policyList.map(p =>
     `<tr><td>${esc(p.name)}</td><td>${esc(p.default_policy)}</td><td>${esc(p.blocklist.join(", "))}</td>` +
     `<td>${p.versions}</td><td><button class="link" data-select="${p.id}">make default</button></td></tr>`).join("");
@@ -232,3 +233,78 @@ async function refreshCustomers() {
     tbody.appendChild(tr);
   }
 }
+
+// -- Filtering schedules --------------------------------------------------
+
+const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+let scheduleList = [];
+
+function fmtMin(m) {
+  return String(Math.floor(m / 60)).padStart(2, "0") + ":" +
+         String(m % 60).padStart(2, "0");
+}
+
+function selectedSchedulePolicy() {
+  const id = Number($("s-policy").value);
+  return policyList.find(p => p.id === id) || null;
+}
+
+function renderSchedules() {
+  const p = selectedSchedulePolicy();
+  scheduleList = p ? (p.schedules || []) : [];
+  document.querySelector("#schedules tbody").innerHTML = scheduleList.map(sc =>
+    `<tr><td>${esc(sc.name)}</td>` +
+    `<td>${sc.days.map(d => DAY_NAMES[d]).join(" ")}</td>` +
+    `<td>${fmtMin(sc.start)}-${fmtMin(sc.end)}</td>` +
+    `<td>${esc(sc.timezone)}</td>` +
+    `<td>${esc([...sc.block_categories, ...sc.block_domains].join(", "))}</td>` +
+    `<td>${sc.enabled ? "yes" : "no"}</td>` +
+    `<td><button class="link" data-rmsched="${esc(sc.name)}">remove</button></td></tr>`
+  ).join("");
+}
+
+function refreshSchedules() {
+  $("s-policy").innerHTML = policyList.map(p =>
+    `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  renderSchedules();
+}
+
+async function putSchedules(list) {
+  const p = selectedSchedulePolicy();
+  if (!p) { $("schedule-error").textContent = "no policy selected"; return false; }
+  const r = await api(`/api/policies/${p.id}/schedules`, {method: "PUT",
+    headers: HDR, body: JSON.stringify({schedules: list})});
+  $("schedule-error").textContent = r.status === 200 ? "" : (r.body.error || "refused");
+  $("schedule-ok").textContent = r.status === 200 ? "Saved" : "";
+  if (r.status === 200) {
+    p.schedules = r.body.schedules;
+    renderSchedules();
+    return true;
+  }
+  return false;
+}
+
+$("s-policy").addEventListener("change", renderSchedules);
+
+$("schedule-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const split = (v) => v.split(",").map(s => s.trim()).filter(Boolean);
+  const entry = {name: $("s-name").value.trim(),
+    days: split($("s-days").value).map(Number),
+    start: $("s-start").value, end: $("s-end").value,
+    timezone: $("s-tz").value.trim(),
+    block_categories: split($("s-cats").value),
+    block_domains: split($("s-doms").value),
+    enabled: $("s-enabled").checked};
+  const others = scheduleList.filter(sc => sc.name !== entry.name);
+  if (await putSchedules([...others, entry])) {
+    $("s-name").value = "";
+  }
+});
+
+document.addEventListener("click", async (e) => {
+  const name = e.target.dataset && e.target.dataset.rmsched;
+  if (name) {
+    await putSchedules(scheduleList.filter(sc => sc.name !== name));
+  }
+});
