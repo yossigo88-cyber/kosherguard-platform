@@ -43,6 +43,7 @@ class Settings:
         if not self.publications_root:
             raise ConfigError("KG_PUBLICATIONS_ROOT is required")
         self.device_token_key = env.get("KG_DEVICE_TOKEN_KEY", "").strip() or None
+        self.ddm_hmac_key = env.get("KG_DDM_HMAC_KEY", "").strip() or None
         # Optional: NanoMDM server base URL and API key. When unset the
         # control plane records commands as queued without delivery -
         # the honest state while no MDM server is configured.
