@@ -13,8 +13,9 @@ import json
 import urllib.error
 import urllib.request
 
-# Commands KosherGuard supports. EraseDevice and any other destructive
-# command are deliberately absent from this build.
+# Commands KosherGuard supports for direct issuance. Destructive
+# commands are NOT here: they may only be queued through the control
+# plane's two-person approval flow (Answer 25), never issued directly.
 SUPPORTED_COMMANDS = frozenset({
     "DeviceInformation",
     "InstalledApplicationList",
@@ -34,6 +35,20 @@ SUPPORTED_COMMANDS = frozenset({
     # (micromdm.io/blog/wwdc21-declarative-management), which shows
     # exactly this command enqueued via cmdr.py.
     "DeclarativeManagement",
+})
+
+# Especially destructive operations (Answer 25). EraseDevice is a real
+# MDM command queued to the device after approval; the other three are
+# platform-level sensitive operations recorded by the control plane
+# (no live ABM/certificate integration exists in this build - an
+# approved request is the audited authorization record an operator
+# acts on). All require fresh verification, explicit confirmation and
+# two-person approval before anything happens.
+DESTRUCTIVE_COMMANDS = frozenset({
+    "EraseDevice",
+    "ABMRelease",
+    "ProtectionRemoval",
+    "CertificateOperation",
 })
 
 
