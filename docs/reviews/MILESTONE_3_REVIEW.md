@@ -3,7 +3,8 @@
 Date: 2026-11-16. Scope: the filtering-edge milestone - everything a
 device's traffic actually meets. Publication-wiring for the category
 dataset in the control plane is HELD (unpublished) with the Milestone 2
-security fix pending user approval; see MILESTONE_2_ERRATUM.md.
+security fix: both are prepared locally and pending the user's
+decision, and are intentionally not on this branch yet.
 
 ## Test results (actual, this environment)
 
