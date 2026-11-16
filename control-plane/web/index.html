@@ -69,10 +69,10 @@ h2 { margin-bottom:.4rem; }
     certificate, Apple Business organization) exist - no device has ever been
     enrolled or contacted. Command statuses are the device's own answers;
     "applied" is set only on an Acknowledged status.</p>
-    <table id="enrollments"><thead><tr><th>Device</th><th>Enrollment</th><th>State</th><th>Supervised</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="enrollments"><thead><tr><th>Device</th><th>Enrollment</th><th>State</th><th>Supervision requested</th><th>Supervision verified (device-reported)</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table>
     <form id="enroll-form">
       <label>Enroll device <select id="e-device"></select></label>
-      <label><input id="e-supervised" type="checkbox" style="width:auto"> Supervised (via ADE)</label>
+      <label><input id="e-supervised" type="checkbox" style="width:auto"> Request supervision (via ADE) - a request only; verification comes from the device</label>
       <button type="submit">Create enrollment</button>
       <div class="error" id="enroll-error"></div>
     </form>
@@ -98,4 +98,4 @@ h2 { margin-bottom:.4rem; }
 </main>
 <script src="/web/app.js"></script>
 </body>
-</html>
+  </html>
