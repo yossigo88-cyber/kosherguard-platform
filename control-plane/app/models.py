@@ -170,7 +170,13 @@ class MDMEnrollment(Base):
     enrollment_id: Mapped[str] = mapped_column(String(120), nullable=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False,
                                        default="pending")
-    supervised: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Requested vs verified supervision are different facts. A guardian
+    # requests supervision; only device-reported check-in data can verify
+    # it. A pending, never-contacted enrollment can never show verified.
+    supervision_requested: Mapped[bool] = mapped_column(
+        nullable=False, default=False)
+    supervision_verified: Mapped[bool] = mapped_column(
+        nullable=False, default=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
