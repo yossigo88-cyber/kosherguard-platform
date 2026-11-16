@@ -129,3 +129,42 @@ def test_clean_alembic_only_install(tmp_path):
     with session_scope(engine) as session:
         assert session.scalar(select(FilterDecision)).domain == "x.example"
         assert session.scalar(select(IssuedCredential)).jti == "j1"
+
+
+def test_alembic_schema_matches_model_metadata(tmp_path):
+    """Comparison evidence: the alembic-built schema (migrations only,
+    no create_all) and a metadata.create_all schema have identical
+    table, column and index sets. NOTE: exercised on SQLite; the same
+    migrations run on PostgreSQL in deployment (env.py rewrites the
+    URL to psycopg), where the 'role' enum is a native type - the
+    enum name matches 0001's so no duplicate CREATE TYPE occurs."""
+    import sqlite3 as _sq
+    db_a = tmp_path / "alembic.db"
+    db_b = tmp_path / "createall.db"
+    cfg = _cfg(str(db_a))
+    command.upgrade(cfg, "head")
+    from app.db import make_engine
+    from app.models import Base
+    engine_b = make_engine(f"sqlite:///{db_b}")
+    Base.metadata.create_all(engine_b)
+
+    def shape(path):
+        con = _sq.connect(str(path))
+        tables = {}
+        for (name,) in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall():
+            if name == "alembic_version":
+                continue
+            cols = sorted(
+                (r[1], r[2], r[3]) for r in con.execute(
+                    f"PRAGMA table_info({name})").fetchall())
+            idx = sorted(
+                (r[1], r[2]) for r in con.execute(
+                    f"PRAGMA index_list({name})").fetchall()
+                if not r[1].startswith("sqlite_autoindex"))
+            tables[name] = (cols, idx)
+        con.close()
+        return tables
+
+    assert shape(str(db_a)) == shape(str(db_b))
