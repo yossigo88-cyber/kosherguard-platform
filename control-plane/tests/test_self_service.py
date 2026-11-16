@@ -239,3 +239,63 @@ class TestMfaEnrollment:
             u = s.execute(select(User).where(
                 User.email == "o@example.com")).scalar_one()
             assert u.totp_secret is None  # pending row only, not promoted
+
+
+class TestAuditLogViewer:
+    def test_events_visible_newest_first(self, client):
+        client.post("/api/auth/password-change",
+                    json={"current_password": PASSWORD,
+                          "new_password": NEW_PASSWORD},
+                    headers=HDR)
+        r = client.get("/api/audit-logs")
+        assert r.status_code == 200
+        events = r.json()["events"]
+        assert len(events) >= 1
+        assert events[0]["action"] == "auth.password_change"
+        assert events[0]["actor"] == "o@example.com"
+        ids = [e["id"] for e in events]
+        assert ids == sorted(ids, reverse=True)
+
+    def test_tenant_isolation(self, client, engine):
+        client.post("/api/auth/password-change",
+                    json={"current_password": PASSWORD,
+                          "new_password": NEW_PASSWORD},
+                    headers=HDR)
+        # a second tenant with its own user sees none of tenant one's events
+        with session_scope(engine) as s:
+            t2 = Tenant(name="family-other")
+            s.add(t2)
+            s.flush()
+            s.add(User(tenant_id=t2.id, email="p@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+        c2 = TestClient(client.app)
+        assert c2.post("/api/auth/login",
+                       json={"email": "p@example.com",
+                             "password": PASSWORD},
+                       headers=HDR).status_code == 200
+        r = c2.get("/api/audit-logs")
+        assert r.status_code == 200
+        assert all(e["action"] != "auth.password_change"
+                   for e in r.json()["events"])
+
+    def test_viewer_can_read(self, client, engine):
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            tenant = s.execute(select(Tenant).where(
+                Tenant.name == "family-ss")).scalar_one()
+            s.add(User(tenant_id=tenant.id, email="v@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.viewer))
+        c2 = TestClient(client.app)
+        assert c2.post("/api/auth/login",
+                       json={"email": "v@example.com",
+                             "password": PASSWORD},
+                       headers=HDR).status_code == 200
+        assert c2.get("/api/audit-logs").status_code == 200
+
+    def test_signed_out_401(self, engine):
+        settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
+                             "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"})
+        c = TestClient(create_app(settings, engine=engine))
+        assert c.get("/api/audit-logs").status_code == 401
