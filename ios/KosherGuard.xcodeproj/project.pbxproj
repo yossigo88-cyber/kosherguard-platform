@@ -1,0 +1,81 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	objectVersion = 56;
+	objects = {
+
+	/* Begin PBXBuildFile section */
+		KG0100000000000000000000 /* KosherGuardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000000 /* KosherGuardApp.swift */; };
+		KG0100000000000000000001 /* MDMEnrollmentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000001 /* MDMEnrollmentClient.swift */; };
+		KG0100000000000000000002 /* PrefilterUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000002 /* PrefilterUpdater.swift */; };
+		KG0100000000000000000003 /* URLFilterConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000003 /* URLFilterConfiguration.swift */; };
+		KG0100000000000000000004 /* FilterDataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000004 /* FilterDataProvider.swift */; };
+		KG0100000000000000000005 /* FilterControlProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000005 /* FilterControlProvider.swift */; };
+		KG0100000000000000000010 /* KosherGuardFilter.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = KG0300000000000000000002 /* KosherGuardFilter.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+	/* End PBXBuildFile section */
+
+	/* Begin PBXContainerItemProxy section */
+		KG0400000000000000000001 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = KG00000000000000000000FF /* Project object */; proxyType = 1; remoteGlobalIDString = KG0500000000000000000002; remoteInfo = KosherGuardFilter; };
+	/* End PBXContainerItemProxy section */
+
+	/* Begin PBXCopyFilesBuildPhase section */
+		KG0600000000000000000001 /* Embed Foundation Extensions */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (KG0100000000000000000010 /* KosherGuardFilter.appex in Embed Foundation Extensions */, ); name = "Embed Foundation Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+	/* End PBXCopyFilesBuildPhase section */
+
+	/* Begin PBXFileReference section */
+		KG0200000000000000000000 /* KosherGuardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/KosherGuard/KosherGuardApp.swift"; sourceTree = "<group>"; };
+		KG0200000000000000000001 /* MDMEnrollmentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/MDMEnrollmentClient.swift"; sourceTree = "<group>"; };
+		KG0200000000000000000002 /* PrefilterUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/PrefilterUpdater.swift"; sourceTree = "<group>"; };
+		KG0200000000000000000003 /* URLFilterConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/URLFilterConfiguration.swift"; sourceTree = "<group>"; };
+		KG0200000000000000000004 /* FilterDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/FilterExtension/FilterDataProvider.swift"; sourceTree = "<group>"; };
+		KG0200000000000000000005 /* FilterControlProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/FilterExtension/FilterControlProvider.swift"; sourceTree = "<group>"; };
+		KG0300000000000000000001 /* KosherGuard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KosherGuard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		KG0300000000000000000002 /* KosherGuardFilter.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = KosherGuardFilter.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		KG0300000000000000000010 /* App-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Configuration/App-Info.plist; sourceTree = "<group>"; };
+		KG0300000000000000000011 /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Configuration/App.entitlements; sourceTree = "<group>"; };
+		KG0300000000000000000012 /* FilterExtension-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Configuration/FilterExtension-Info.plist; sourceTree = "<group>"; };
+		KG0300000000000000000013 /* FilterExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Configuration/FilterExtension.entitlements; sourceTree = "<group>"; };
+	/* End PBXFileReference section */
+
+	/* Begin PBXGroup section */
+		KG0700000000000000000001 = {isa = PBXGroup; children = (KG0700000000000000000002 /* Sources */, KG0700000000000000000003 /* Configuration */, KG0700000000000000000004 /* Products */, ); sourceTree = "<group>"; };
+		KG0700000000000000000002 /* Sources */ = {isa = PBXGroup; children = (KG0200000000000000000000 /* KosherGuardApp.swift */, KG0200000000000000000001 /* MDMEnrollmentClient.swift */, KG0200000000000000000002 /* PrefilterUpdater.swift */, KG0200000000000000000003 /* URLFilterConfiguration.swift */, KG0200000000000000000004 /* FilterDataProvider.swift */, KG0200000000000000000005 /* FilterControlProvider.swift */, ); name = Sources; sourceTree = "<group>"; };
+		KG0700000000000000000003 /* Configuration */ = {isa = PBXGroup; children = (KG0300000000000000000010 /* App-Info.plist */, KG0300000000000000000011 /* App.entitlements */, KG0300000000000000000012 /* FilterExtension-Info.plist */, KG0300000000000000000013 /* FilterExtension.entitlements */, ); name = Configuration; sourceTree = "<group>"; };
+		KG0700000000000000000004 /* Products */ = {isa = PBXGroup; children = (KG0300000000000000000001 /* KosherGuard.app */, KG0300000000000000000002 /* KosherGuardFilter.appex */, ); name = Products; sourceTree = "<group>"; };
+	/* End PBXGroup section */
+
+	/* Begin PBXNativeTarget section */
+		KG0500000000000000000001 /* KosherGuard */ = {isa = PBXNativeTarget; buildConfigurationList = KG0800000000000000000001; buildPhases = (KG0900000000000000000001 /* Sources */, KG0600000000000000000001 /* Embed Foundation Extensions */, ); buildRules = (); dependencies = (KG0A00000000000000000001 /* PBXTargetDependency */, ); name = KosherGuard; productName = KosherGuard; productReference = KG0300000000000000000001 /* KosherGuard.app */; productType = "com.apple.product-type.application"; };
+		KG0500000000000000000002 /* KosherGuardFilter */ = {isa = PBXNativeTarget; buildConfigurationList = KG0800000000000000000002; buildPhases = (KG0900000000000000000002 /* Sources */, ); buildRules = (); dependencies = (); name = KosherGuardFilter; productName = KosherGuardFilter; productReference = KG0300000000000000000002 /* KosherGuardFilter.appex */; productType = "com.apple.product-type.app-extension"; };
+	/* End PBXNativeTarget section */
+
+	/* Begin PBXProject section */
+		KG00000000000000000000FF /* Project object */ = {isa = PBXProject; attributes = {LastUpgradeCheck = 1600; }; buildConfigurationList = KG0800000000000000000003; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base, ); mainGroup = KG0700000000000000000001; productRefGroup = KG0700000000000000000004 /* Products */; projectDirPath = ""; projectRoot = ""; targets = (KG0500000000000000000001 /* KosherGuard */, KG0500000000000000000002 /* KosherGuardFilter */, ); };
+	/* End PBXProject section */
+
+	/* Begin PBXSourcesBuildPhase section */
+		KG0900000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (KG0100000000000000000000 /* KosherGuardApp.swift in Sources */, KG0100000000000000000001 /* MDMEnrollmentClient.swift in Sources */, KG0100000000000000000002 /* PrefilterUpdater.swift in Sources */, KG0100000000000000000003 /* URLFilterConfiguration.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		KG0900000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (KG0100000000000000000004 /* FilterDataProvider.swift in Sources */, KG0100000000000000000005 /* FilterControlProvider.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+	/* End PBXSourcesBuildPhase section */
+
+	/* Begin PBXTargetDependency section */
+		KG0A00000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = KG0500000000000000000002 /* KosherGuardFilter */; targetProxy = KG0400000000000000000001 /* PBXContainerItemProxy */; };
+	/* End PBXTargetDependency section */
+
+	/* Begin XCBuildConfiguration section */
+		KG0B00000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; INFOPLIST_FILE = Configuration/App-Info.plist; CODE_SIGN_ENTITLEMENTS = Configuration/App.entitlements; PRODUCT_BUNDLE_IDENTIFIER = com.kosherguard.app; PRODUCT_NAME = KosherGuard; ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;  }; name = Debug; };
+		KG0B00000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; INFOPLIST_FILE = Configuration/App-Info.plist; CODE_SIGN_ENTITLEMENTS = Configuration/App.entitlements; PRODUCT_BUNDLE_IDENTIFIER = com.kosherguard.app; PRODUCT_NAME = KosherGuard; ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;  }; name = Release; };
+		KG0B00000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; INFOPLIST_FILE = Configuration/FilterExtension-Info.plist; CODE_SIGN_ENTITLEMENTS = Configuration/FilterExtension.entitlements; PRODUCT_BUNDLE_IDENTIFIER = com.kosherguard.app.FilterExtension; PRODUCT_NAME = KosherGuardFilter; SKIP_INSTALL = YES;  }; name = Debug; };
+		KG0B00000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.9; INFOPLIST_FILE = Configuration/FilterExtension-Info.plist; CODE_SIGN_ENTITLEMENTS = Configuration/FilterExtension.entitlements; PRODUCT_BUNDLE_IDENTIFIER = com.kosherguard.app.FilterExtension; PRODUCT_NAME = KosherGuardFilter; SKIP_INSTALL = YES;  }; name = Release; };
+		KG0B00000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.9;  }; name = Debug; };
+		KG0B00000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.9;  }; name = Release; };
+	/* End XCBuildConfiguration section */
+
+	/* Begin XCConfigurationList section */
+		KG0800000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (KG0B00000000000000000001 /* Debug */, KG0B00000000000000000002 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		KG0800000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (KG0B00000000000000000003 /* Debug */, KG0B00000000000000000004 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		KG0800000000000000000003 = {isa = XCConfigurationList; buildConfigurations = (KG0B00000000000000000005 /* Debug */, KG0B00000000000000000006 /* Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+	/* End XCConfigurationList section */
+	};
+	rootObject = KG00000000000000000000FF /* Project object */;
+}
