@@ -99,15 +99,16 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   tokens it accepts, so app-mediated DoH identity cannot run end to
   end until the held set lands. Revocation registry, revoke route and
   revocation feed are also HELD (local only, 4 TestRevocation tests).
-- iOS request-path clients (606bdf4, 4b83612): STANDALONE SOURCE ONLY.
-  No app call sites reference them; they are absent from
-  KosherGuard.xcodeproj/project.pbxproj (SwiftPM's directory-based
-  URLFilter target would include them, an Xcode build would not); no
-  execution evidence exists, so dataset/proxy minting is tested
-  server-side only and is NOT working iOS functionality. Open gaps:
-  session acquisition (guardian cookie + CSRF, no native token
-  exchange server-side) and credential storage (in-memory only, no
-  Keychain integration).
+- iOS request-path clients (606bdf4, 4b83612): initially published as
+  standalone source; since wired - real call site (CredentialController
+  in KosherGuardApp.swift, deliberately no-op until native session
+  acquisition exists), members of KosherGuard.xcodeproj and the
+  SwiftPM URLFilter target (Package.swift dependency declared). STILL
+  no execution evidence (uncompiled/unsigned/untested), so dataset/
+  proxy minting is tested server-side only and is NOT working iOS
+  functionality. Open gaps: session acquisition (guardian cookie +
+  CSRF, no native token exchange server-side) and credential storage
+  (in-memory only, no Keychain integration).
 - NE content filter + iOS 26 NEURLFilter: iOS Swift sources +
   Xcode project structure, UNCOMPILED/UNSIGNED/UNTESTED.
   BUILT-UNVERIFIED.
@@ -137,11 +138,16 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 ## Part 10 - Administration dashboard
 
 - control-plane/web: policies, devices, MDM (enrollments, commands,
-  supervision split), categories panels - rendered evidence exists for
-  MDM and categories. Overview, Customers, schedules UI, credentials
-  screen added (schedules + overview rendered; credential-upload screen
-  rendered evidence exists - 3 screenshots: fixture banner, metadata
-  list with active/revoked states; minor textarea-width polish noted).
+  supervision split), categories, overview, customers, schedules,
+  credentials, guardians, account panels. Rendered evidence exists for
+  MDM, categories, credentials (3 shots), schedules (4), overview/
+  customers, and the guardian + account self-service flow (9 shots:
+  guardians list, one-time invite link, SIGNED-OUT invite acceptance
+  in a fresh cookie-less browser context with URL and network checks,
+  invitee sign-in, role change, password change, MFA enrollment with a
+  real TOTP code; pipeline: pgserver + uvicorn + puppeteer,
+  /tmp/evidence/run_guard.py). Minor textarea-width polish noted on
+  the credentials screen.
 
 ## Part 11 - Customer-facing website
 
@@ -153,7 +159,14 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 ## Part 12 - Customer accounts and multi-tenancy
 
 - Tenants, RBAC (owner/guardian/viewer), guardian invite/accept/role/
-  MFA-reset lifecycle with fresh-auth enforcement (M6). DONE as code.
+  MFA-reset lifecycle with fresh-auth enforcement (M6) + guardian
+  management UI and signed-out invite acceptance (rendered evidence).
+  Account self-service: password change (fresh-auth, invalidates the
+  account's other sessions, count audited) and server-bound MFA
+  enrollment (PendingMfaEnrollment: server-generated secret, one
+  pending row per user, 10-minute expiry, single-use; client never
+  supplies the secret) - hardening verified by tests (substitution,
+  expiry, replay, cross-user binding, session invalidation). DONE.
 - Cross-tenant isolation: HELD - the per-tenant publication isolation
   fix (2af092e + regression tests) awaits user approval to publish.
   Until then isolation at the publication layer is NOT claimed.
