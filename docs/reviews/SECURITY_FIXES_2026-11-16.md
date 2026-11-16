@@ -173,15 +173,21 @@ further user decision gate.
   for FilteringProxy; dns-edge's DNSEdgeRunner starts/stops the feed
   loop with the service and its shared set is handed to
   doh_identity.authenticate_doh_request(revoked_jtis=...), the DoH
-  front's verification point. Staleness and renewal, precisely: a
-  failed refresh keeps the last pulled set; after the last
-  successful pull, exposure for an unlisted token is bounded by its
-  credential lifetime (at most 86400s, the mint cap) because expired
-  tokens fail verification anyway; renewed feed credentials come
-  from a fresh scoped credential minted via the guardian-
-  authenticated POST /api/devices/{id}/dataset-credential route,
+  front's verification point. Staleness and renewal, stated
+  separately: (i) a revoked token remains accepted until the next
+  successful refresh - worst case the refresh interval PLUS the
+  outage length of a failed feed, i.e. a permanently stale feed
+  means a revoked-but-unexpired token is never refused by the set;
+  (ii) independently, every token's acceptance is bounded by its
+  own expiry (at most 86400s, the mint cap), so a stale set cannot
+  extend any single token beyond its expiry - but newly minted or
+  renewed tokens are unaffected by the stale set entirely; (iii)
+  renewal of the feed credential itself is an OPERATOR dependency:
+  a fresh scoped credential must be minted via the guardian-
+  authenticated POST /api/devices/{id}/dataset-credential route and
   supplied through the token_provider the deployment wires in (the
-  provider is consulted on every refresh). Tests: end-to-end
+  provider is consulted on every refresh) - no automatic renewal
+  path is shipped. Tests: end-to-end
   refusal after a live loop tick through BOTH entrypoints
   (url-filter-server build_runtime, proxy-edge build_proxy),
   runner start/stop of the loop, doh revocation refusal,
