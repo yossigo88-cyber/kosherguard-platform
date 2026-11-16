@@ -1,0 +1,185 @@
+"""Milestone 4 MDM tests: enrollment records, command lifecycle,
+tenant isolation, and the honesty rule that nothing reports success
+from a successful send alone.
+"""
+
+import os
+import sys
+
+import pytest
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+from app import security  # noqa: E402
+from app.config import Settings  # noqa: E402
+from app.db import session_scope  # noqa: E402
+from app.main import create_app  # noqa: E402
+from app.models import Role, Tenant, User  # noqa: E402
+from mdm.adapter import CommandResult, SimulatedMDMAdapter  # noqa: E402
+from app import mdm_ops  # noqa: E402
+
+PASSWORD = "a long enough password"
+HDR = {"X-KosherGuard-Request": "1"}
+
+
+def make_client(engine, email="g@example.com", tenant_name="family-m",
+                nanomdm_url=None):
+    with session_scope(engine) as s:
+        tenant = Tenant(name=tenant_name)
+        s.add(tenant)
+        s.flush()
+        s.add(User(tenant_id=tenant.id, email=email,
+                   password_hash=security.hash_password(PASSWORD),
+                   role=Role.owner))
+    env = {"KG_DATABASE_URL": "postgresql://placeholder",
+           "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"}
+    if nanomdm_url:
+        env["KG_NANOMDM_URL"] = nanomdm_url
+    c = TestClient(create_app(Settings(env), engine=engine))
+    r = c.post("/api/auth/login",
+               json={"email": email, "password": PASSWORD}, headers=HDR)
+    assert r.status_code == 200
+    return c
+
+
+@pytest.fixture()
+def client(engine):
+    return make_client(engine)
+
+
+
+def tenant_id_of(engine, email="g@example.com"):
+    with session_scope(engine) as s:
+        return s.query(User).filter_by(email=email).one().tenant_id
+
+def mk_device(c, name="phone-1"):
+    r = c.post("/api/devices", json={"name": name}, headers=HDR)
+    assert r.status_code == 200, r.json()
+    return r.json()["id"]
+
+
+def mk_enrollment(c, device_id):
+    r = c.post("/api/mdm/enrollments",
+               json={"device_id": device_id, "supervised": True},
+               headers=HDR)
+    assert r.status_code == 200, r.json()
+    return r.json()
+
+
+class TestEnrollments:
+    def test_create_and_list(self, client):
+        dev = mk_device(client)
+        enr = mk_enrollment(client, dev)
+        assert enr["state"] == "pending"
+        assert enr["supervised"] is True
+        listing = client.get("/api/mdm/enrollments").json()["enrollments"]
+        assert len(listing) == 1
+        assert listing[0]["device_id"] == dev
+
+    def test_enroll_other_tenants_device_rejected(self, engine):
+        c1 = make_client(engine, "a@example.com", "tenant-a")
+        c2 = make_client(engine, "b@example.com", "tenant-b")
+        dev_b = mk_device(c2, "phone-b")
+        r = c1.post("/api/mdm/enrollments",
+                    json={"device_id": dev_b}, headers=HDR)
+        assert r.status_code == 404
+
+    def test_csrf_required(self, client):
+        dev = mk_device(client)
+        r = client.post("/api/mdm/enrollments", json={"device_id": dev})
+        assert r.status_code == 403
+
+
+class TestCommands:
+    def test_unsupported_command_rejected(self, client):
+        enr = mk_enrollment(client, mk_device(client))
+        r = client.post(f"/api/mdm/enrollments/{enr['id']}/commands",
+                        json={"command": "EraseDevice"}, headers=HDR)
+        assert r.status_code == 400
+
+    def test_no_adapter_stays_queued(self, client):
+        """Without an MDM server the honest state is queued: nothing
+        was delivered, and the command is certainly not applied."""
+        enr = mk_enrollment(client, mk_device(client))
+        r = client.post(f"/api/mdm/enrollments/{enr['id']}/commands",
+                        json={"command": "DeviceLock"}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["status"] == "queued"
+        assert body["applied"] is False
+
+    def test_queued_never_applied_via_ops(self, engine, client):
+        """Direct ops call without adapter: queued, not applied."""
+        enr = mk_enrollment(client, mk_device(client))
+        tid = tenant_id_of(engine)
+        with session_scope(engine) as s:
+            row = mdm_ops.issue_command(
+                s, tid, enr["id"], "DeviceInformation", {}, None,
+                adapter=None)
+            assert row.status == "queued"
+            assert row.applied is False
+
+    def test_acknowledged_marks_applied(self, engine, client):
+        enr = mk_enrollment(client, mk_device(client))
+        adapter = SimulatedMDMAdapter()
+        tid = tenant_id_of(engine)
+        with session_scope(engine) as s:
+            row = mdm_ops.issue_command(
+                s, tid, enr["id"], "DeviceLock", {}, None, adapter=adapter)
+            assert row.status == "acknowledged"
+            assert row.applied is True
+        assert adapter.calls[0][1] == "DeviceLock"
+
+    def test_error_and_not_now_never_applied(self, engine, client):
+        enr = mk_enrollment(client, mk_device(client))
+        tid = tenant_id_of(engine)
+        for status in ("error", "not_now"):
+            adapter = SimulatedMDMAdapter(
+                {"DeviceLock": CommandResult(status, "device said so")})
+            with session_scope(engine) as s:
+                row = mdm_ops.issue_command(
+                    s, tid, enr["id"], "DeviceLock", {}, None,
+                    adapter=adapter)
+                assert row.status == status
+                assert row.applied is False
+
+    def test_adapter_failure_returns_to_queued(self, engine, client):
+        class DeadAdapter:
+            def deliver_command(self, *a):
+                raise RuntimeError("mdm server unreachable")
+        enr = mk_enrollment(client, mk_device(client))
+        with session_scope(engine) as s:
+            row = mdm_ops.issue_command(
+                s, tenant_id_of(engine), enr["id"], "RestartDevice", {},
+                None, adapter=DeadAdapter())
+            assert row.status == "queued"
+            assert row.applied is False
+            assert "unreachable" in row.result_detail
+
+    def test_cross_tenant_command_read_denied(self, engine):
+        c1 = make_client(engine, "a@example.com", "tenant-a")
+        c2 = make_client(engine, "b@example.com", "tenant-b")
+        enr = mk_enrollment(c1, mk_device(c1))
+        r = c1.post(f"/api/mdm/enrollments/{enr['id']}/commands",
+                    json={"command": "DeviceInformation"}, headers=HDR)
+        cmd_id = r.json()["id"]
+        # Tenant B cannot read tenant A's command, list its commands,
+        # or issue against its enrollment.
+        assert c2.get(f"/api/mdm/commands/{cmd_id}").status_code == 404
+        assert c2.get(
+            f"/api/mdm/enrollments/{enr['id']}/commands").status_code == 404
+        r = c2.post(f"/api/mdm/enrollments/{enr['id']}/commands",
+                    json={"command": "DeviceLock"}, headers=HDR)
+        assert r.status_code == 404
+
+    def test_command_history_listed(self, client):
+        enr = mk_enrollment(client, mk_device(client))
+        for cmd in ("DeviceInformation", "ProfileList"):
+            client.post(f"/api/mdm/enrollments/{enr['id']}/commands",
+                        json={"command": cmd}, headers=HDR)
+        listing = client.get(
+            f"/api/mdm/enrollments/{enr['id']}/commands").json()["commands"]
+        assert [c["command"] for c in listing] == [
+            "DeviceInformation", "ProfileList"]
