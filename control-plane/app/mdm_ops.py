@@ -23,7 +23,7 @@ _MDM_SRC = os.path.join(os.path.dirname(__file__), "..", "..")
 if _MDM_SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_MDM_SRC))
 
-from mdm.adapter import SUPPORTED_COMMANDS  # noqa: E402
+from mdm.adapter import DESTRUCTIVE_COMMANDS, SUPPORTED_COMMANDS  # noqa: E402
 
 
 class MDMError(RuntimeError):
@@ -72,14 +72,22 @@ def list_enrollments(session: Session, tenant_id: int) -> list[MDMEnrollment]:
 def issue_command(session: Session, tenant_id: int, enrollment_pk: int,
                   command: str, payload: dict | None,
                   actor_user_id: int | None,
-                  adapter=None) -> MDMCommand:
+                  adapter=None, allow_destructive: bool = False) -> MDMCommand:
     """Queue one supported command and optionally attempt delivery.
 
     With an adapter, delivery is attempted immediately and the device
     status recorded. Without one (no MDM server configured) the command
     stays queued - which is the honest state: nothing was delivered.
+
+    Destructive commands (EraseDevice etc.) are refused unless
+    allow_destructive=True, which only the two-person approval flow may
+    pass after a second privileged user approves (Answer 25).
     """
-    if command not in SUPPORTED_COMMANDS:
+    if command in DESTRUCTIVE_COMMANDS:
+        if not allow_destructive:
+            raise MDMError(
+                f"{command} requires two-person approval; direct issuance refused")
+    elif command not in SUPPORTED_COMMANDS:
         raise MDMError(f"unsupported command: {command}")
     enrollment = get_enrollment(session, tenant_id, enrollment_pk)
     row = MDMCommand(
