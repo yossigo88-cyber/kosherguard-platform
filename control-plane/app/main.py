@@ -478,7 +478,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                          IssuedCredential, MDMEnrollment, Policy,
                          PolicyVersion, PublicationState)
 
-    GUARDIAN_CAPABILITIES = {"policies", "schedules", "devices", "groups", "apps", "publish"}
+    GUARDIAN_CAPABILITIES = {"policies", "schedules", "devices", "groups", "apps", "publish", "exceptions"}
 
     def require_guardian(user: User, capability="devices") -> JSONResponse | None:
         if user.role == Role.owner:
@@ -1796,6 +1796,71 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                            settings.categories_file, body.at)
         except (ValueError, OSError) as exc:
             return error(400, str(exc))
+
+    @app.get("/api/exceptions")
+    def list_exceptions(user: User = Depends(current_user),
+                        session: Session = Depends(db_session)):
+        from . import exception_ops
+        from .models import PolicyException
+        rows = session.scalars(select(PolicyException).where(
+            PolicyException.tenant_id == user.tenant_id).order_by(
+                PolicyException.id.desc())).all()
+        return {"exceptions": [exception_ops.exception_json(r) for r in rows]}
+
+    @app.post("/api/exceptions", dependencies=[Depends(require_csrf_header)])
+    def create_exception(body: dict,
+                         user: User = Depends(current_user),
+                         session: Session = Depends(db_session)):
+        denied = require_guardian(user, "exceptions")
+        if denied is not None:
+            return denied
+        from . import exception_ops
+        from .models import PolicyException
+        try:
+            (kind, scope_type, device_id, group_id, domains, reason,
+             starts, expires) = exception_ops.validate_new(
+                session, user.tenant_id, user, body)
+        except Exception as exc:
+            from .policy_ops import PolicyError
+            if isinstance(exc, PolicyError):
+                return error(exc.status, str(exc))
+            raise
+        row = PolicyException(
+            tenant_id=user.tenant_id, kind=kind, scope_type=scope_type,
+            device_id=device_id, group_id=group_id,
+            domains=json.dumps(domains), reason=reason,
+            approver_user_id=user.id, starts_at=starts, expires_at=expires)
+        session.add(row)
+        session.flush()
+        ScopedSession(session, user.tenant_id).audit(
+            "exception.create",
+            f"{kind} for {scope_type} {device_id or group_id} "
+            f"until {expires.isoformat()}: {reason}",
+            actor_user_id=user.id)
+        session.commit()
+        return exception_ops.exception_json(row)
+
+    @app.delete("/api/exceptions/{exception_id}",
+                dependencies=[Depends(require_csrf_header)])
+    def revoke_exception(exception_id: int,
+                         user: User = Depends(current_user),
+                         session: Session = Depends(db_session)):
+        denied = require_guardian(user, "exceptions")
+        if denied is not None:
+            return denied
+        from .models import PolicyException
+        row = session.get(PolicyException, exception_id)
+        if row is None or row.tenant_id != user.tenant_id:
+            return error(404, "exception not found")
+        if row.revoked_at is None:
+            row.revoked_at = utcnow()
+            row.revoked_by = user.id
+            ScopedSession(session, user.tenant_id).audit(
+                "exception.revoke", f"exception {row.id}",
+                actor_user_id=user.id)
+            session.commit()
+        from . import exception_ops
+        return exception_ops.exception_json(row)
 
     @app.post("/api/publications/jobs", dependencies=[Depends(require_csrf_header)])
     def enqueue_publication(body: PublicationJobBody,
