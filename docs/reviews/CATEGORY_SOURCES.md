@@ -52,15 +52,24 @@ materialized view of it:
 2. The categories document is then re-rendered from the committed
    active rules, validated with the engine's own loader, written to a
    temp file and atomically `os.replace`d into place, then re-read
-   and digest-checked. A failed sync leaves the last-known-good file
+   and digest-checked. Syncs serialize GLOBALLY (process lock plus a
+   PostgreSQL advisory transaction lock), because the file is shared
+   across sources: the last writer always materializes the latest
+   committed rules, so concurrent activations on different sources
+   (or a resync racing an activation) cannot leave a stale subset
+   after newer commits. A failed sync leaves the last-known-good file
    untouched, is audited (`category_source.file_sync_failed`), and
    returns an explicit error; `POST .../category-sources/resync`
    (staff-only) re-materializes the file without changing rules.
 3. The publish flow re-verifies the file against the committed
    registry-managed rules before shipping and REFUSES a diverged or
-   unreadable file. With no registry-managed rules the file is
-   operator-provided (category-pipeline build) and the check does not
-   apply.
+   unreadable file. Enforcement is by provenance, not row count: once
+   any registry-managed rule row exists or any update is active, the
+   file must match the committed registry state - even when every
+   rule was later deactivated (zero active rules never silently
+   downgrade to a stale file). Only with NO registry involvement at
+   all is the file treated as operator-provided (category-pipeline
+   build) and the check skipped.
 4. Consumers: only the gated publish flow (and its worker) read
    KG_CATEGORIES_FILE, at publish execution time. Already-running
    DNS/proxy bundles keep their generation; nothing live-reads the
@@ -76,7 +85,7 @@ materialized view of it:
 
 ## Tests
 
-`control-plane/tests/test_category_sources.py` (21 tests):
+`control-plane/tests/test_category_sources.py` (23 tests):
 create/list, staff gate (non-staff 403), required license +
 attribution, duplicate name, import validation (hash, malformed rows
 rejected), pending rows never effective, activation requires fresh
