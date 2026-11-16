@@ -536,6 +536,48 @@ class SensitiveCommandApproval(Base):
         DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class OffboardingCase(Base):
+    """Documented, verified offboarding (Answer 24). A case records the
+    manual, verified process: initiator, ownership verification,
+    per-kind attestation steps, data-retention date, completion. Cases
+    NEVER trigger MDM commands, erasure, locks or Apple Business
+    releases by themselves - nonpayment must never permanently lock a
+    device and nothing auto-erases or auto-releases; every
+    device-affecting step stays a separate, already gated action
+    (two-person approval for destructive commands)."""
+    __tablename__ = "offboarding_cases"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int | None] = mapped_column(
+        ForeignKey("devices.id"), nullable=True, index=True)
+    # cancellation | transfer | loss_of_authority | dispute
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    # open | verified | completed | canceled
+    status: Mapped[str] = mapped_column(String(20), nullable=False,
+                                        default="open")
+    created_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False)
+    verified_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    # Recorded attestations of MANUAL steps done outside the platform
+    # (Activation Lock cleared on the device, Apple Business release
+    # performed in ABM). Never executed by this build.
+    activation_lock_attested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    abm_release_attested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    data_retention_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
+
 class EnrollmentTicket(Base):
     """Short-lived, single-use enrollment ticket (Answer 28). The raw
     token is shown once at issue and only its hash is stored. A ticket
