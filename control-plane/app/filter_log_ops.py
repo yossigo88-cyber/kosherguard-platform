@@ -101,3 +101,48 @@ def recent_decisions(session: Session, tenant_id: int,
         .where(FilterDecision.tenant_id == tenant_id)
         .order_by(FilterDecision.id.desc())
         .limit(limit)))
+
+
+def edge_status(session: Session, tenant_id: int) -> dict:
+    """Truthful proxy/DNS edge status (spec Part 10 status panels).
+
+    Reports only what the control-plane can EVIDENCE: whether a policy
+    is selected/published for the tenant (configuration) and what
+    decisions the edge actually reported (receipts). There is no
+    health, liveness, or delivery-confirmation signal from the edge,
+    so health is always "unknown" and said so explicitly. Credential
+    issuance is NOT reported here as status: a minted token proves only
+    that issuance happened, never that the proxy is configured,
+    connected, or serving.
+    """
+    from sqlalchemy import func
+
+    from app.models import FilterDecision, PublicationState
+
+    count, latest = session.execute(
+        select(func.count(FilterDecision.id),
+               func.max(FilterDecision.received_at))
+        .where(FilterDecision.tenant_id == tenant_id)).one()
+    sources = sorted(r[0] for r in session.execute(
+        select(FilterDecision.source)
+        .where(FilterDecision.tenant_id == tenant_id).distinct()))
+    pub = session.get(PublicationState, tenant_id)
+    return {
+        "configured": {
+            "policy_selected": bool(pub and pub.selected_policy_id),
+            "publication_revision": pub.revision if pub else 0,
+        },
+        "reported": {
+            "decision_count": count,
+            "sources": sources,
+            "latest_received_at": latest.isoformat() if latest else None,
+        },
+        "health": "unknown",
+        "health_note": (
+            "No health, liveness, or delivery signal from the proxy/DNS "
+            "edge exists yet. A selected policy and reported decisions "
+            "are separate facts; neither proves the edge is currently "
+            "serving, and credential issuance is not shown as status "
+            "because issuance proves nothing about operation."),
+        "dns_reporting": "not connected",
+    }
