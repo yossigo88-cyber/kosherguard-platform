@@ -110,6 +110,50 @@ class TestIngestion:
         assert rows[1]["action"] == "block"
         assert rows[1]["rule"] == "category:ads"
 
+    def test_doh_token_reports_dns_source(self, client):
+        """DNS reporting chain: a doh-scoped credential posts decisions
+        and they land with source "dns" - the source is bound to the
+        credential scope, not chosen by the caller."""
+        dev = mk_device(client)
+        token = mint(client, dev, scope="doh")
+        r = client.post("/api/filter-logs",
+                        json={"decisions": [
+                            {"domain": "bad.example", "action": "block",
+                             "source": "dns", "rule": "blocklist"}]},
+                        headers=bearer(token))
+        assert r.status_code == 200, r.json()
+        rows = client.get("/api/filter-logs").json()["decisions"]
+        assert rows[0]["source"] == "dns"
+
+    def test_doh_token_default_source_is_dns(self, client):
+        dev = mk_device(client)
+        token = mint(client, dev, scope="doh")
+        r = client.post("/api/filter-logs",
+                        json={"decisions": [
+                            {"domain": "ok.example", "action": "allow"}]},
+                        headers=bearer(token))
+        assert r.status_code == 200, r.json()
+        rows = client.get("/api/filter-logs").json()["decisions"]
+        assert rows[0]["source"] == "dns"
+
+    def test_scope_cannot_report_other_source(self, client):
+        """A proxy credential cannot write "dns" rows and vice versa."""
+        dev = mk_device(client)
+        proxy_tok = mint(client, dev, scope="proxy")
+        doh_tok = mint(client, dev, scope="doh")
+        r = client.post("/api/filter-logs",
+                        json={"decisions": [
+                            {"domain": "x.example", "action": "block",
+                             "source": "dns"}]},
+                        headers=bearer(proxy_tok))
+        assert r.status_code == 403
+        r = client.post("/api/filter-logs",
+                        json={"decisions": [
+                            {"domain": "x.example", "action": "block",
+                             "source": "proxy"}]},
+                        headers=bearer(doh_tok))
+        assert r.status_code == 403
+
     def test_missing_and_bad_token_401(self, client):
         dev = mk_device(client)
         mint(client, dev)
