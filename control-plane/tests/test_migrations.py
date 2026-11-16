@@ -82,7 +82,7 @@ ALL_TABLES = {
     "device_assignments", "publication_states", "mdm_enrollments",
     "device_app_policies", "ddm_status_reports", "mdm_commands",
     "filter_decisions", "category_rules", "pending_mfa_enrollments",
-    "invite_tokens", "credential_artifacts", "issued_credentials", "publication_jobs",
+    "invite_tokens", "credential_artifacts", "issued_credentials", "publication_jobs", "device_groups", "group_memberships",
 }
 
 
