@@ -167,6 +167,43 @@ class TestAppCommands:
         assert r.json()["command"] == "InstallApplication"
         assert r.json()["payload"]["ITunesStoreID"] == 284815942
 
+    def test_install_with_managed_configuration(self, client):
+        """The KosherGuard app's initial managed configuration rides the
+        InstallApplication command (Apple contract: application.install.yaml
+        Configuration dict). deviceID comes from the server-side device
+        record; controlPlaneBaseURL is operator-supplied, never invented."""
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        r = client.post(f"/api/devices/{dev}/app-commands",
+                        json={"action": "install",
+                              "itunes_store_id": 284815942,
+                              "configuration": {
+                                  "controlPlaneBaseURL":
+                                      "https://cp.example.com"}},
+                        headers=HDR)
+        assert r.status_code == 200, r.json()
+        cfg = r.json()["payload"]["Configuration"]
+        assert cfg["controlPlaneBaseURL"] == "https://cp.example.com"
+        assert cfg["deviceID"] == dev  # filled from the device record
+
+    def test_install_without_configuration_has_no_key(self, client):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        r = client.post(f"/api/devices/{dev}/app-commands",
+                        json={"action": "install",
+                              "itunes_store_id": 284815942}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        assert "Configuration" not in r.json()["payload"]
+
+    def test_install_rejects_bad_configuration(self, client):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        r = client.post(f"/api/devices/{dev}/app-commands",
+                        json={"action": "install",
+                              "itunes_store_id": 284815942,
+                              "configuration": "not-a-dict"}, headers=HDR)
+        assert r.status_code in (400, 422)
+
     def test_install_requires_store_id(self, client):
         dev = mk_device(client)
         mk_enrollment(client, dev)
