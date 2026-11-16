@@ -12,6 +12,7 @@ leak to clients.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -400,8 +401,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     from . import policy_ops, publication_ops
     from .models import (AuditEvent, Device, DeviceAssignment,
-                         MDMEnrollment, Policy, PolicyVersion,
-                         PublicationState)
+                         IssuedCredential, MDMEnrollment, Policy,
+                         PolicyVersion, PublicationState)
 
     def require_guardian(user: User) -> JSONResponse | None:
         if user.role.value not in ("owner", "guardian"):
@@ -483,6 +484,13 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                     doc = schedule_ops.with_schedules(doc, existing)
             policy_ops.enforce_on_content_mutation(
                 session, user.tenant_id, policy, doc)
+            if not body.enabled:
+                default = policy_ops.selected_default(session,
+                                                      user.tenant_id)
+                if default is not None and default.id == policy.id:
+                    raise policy_ops.PolicyError(
+                        "cannot disable the selected default policy; "
+                        "select another default first", 409)
         except policy_ops.PolicyError as exc:
             return error(exc.status, str(exc))
         policy.name = body.name
@@ -877,9 +885,44 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             ddm_ops.verify_hmac(settings.ddm_hmac_key,
                                 request.headers.get("x-hmac-signature"),
                                 body or b"")
+            ddm_ops.authorize_active(enrollment)
         except ddm_ops.DDMError as exc:
             raise HTTPException(exc.status, str(exc))
         return enrollment
+
+    @app.post("/api/mdm/enrollment-checkin")
+    async def mdm_enrollment_checkin(request: Request,
+                                     session: Session = Depends(db_session)):
+        """NanoMDM enrollment-info sync hook (see ddm_ops docstring).
+
+        The deployment wires NanoMDM's enrollment-info retrieval to
+        POST here when a device checks in; the HMAC authenticates the
+        NanoMDM peer, and confirm_checkin records what NanoMDM
+        authenticated through the MDM protocol: the device is enrolled
+        (state pending -> enrolled) and its reported supervision state.
+        No session cookie/CSRF: identity is the HMAC peer, the
+        enrollment ID in the body is a lookup key only."""
+        body = await request.body()
+        try:
+            ddm_ops.verify_hmac(settings.ddm_hmac_key,
+                                request.headers.get("x-hmac-signature"),
+                                body)
+            payload = json.loads(body.decode() or "{}")
+            enrollment = ddm_ops.confirm_checkin(
+                session, payload.get("enrollment_id"),
+                supervised=bool(payload.get("supervised")))
+        except ddm_ops.DDMError as exc:
+            return error(exc.status, str(exc))
+        except (ValueError, UnicodeDecodeError):
+            return error(400, "invalid JSON body")
+        ScopedSession(session, enrollment.tenant_id).audit(
+            "mdm.enrollment_checkin",
+            f"{enrollment.enrollment_id}: state={enrollment.state} "
+            f"supervised={enrollment.supervision_verified}")
+        session.commit()
+        return {"enrollment_id": enrollment.enrollment_id,
+                "state": enrollment.state,
+                "supervision_verified": enrollment.supervision_verified}
 
     @app.get("/api/ddm/tokens")
     def ddm_tokens(enrollment: MDMEnrollment = Depends(_ddm_enrollment),
@@ -912,6 +955,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 session, request.headers.get("x-enrollment-id"))
             ddm_ops.verify_hmac(settings.ddm_hmac_key,
                                 request.headers.get("x-hmac-signature"), body)
+            ddm_ops.authorize_active(enrollment)
             ddm_ops.record_status(session, enrollment, body)
         except ddm_ops.DDMError as exc:
             return error(exc.status, str(exc))
@@ -945,8 +989,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return error(404, "device not found")
         device = row
         scope = (body.scope if body else "dataset").strip()
-        if scope not in ("dataset", "proxy"):
-            return error(400, "scope must be 'dataset' or 'proxy'")
+        if scope not in ("dataset", "proxy", "doh"):
+            return error(400, "scope must be 'dataset', 'proxy' or 'doh'")
         policy_id = None
         if scope == "proxy":
             assignment = session.execute(select(DeviceAssignment).where(
@@ -979,6 +1023,12 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             lifetime_seconds=min(
                 settings.session_lifetime_seconds, 86400),
             policy_id=policy_id)
+        payload = _da.verify_token(
+            settings.device_token_key.encode(), token, scope)
+        session.add(IssuedCredential(
+            tenant_id=user.tenant_id, device_id=device.id,
+            jti=payload["jti"], scope=scope, policy_id=policy_id,
+            expires_at=datetime.fromtimestamp(payload["exp"], timezone.utc)))
         ScopedSession(session, user.tenant_id).audit(
             "device.credential_mint",
             f"{device.name} scope={scope}"
@@ -987,6 +1037,55 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         session.commit()
         return {"device_id": device.id, "credential": token, "scope": scope,
                 "policy_id": policy_id}
+
+    @app.post("/api/devices/{device_id}/credentials/revoke",
+              dependencies=[Depends(require_csrf_header)])
+    def revoke_device_credentials(device_id: int,
+                                  user: User = Depends(current_user),
+                                  session: Session = Depends(db_session)):
+        """Revoke every outstanding token for one device (all scopes).
+
+        Marks the issuance-registry rows; edge verifiers refuse listed
+        jtis once they receive the revocation set (distribution lands
+        with the devices.json/publication work - until then the feed
+        below is the export path). Natural short expiry still applies.
+        """
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        row = session.get(Device, device_id)
+        if row is None or row.tenant_id != user.tenant_id:
+            return error(404, "device not found")
+        now = utcnow()
+        outstanding = session.execute(select(IssuedCredential).where(
+            IssuedCredential.device_id == row.id,
+            IssuedCredential.tenant_id == user.tenant_id,
+            IssuedCredential.revoked_at.is_(None),
+            IssuedCredential.expires_at > now)).scalars().all()
+        for cred in outstanding:
+            cred.revoked_at = now
+        ScopedSession(session, user.tenant_id).audit(
+            "device.credential_revoke",
+            f"{row.name}: {len(outstanding)} outstanding token(s) revoked",
+            actor_user_id=user.id)
+        session.commit()
+        return {"device_id": row.id, "revoked": len(outstanding)}
+
+    @app.get("/api/credential-revocations")
+    def credential_revocations(user: User = Depends(current_user),
+                               session: Session = Depends(db_session)):
+        """Revoked, not-yet-expired jtis for this tenant (the set edge
+        verifiers refuse). Guardian-readable; automated edge pull is
+        pending the distribution channel design."""
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        now = utcnow()
+        rows = session.execute(select(IssuedCredential).where(
+            IssuedCredential.tenant_id == user.tenant_id,
+            IssuedCredential.revoked_at.is_not(None),
+            IssuedCredential.expires_at > now)).scalars().all()
+        return {"revoked_jtis": [r.jti for r in rows]}
 
     # -- Credential artifacts (Part 16 upload screens) ------------------
 
@@ -1364,7 +1463,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         try:
             result = publication_ops.publish_selected(
                 session, user.tenant_id, settings.publications_root,
-                user.email)
+                user.email, categories_path=settings.categories_file)
         except publication_ops.PolicyError as exc:
             session.rollback()
             return error(exc.status, str(exc))
@@ -1379,7 +1478,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def publication_current(user: User = Depends(current_user)):
         from .publisher import Publisher
         try:
-            manifest = Publisher(settings.publications_root).current()
+            manifest = Publisher(publication_ops.tenant_root(
+                settings.publications_root, user.tenant_id)).current()
         except Exception as exc:
             return error(500, f"could not read current generation: {exc}")
         if manifest is None:
