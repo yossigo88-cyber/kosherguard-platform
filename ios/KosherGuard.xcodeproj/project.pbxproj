@@ -7,6 +7,8 @@
 	/* Begin PBXBuildFile section */
 		KG0100000000000000000000 /* KosherGuardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000000 /* KosherGuardApp.swift */; };
 		KG0100000000000000000001 /* MDMEnrollmentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000001 /* MDMEnrollmentClient.swift */; };
+		KG0100000000000000000006 /* CredentialIssuanceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000006 /* CredentialIssuanceClient.swift */; };
+		KG0100000000000000000007 /* DNSOverHTTPSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000007 /* DNSOverHTTPSClient.swift */; };
 		KG0100000000000000000002 /* PrefilterUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000002 /* PrefilterUpdater.swift */; };
 		KG0100000000000000000003 /* URLFilterConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000003 /* URLFilterConfiguration.swift */; };
 		KG0100000000000000000004 /* FilterDataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = KG0200000000000000000004 /* FilterDataProvider.swift */; };
@@ -25,6 +27,8 @@
 	/* Begin PBXFileReference section */
 		KG0200000000000000000000 /* KosherGuardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/KosherGuard/KosherGuardApp.swift"; sourceTree = "<group>"; };
 		KG0200000000000000000001 /* MDMEnrollmentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/MDMEnrollmentClient.swift"; sourceTree = "<group>"; };
+		KG0200000000000000000006 /* CredentialIssuanceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/CredentialIssuanceClient.swift"; sourceTree = "<group>"; };
+		KG0200000000000000000007 /* DNSOverHTTPSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/DNSOverHTTPSClient.swift"; sourceTree = "<group>"; };
 		KG0200000000000000000002 /* PrefilterUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/PrefilterUpdater.swift"; sourceTree = "<group>"; };
 		KG0200000000000000000003 /* URLFilterConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/URLFilter/URLFilterConfiguration.swift"; sourceTree = "<group>"; };
 		KG0200000000000000000004 /* FilterDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/FilterExtension/FilterDataProvider.swift"; sourceTree = "<group>"; };
@@ -39,7 +43,7 @@
 
 	/* Begin PBXGroup section */
 		KG0700000000000000000001 = {isa = PBXGroup; children = (KG0700000000000000000002 /* Sources */, KG0700000000000000000003 /* Configuration */, KG0700000000000000000004 /* Products */, ); sourceTree = "<group>"; };
-		KG0700000000000000000002 /* Sources */ = {isa = PBXGroup; children = (KG0200000000000000000000 /* KosherGuardApp.swift */, KG0200000000000000000001 /* MDMEnrollmentClient.swift */, KG0200000000000000000002 /* PrefilterUpdater.swift */, KG0200000000000000000003 /* URLFilterConfiguration.swift */, KG0200000000000000000004 /* FilterDataProvider.swift */, KG0200000000000000000005 /* FilterControlProvider.swift */, ); name = Sources; sourceTree = "<group>"; };
+		KG0700000000000000000002 /* Sources */ = {isa = PBXGroup; children = (KG0200000000000000000000 /* KosherGuardApp.swift */, KG0200000000000000000001 /* MDMEnrollmentClient.swift */, KG0200000000000000000002 /* PrefilterUpdater.swift */, KG0200000000000000000003 /* URLFilterConfiguration.swift */, KG0200000000000000000004 /* FilterDataProvider.swift */, KG0200000000000000000005 /* FilterControlProvider.swift */, KG0200000000000000000006 /* CredentialIssuanceClient.swift */, KG0200000000000000000007 /* DNSOverHTTPSClient.swift */, ); name = Sources; sourceTree = "<group>"; };
 		KG0700000000000000000003 /* Configuration */ = {isa = PBXGroup; children = (KG0300000000000000000010 /* App-Info.plist */, KG0300000000000000000011 /* App.entitlements */, KG0300000000000000000012 /* FilterExtension-Info.plist */, KG0300000000000000000013 /* FilterExtension.entitlements */, ); name = Configuration; sourceTree = "<group>"; };
 		KG0700000000000000000004 /* Products */ = {isa = PBXGroup; children = (KG0300000000000000000001 /* KosherGuard.app */, KG0300000000000000000002 /* KosherGuardFilter.appex */, ); name = Products; sourceTree = "<group>"; };
 	/* End PBXGroup section */
@@ -54,7 +58,7 @@
 	/* End PBXProject section */
 
 	/* Begin PBXSourcesBuildPhase section */
-		KG0900000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (KG0100000000000000000000 /* KosherGuardApp.swift in Sources */, KG0100000000000000000001 /* MDMEnrollmentClient.swift in Sources */, KG0100000000000000000002 /* PrefilterUpdater.swift in Sources */, KG0100000000000000000003 /* URLFilterConfiguration.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		KG0900000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (KG0100000000000000000000 /* KosherGuardApp.swift in Sources */, KG0100000000000000000001 /* MDMEnrollmentClient.swift in Sources */, KG0100000000000000000002 /* PrefilterUpdater.swift in Sources */, KG0100000000000000000003 /* URLFilterConfiguration.swift in Sources */, KG0100000000000000000006 /* CredentialIssuanceClient.swift in Sources */, KG0100000000000000000007 /* DNSOverHTTPSClient.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 		KG0900000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (KG0100000000000000000004 /* FilterDataProvider.swift in Sources */, KG0100000000000000000005 /* FilterControlProvider.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 	/* End PBXSourcesBuildPhase section */
 
