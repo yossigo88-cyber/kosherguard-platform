@@ -97,3 +97,16 @@ def test_locked_job_is_not_picked_by_second_worker(client, engine, pub_root):
         s.scalar(select(PublicationJob).where(PublicationJob.id == jid).with_for_update())
         assert not run_once(engine, settings(pub_root))
     assert run_once(engine, settings(pub_root))
+
+
+def test_demoted_actor_cannot_execute_queued_privileged_job(client, engine, pub_root):
+    from app.models import Role
+    login(client);make_default_policy(client)
+    jid=client.post('/api/publications/jobs',json={'request_key':'revoked-actor'},headers=HDR).json()['id']
+    with session_scope(engine) as s:
+        actor=s.scalar(select(User).where(User.email=='g@example.com'));actor.role=Role.viewer
+    assert run_once(engine,settings(pub_root))
+    with session_scope(engine) as s:
+        job=s.get(PublicationJob,jid)
+        assert job.status != 'completed'
+        assert s.get(PublicationState,job.tenant_id).revision==0
