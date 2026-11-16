@@ -1,9 +1,11 @@
 # OHTTP gateway assessment (Milestone 8 follow-up)
 
-Status: **UNIMPLEMENTED - assessment only.** No OHTTP cryptography is
-implemented in this repository and none may be invented here. This
-document records the gateway options survey, a recommendation, and
-what remains blocked. It changes no runtime behavior.
+Status: **gateway not operated; deployment wiring built and
+interop-tested locally** (updated 2026-11-16 after the owner's
+direction to complete all pre-approval preparation). No OHTTP
+cryptography is implemented in this repository and none may be
+invented here. This document records the gateway options survey, the
+selected candidate, and what remains blocked.
 
 Sources checked 2026-11-16:
 
@@ -37,28 +39,43 @@ that approval first (already tracked in `deploy/pir/README.md`).
 | `martinthomson/ohttp` | Rust library (Apache-2.0), maintained by the RFC 9458 editor, with chris-wood (WG editor) among contributors | Reference-grade implementation, but it is a *library*, not a deployable gateway; adopting it means writing and operating our own server around it. Best used for interop/conformance testing of whichever gateway we deploy. |
 | `openpcc/ohttp`, `gruberb/ohttp-gateway`, Guardian Project `ohttp-gp` | Libraries / niche gateways | Surveyed; no advantage over the two above for our deployment model. |
 
-## Recommendation
+## Decision and current state
 
-1. **Do not build a gateway now.** The blocking dependency is Apple's
-   OHTTP relay approval; until that exists, a deployed gateway carries
-   operational cost and a key-management burden with zero traffic.
-2. **When Apple approval lands, deploy `thibmeu/ohttp-gateway`** on our
-   edge with `TARGET_URL` pointing at the PIR service, a seed generated
-   once and stored in the secret store (never in Git), and the
-   well-known key-config endpoint recorded in the NEURLFilter
-   configuration delivered to devices.
-3. **Interop-test** the deployment against `martinthomson/ohttp`'s
-   client tooling before pointing any device at it.
-4. Keep the current constraint: any deviation (e.g. Apple requiring an
+`thibmeu/ohttp-gateway` selected (RFC 9458, stateless seed-derived key
+config, X25519 + ML-KEM-768 hybrid, deployable on our edge). Following
+the owner's direction that all code/deployment preparation be
+completed before external approvals, the integration is built at
+`deploy/ohttp/`:
+
+1. **Pinned**: commit b071b966ba75379230355b8ce6a74a300fb8bbd9 (no
+   upstream tags exist), MIT license, recorded in
+   `deploy/ohttp/PINNED`.
+2. **Deployment wiring**: `deploy/ohttp/Dockerfile` (node:26-alpine,
+   fetches exactly the pinned commit; seed injected at runtime from
+   the secret store, never baked in). Image never built, never
+   deployed.
+3. **Local interop test, executed**: full RFC 9458 round trip
+   (well-known key config -> encapsulate -> gateway decapsulate/forward
+   -> stub target -> encapsulated response -> client decapsulate)
+   against the pinned gateway running with an ephemeral fixture seed.
+   PASS 2026-11-16 on node v26.13.1 via
+   `deploy/ohttp/interop/run-local-interop.sh`. Requires node >= 24.7
+   (upstream engines; node 22 fails ML-KEM-768 native derivation).
+4. **Still gated on Apple**: live NEURLFilter traffic requires Apple's
+   OHTTP relay approval; the gateway has no production traffic until
+   then. `martinthomson/ohttp` remains the conformance reference.
+5. Keep the constraint: any deviation (e.g. Apple requiring an
    Apple-operated or specifically vetted gateway) must be discovered
    from Apple's current NEURLFilter documentation at integration time,
    not assumed from this document.
 
 ## Explicitly not done
 
-- No OHTTP key material generated or stored.
-- No relay, gateway, or decapsulation code written.
+- No real OHTTP key material exists (fixture seeds are ephemeral and
+  per-test-run only).
+- No gateway image build, no deployment, no relay, no device traffic.
 - No claim that NEURLFilter end-to-end privacy is operational; the
   honest status remains: PIR service integrated (Apple's example),
-  dataset export implemented, OHTTP layer pending Apple's relay
+  dataset export implemented, gateway wiring ready and
+  interop-tested locally, live OHTTP operation pending Apple's relay
   approval.
