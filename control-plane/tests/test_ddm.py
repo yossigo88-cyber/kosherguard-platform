@@ -55,9 +55,7 @@ def make_client(engine, env_extra=None):
            "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"}
     env.update(env_extra or {})
     c = TestClient(create_app(Settings(env), engine=engine))
-    r = c.post("/api/auth/login",
-               json={"email": "ddm@example.com", "password": PASSWORD},
-               headers=HDR)
+    r = mfa_login(c, json={'email': 'ddm@example.com', 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
     return c
 
@@ -393,3 +391,5 @@ class TestEnrollmentAuthorization:
             row = s.query(MDMEnrollment).filter_by(
                 enrollment_id="ENR-PENDING").one()
             assert row.supervision_verified is False
+
+from mfa_support import mfa_login
