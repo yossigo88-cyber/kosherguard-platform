@@ -170,6 +170,14 @@ class MDMEnrollment(Base):
     device_id: Mapped[int] = mapped_column(
         ForeignKey("devices.id"), nullable=False, index=True)
     enrollment_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    # The device UDID expected at enrollment (recorded when the
+    # enrollment is created, from the device record / operator input,
+    # NOT from any later caller claim). NanoMDM's device-channel
+    # enrollment ID IS the UDID, so this is the association key that
+    # lets the first authenticated DDM contact bind a pending record
+    # to the real NanoMDM ID.
+    device_udid: Mapped[str | None] = mapped_column(
+        String(120), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False,
                                        default="pending")
     # Requested vs verified supervision are different facts. A guardian
