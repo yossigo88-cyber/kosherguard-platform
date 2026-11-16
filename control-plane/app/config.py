@@ -55,6 +55,11 @@ class Settings:
         self.credentials_root = (
             env.get("KG_CREDENTIALS_ROOT", "").strip()
             or os.path.join(self.publications_root, "..", "credentials"))
+        # Optional device identity CA bundle (Answer 28). When set, a
+        # certificate presented at ticket redemption is chain-verified
+        # with openssl; when unset it is recorded chain-unverified.
+        self.device_identity_ca_file = (
+            env.get("KG_DEVICE_IDENTITY_CA_FILE", "").strip() or None)
         # Deployment environment stamp. Anything but an explicit
         # "production" marks uploaded credential artifacts (and the
         # upload screen) as development/fixture-only.
