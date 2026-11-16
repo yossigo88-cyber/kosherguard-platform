@@ -29,7 +29,12 @@ _UFS_APP = os.path.join(os.path.dirname(__file__), "..",
                         "url-filter-server")
 sys.path.insert(0, os.path.abspath(_UFS_APP))
 
-from app.device_auth import TokenError, verify_token  # noqa: E402
+import importlib.util
+_spec = importlib.util.spec_from_file_location(
+    "kg_doh_device_auth", os.path.join(_UFS_APP, "app", "device_auth.py"))
+_auth = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_auth)
+TokenError, verify_token = _auth.TokenError, _auth.verify_token
 
 
 class IdentityError(Exception):
