@@ -70,11 +70,11 @@ struct AuthSessionClient {
         guard let fields = http.allHeaderFields as? [String: String],
               let setCookie = fields["Set-Cookie"],
               let cookie = setCookie.split(separator: ";").first,
-              cookie.hasPrefix("session=") else {
+              cookie.hasPrefix("kg_session=") else {
             throw AuthError.noSessionCookie
         }
         _ = data
-        return String(cookie.dropFirst("session=".count))
+        return String(cookie.dropFirst("kg_session=".count))
     }
 
     /// Sign out, invalidating the session server-side.
@@ -83,7 +83,7 @@ struct AuthSessionClient {
             .appendingPathComponent("api/auth/logout"))
         req.httpMethod = "POST"
         req.setValue("1", forHTTPHeaderField: "X-KosherGuard-Request")
-        req.setValue("session=\(sessionCookie)",
+        req.setValue("kg_session=\(sessionCookie)",
                      forHTTPHeaderField: "Cookie")
         _ = try await session.data(for: req)
     }
