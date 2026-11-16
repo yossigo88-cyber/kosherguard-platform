@@ -1,0 +1,266 @@
+"""Offboarding case routes (Answer 24): documented, verified offboarding
+for customer cancellation, device sale/transfer, loss of authority and
+ownership disputes.
+
+Hard rules (from the user's answer): nonpayment must never permanently
+lock a device, and nothing here automatically erases a device or
+releases it from Apple Business. Cases therefore NEVER issue MDM
+commands. Completion performs the environment-feasible orchestration
+itself (deactivate assignments, offboard enrollment records, delete the
+departing device's filter-decision rows, stamp the tenant retention
+date); Apple-side steps (Activation Lock cleared on the device, ABM
+release) are recorded as attestations of manual steps, never executed
+by this build.
+"""
+from datetime import timedelta
+
+from fastapi import Depends
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+
+from .db import ScopedSession
+from .models import (Device, DeviceAssignment, FilterDecision,
+                     MDMEnrollment, OffboardingCase, Tenant, utcnow)
+
+KINDS = ("cancellation", "transfer", "loss_of_authority", "dispute")
+DEVICE_KINDS = ("transfer", "loss_of_authority")
+ATTEST_STEPS = ("activation_lock", "abm_release")
+
+
+class CaseCreateBody(BaseModel):
+    kind: str
+    device_id: int | None = None
+    notes: str = ""
+
+
+class VerifyBody(BaseModel):
+    totp_code: str | None = None
+    confirm: str | None = None
+
+
+class AttestBody(BaseModel):
+    step: str
+    totp_code: str | None = None
+    confirm: str | None = None
+
+
+class CompleteBody(BaseModel):
+    notes: str = ""
+
+
+def _json(c: OffboardingCase) -> dict:
+    def ts(v):
+        return v.isoformat() if v else None
+    return {
+        "id": c.id, "tenant_id": c.tenant_id, "device_id": c.device_id,
+        "kind": c.kind, "status": c.status,
+        "created_by_user_id": c.created_by_user_id,
+        "verified_by_user_id": c.verified_by_user_id,
+        "verified_at": ts(c.verified_at),
+        "activation_lock_attested_at": ts(c.activation_lock_attested_at),
+        "abm_release_attested_at": ts(c.abm_release_attested_at),
+        "data_retention_until": ts(c.data_retention_until),
+        "notes": c.notes, "created_at": ts(c.created_at),
+        "completed_at": ts(c.completed_at),
+    }
+
+
+def register_offboarding_routes(app, *, error, current_user, db_session,
+                                require_csrf_header, require_guardian,
+                                require_owner, fresh_check):
+    def _case(session, user, case_id):
+        case = session.get(OffboardingCase, case_id)
+        if case is None or case.tenant_id != user.tenant_id:
+            return None
+        return case
+
+    @app.post("/api/offboarding/cases",
+              dependencies=[Depends(require_csrf_header)])
+    def create_case(body: CaseCreateBody, user=Depends(current_user),
+                    session=Depends(db_session)):
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        if body.kind not in KINDS:
+            return error(400, f"kind must be one of {', '.join(KINDS)}")
+        if body.kind in DEVICE_KINDS and body.device_id is None:
+            return error(400, f"{body.kind} requires a device_id")
+        if body.device_id is not None:
+            device = session.get(Device, body.device_id)
+            if device is None or device.tenant_id != user.tenant_id:
+                return error(404, "device not found")
+        case = OffboardingCase(
+            tenant_id=user.tenant_id, device_id=body.device_id,
+            kind=body.kind, status="open", created_by_user_id=user.id,
+            notes=body.notes)
+        session.add(case)
+        session.flush()
+        ScopedSession(session, user.tenant_id).audit(
+            "offboarding.case.create",
+            f"case {case.id} kind={body.kind} device={body.device_id}",
+            actor_user_id=user.id)
+        session.commit()
+        return _json(case)
+
+    @app.get("/api/offboarding/cases")
+    def list_cases(user=Depends(current_user), session=Depends(db_session)):
+        denied = require_guardian(user, "devices")
+        if denied is not None:
+            return denied
+        rows = session.scalars(select(OffboardingCase).where(
+            OffboardingCase.tenant_id == user.tenant_id)
+            .order_by(OffboardingCase.id.desc()).limit(100)).all()
+        return {"cases": [_json(c) for c in rows]}
+
+    @app.post("/api/offboarding/cases/{case_id}/verify",
+              dependencies=[Depends(require_csrf_header)])
+    def verify_case(case_id: int, body: VerifyBody,
+                    user=Depends(current_user), session=Depends(db_session)):
+        """Customer identity and ownership verification: the tenant
+        OWNER re-verifies with a current MFA code and explicit
+        confirmation. Nothing proceeds to completion without it."""
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        case = _case(session, user, case_id)
+        if case is None:
+            return error(404, "case not found")
+        if case.status != "open":
+            return error(409, f"case is {case.status}")
+        denied = fresh_check(error, user, body.totp_code, body.confirm,
+                             "verify-offboarding")
+        if denied is not None:
+            return denied
+        case.status = "verified"
+        case.verified_by_user_id = user.id
+        case.verified_at = utcnow()
+        ScopedSession(session, user.tenant_id).audit(
+            "offboarding.case.verify", f"case {case.id}",
+            actor_user_id=user.id)
+        session.commit()
+        return _json(case)
+
+    @app.post("/api/offboarding/cases/{case_id}/attest",
+              dependencies=[Depends(require_csrf_header)])
+    def attest_step(case_id: int, body: AttestBody,
+                    user=Depends(current_user), session=Depends(db_session)):
+        """Record a manual Apple-side step as attested (Activation Lock
+        cleared on the device, ABM release performed). This build never
+        executes those steps itself; the attestation is the record that
+        the owner did them, confirmed with a fresh MFA code."""
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        case = _case(session, user, case_id)
+        if case is None:
+            return error(404, "case not found")
+        if case.status not in ("open", "verified"):
+            return error(409, f"case is {case.status}")
+        if body.step not in ATTEST_STEPS:
+            return error(400, f"step must be one of {', '.join(ATTEST_STEPS)}")
+        denied = fresh_check(error, user, body.totp_code, body.confirm,
+                             f"attest-{body.step}")
+        if denied is not None:
+            return denied
+        if body.step == "activation_lock":
+            if case.activation_lock_attested_at is not None:
+                return error(409, "activation lock already attested")
+            case.activation_lock_attested_at = utcnow()
+        else:
+            if case.abm_release_attested_at is not None:
+                return error(409, "ABM release already attested")
+            case.abm_release_attested_at = utcnow()
+        ScopedSession(session, user.tenant_id).audit(
+            "offboarding.case.attest", f"case {case.id} step={body.step}",
+            actor_user_id=user.id)
+        session.commit()
+        return _json(case)
+
+    @app.post("/api/offboarding/cases/{case_id}/complete",
+              dependencies=[Depends(require_csrf_header)])
+    def complete_case(case_id: int, body: CompleteBody,
+                      user=Depends(current_user), session=Depends(db_session)):
+        """Complete a verified case. Performs the environment-feasible
+        orchestration here: deactivate the device's policy assignments,
+        mark its enrollment records offboarded, delete the departing
+        device's filter-decision rows, and stamp the data-retention
+        date from tenant policy. It NEVER issues MDM commands, erases
+        or locks anything, or releases Apple Business - nonpayment
+        cancellation in particular changes nothing on the device."""
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        case = _case(session, user, case_id)
+        if case is None:
+            return error(404, "case not found")
+        if case.status == "completed":
+            return error(409, "case already completed")
+        if case.status == "canceled":
+            return error(409, "case canceled")
+        if case.status != "verified":
+            return error(409, "ownership verification required first")
+        if case.kind == "dispute" and not (body.notes or case.notes):
+            return error(400, "dispute completion requires resolution notes")
+        if case.kind == "transfer" and (
+                case.activation_lock_attested_at is None
+                or case.abm_release_attested_at is None):
+            return error(409, "transfer requires activation-lock and "
+                              "ABM-release attestations")
+        if case.kind == "loss_of_authority" and (
+                case.abm_release_attested_at is None):
+            return error(409, "loss of authority requires the "
+                              "ABM-release attestation")
+        if body.notes:
+            case.notes = (case.notes + "\n" + body.notes).strip()
+        tenant = session.get(Tenant, case.tenant_id)
+        case.data_retention_until = utcnow() + timedelta(
+            days=tenant.blocked_log_retention_days)
+        deleted_logs = 0
+        if case.device_id is not None:
+            for assignment in session.scalars(select(DeviceAssignment).where(
+                    DeviceAssignment.device_id == case.device_id,
+                    DeviceAssignment.tenant_id == case.tenant_id,
+                    DeviceAssignment.active.is_(True))).all():
+                assignment.active = False
+            for enrollment in session.scalars(select(MDMEnrollment).where(
+                    MDMEnrollment.device_id == case.device_id,
+                    MDMEnrollment.tenant_id == case.tenant_id,
+                    MDMEnrollment.state.in_(["pending", "enrolled"]))).all():
+                enrollment.state = "offboarded"
+            deleted_logs = session.query(FilterDecision).filter(
+                FilterDecision.device_id == case.device_id,
+                FilterDecision.tenant_id == case.tenant_id).delete()
+            device = session.get(Device, case.device_id)
+            if device is not None and case.kind in DEVICE_KINDS:
+                device.state = "offboarded"
+        case.status = "completed"
+        case.completed_at = utcnow()
+        ScopedSession(session, user.tenant_id).audit(
+            "offboarding.case.complete",
+            f"case {case.id} kind={case.kind} device={case.device_id} "
+            f"purged_logs={deleted_logs} "
+            f"retention_until={case.data_retention_until.isoformat()}",
+            actor_user_id=user.id)
+        session.commit()
+        return _json(case)
+
+    @app.post("/api/offboarding/cases/{case_id}/cancel",
+              dependencies=[Depends(require_csrf_header)])
+    def cancel_case(case_id: int, user=Depends(current_user),
+                    session=Depends(db_session)):
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        case = _case(session, user, case_id)
+        if case is None:
+            return error(404, "case not found")
+        if case.status == "completed":
+            return error(409, "case already completed")
+        if case.status == "canceled":
+            return error(409, "case already canceled")
+        case.status = "canceled"
+        ScopedSession(session, user.tenant_id).audit(
+            "offboarding.case.cancel", f"case {case.id}",
+            actor_user_id=user.id)
+        session.commit()
+        return _json(case)
