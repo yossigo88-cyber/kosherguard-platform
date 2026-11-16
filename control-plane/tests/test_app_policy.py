@@ -37,8 +37,7 @@ def make_client(engine, email="apps@example.com",
     env = {"KG_DATABASE_URL": "postgresql://placeholder",
            "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"}
     c = TestClient(create_app(Settings(env), engine=engine))
-    r = c.post("/api/auth/login",
-               json={"email": email, "password": PASSWORD}, headers=HDR)
+    r = mfa_login(c, json={'email': email, 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
     return c
 
@@ -260,3 +259,5 @@ class TestAppCommands:
         assert c.post("/api/devices/1/app-commands",
                       json={"action": "list"},
                       headers=HDR).status_code == 401
+
+from mfa_support import mfa_login
