@@ -1,5 +1,6 @@
 // STATUS: UNCOMPILED, UNSIGNED, UNTESTED - see ios/README.md.
 import SwiftUI
+import URLFilter
 
 /// Guardian-facing status: what the filter is doing on THIS device,
 /// stated honestly. "Protection active" requires an actually-running
@@ -30,16 +31,48 @@ struct FilterStatus: Equatable {
     }
 }
 
+/// Call site for the scoped-credential request path: the app owns a
+/// CredentialIssuanceClient and surfaces issuance state honestly.
+/// "Not requested" is the only state reachable in this build - there
+/// is no server session acquisition (native token exchange) yet, so
+/// no mint can actually run; the UI says so instead of pretending.
+@Observable
+final class CredentialController {
+    enum State: String {
+        case notRequested = "Not requested (sign-in for devices not built)"
+        case issued = "Issued"
+        case failed = "Issuance failed"
+    }
+    private(set) var state: State = .notRequested
+    private let client: CredentialIssuanceClient?
+
+    init(client: CredentialIssuanceClient?) {
+        self.client = client
+    }
+
+    /// Wired for the future native-auth flow: without a guardian
+    /// session (see CredentialIssuanceClient docs) there is nothing
+    /// to send, so this is a deliberate no-op that keeps the honest
+    /// state. It exists so the call site is real and reviewable.
+    func requestDatasetCredential(deviceID: Int) async {
+        guard client != nil else { return }  // stays .notRequested
+    }
+}
+
 @main
 struct KosherGuardApp: App {
+    @State private var credentials = CredentialController(client: nil)
+
     var body: some Scene {
         WindowGroup {
             FilterStatusView()
+                .environment(credentials)
         }
     }
 }
 
 struct FilterStatusView: View {
+    @Environment(CredentialController.self) private var credentials
     @State private var status = FilterStatus(
         extensionState: .notInstalled,
         prefilterVersion: nil,
@@ -64,6 +97,8 @@ struct FilterStatusView: View {
                 Section("Management") {
                     LabeledContent("Enrollment",
                                    value: status.enrollmentState)
+                    LabeledContent("Device credential",
+                                   value: credentials.state.rawValue)
                 }
             }
             .navigationTitle("KosherGuard")
