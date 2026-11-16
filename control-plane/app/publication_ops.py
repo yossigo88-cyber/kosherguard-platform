@@ -141,9 +141,5 @@ def publish_selected(session: Session, tenant_id: int, root: str,
     except PublicationError as exc:
         raise PolicyError(f"publication failed: {exc}", 500)
     session.flush()
-    return {
-        "revision": revision,
-        "generation": generation,
-        "policy": policy.name,
-        "policy_version": version.version,
-    }
+    return {"revision": revision, "generation": generation,
+            "policy": policy.name, "policy_version": version.version}
