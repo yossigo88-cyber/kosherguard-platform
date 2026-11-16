@@ -317,14 +317,11 @@ class FilteringProxy(socketserver.ThreadingTCPServer):
 
     def log_decision(self, host: str, decision, client_addr,
                      device_id=None) -> None:
-        if self.decision_log is not None:
+        if self.decision_log is not None and decision.action == "block":
             entry = {
-                "host": host, "action": decision.action,
-                "rule": decision.rule, "reason": decision.reason,
-                "client": client_addr[0] if client_addr else None,
+                "event": "proxy_block", "action": decision.action,
+                "rule": "blocked", "reason": "policy blocked domain",
             }
-            if device_id is not None:
-                entry["device"] = device_id
             self.decision_log(entry)
 
 
