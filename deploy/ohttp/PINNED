@@ -1,0 +1,6 @@
+source: https://github.com/thibmeu/ohttp-gateway
+commit: b071b966ba75379230355b8ce6a74a300fb8bbd9
+license: MIT (Copyright (c) 2026 Thibault Meunier)
+checked: 2026-11-16
+note: no tagged releases exist upstream; pinned by commit SHA.
+runtime: node >= 24.7 per upstream engines (upstream Dockerfile uses node:26-alpine)
