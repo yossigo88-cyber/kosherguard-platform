@@ -18,18 +18,21 @@ category dataset admin.
   name (unique), license name and attribution are REQUIRED fields
   (a blank license is refused), status and notes.
 - **Versioned imports with the actual rows** - `POST .../imports`
-  takes the version string, the dataset SHA-256 (format validated),
-  the source's category mapping AND the dataset rows themselves
-  (domain/category/verdict, each validated; any malformed row rejects
-  the whole import). Imports land as `pending_review` and their rows
-  are NOT effective.
+  takes the version string, the dataset SHA-256, the source's category
+  mapping AND the dataset rows themselves (domain/category/verdict,
+  each validated; any malformed row rejects the whole import). The
+  hash is verified, not just format-checked: it must equal the SHA-256
+  of the canonical dataset bytes (canonical JSON of the validated
+  rows: sorted keys, 2-space indent, trailing newline), so a tampered
+  or truncated import can never be activated under a format-valid
+  hash. Imports land as `pending_review` and their rows are NOT
+  effective.
 - **Manual review with real activation** - `POST .../activate`
   requires a fresh staff MFA code plus explicit confirmation; only
   then do the update's rows REPLACE the previously active update's
   rows in category_rules (each bound to its source@version and update
-  id), and the categories document the publish flow ships
-  (KG_CATEGORIES_FILE) is rebuilt from the active rules and validated
-  with the engine's own loader. One active update per source.
+  id). One active update per source; concurrent activations serialize
+  on the source row (FOR UPDATE), so interleaving cannot mix rows.
 - **Real rollback** - `POST .../rollback` reactivates a superseded
   update with fresh MFA: the current update's rules are deactivated,
   the rollback target's rules are re-applied, and the categories
@@ -39,6 +42,29 @@ category dataset admin.
   existing category-rules admin (`source='manual-review'`, never
   hard-deleted), which sits alongside the source registry.
 - Every create/import/activate/rollback writes an audit event.
+
+## Transactional integrity of the categories file
+
+The database is the source of truth; KG_CATEGORIES_FILE is a
+materialized view of it:
+
+1. Activation/rollback COMMIT the rule changes first.
+2. The categories document is then re-rendered from the committed
+   active rules, validated with the engine's own loader, written to a
+   temp file and atomically `os.replace`d into place, then re-read
+   and digest-checked. A failed sync leaves the last-known-good file
+   untouched, is audited (`category_source.file_sync_failed`), and
+   returns an explicit error; `POST .../category-sources/resync`
+   (staff-only) re-materializes the file without changing rules.
+3. The publish flow re-verifies the file against the committed
+   registry-managed rules before shipping and REFUSES a diverged or
+   unreadable file. With no registry-managed rules the file is
+   operator-provided (category-pipeline build) and the check does not
+   apply.
+4. Consumers: only the gated publish flow (and its worker) read
+   KG_CATEGORIES_FILE, at publish execution time. Already-running
+   DNS/proxy bundles keep their generation; nothing live-reads the
+   file, so re-materializing it is never itself publication.
 
 ## Honest limits
 
@@ -50,10 +76,14 @@ category dataset admin.
 
 ## Tests
 
-`control-plane/tests/test_category_sources.py` (13 tests):
+`control-plane/tests/test_category_sources.py` (21 tests):
 create/list, staff gate (non-staff 403), required license +
 attribution, duplicate name, import validation (hash, malformed rows
 rejected), pending rows never effective, activation requires fresh
 MFA and applies rows with source@version provenance, supersede
 replaces active rules, rollback restores the previous rules for real,
-rules-less updates cannot activate, history.
+rules-less updates cannot activate, history, hash-payload binding
+(mismatched/tampered digests rejected), commit-failure leaves the file
+untouched, sync failure keeps last-known-good + audits + resync
+repairs, engine-valid file materialization, publish divergence guard
+(and its operator-provided skip), concurrent activation serialization.
