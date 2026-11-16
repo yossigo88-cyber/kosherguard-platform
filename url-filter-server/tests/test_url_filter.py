@@ -227,3 +227,46 @@ class TestDeviceAuth:
         ds = build_dataset(sample_rules(), version=1)
         c = TestClient(create_app(ds, device_token_key=None))
         assert c.get("/v1/dataset/manifest").status_code == 200
+
+
+class TestDeviceAuthRevocationAndBinding:
+    KEY = b"test-signing-key-32-bytes-padded!!!"
+
+    def test_revoked_jti_rejected(self):
+        from app.device_auth import TokenError, issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset")
+        payload = verify_token(self.KEY, tok, "dataset")
+        with pytest.raises(TokenError):
+            verify_token(self.KEY, tok, "dataset",
+                         revoked_jtis={payload["jti"]})
+
+    def test_unrevoked_still_accepted(self):
+        from app.device_auth import issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset")
+        assert verify_token(self.KEY, tok, "dataset",
+                            revoked_jtis={"other-jti"})
+
+    def test_policy_binding_enforced(self):
+        from app.device_auth import TokenError, issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset",
+                          policy_id="pol-9")
+        assert verify_token(self.KEY, tok, "dataset",
+                            required_policy_id="pol-9")
+        with pytest.raises(TokenError):
+            verify_token(self.KEY, tok, "dataset",
+                         required_policy_id="pol-other")
+
+    def test_unbound_token_fails_policy_requirement(self):
+        from app.device_auth import TokenError, issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset")
+        with pytest.raises(TokenError):
+            verify_token(self.KEY, tok, "dataset",
+                         required_policy_id="pol-9")
+
+    def test_every_token_has_unique_jti(self):
+        from app.device_auth import issue_token, verify_token
+        a = issue_token(self.KEY, "dev-1", "t", "dataset")
+        b = issue_token(self.KEY, "dev-1", "t", "dataset")
+        pa = verify_token(self.KEY, a, "dataset")
+        pb = verify_token(self.KEY, b, "dataset")
+        assert pa["jti"] != pb["jti"]
