@@ -270,6 +270,37 @@ h2 { margin-bottom:.4rem; }
     </div>
     <button id="mfa-start">Set up two-factor authentication</button>
   </section>
+  <section class="panel hidden" id="apps-panel">
+    <h2>Applications</h2>
+    <p class="muted">Per-device app allow/block list and install, remove
+    and inventory actions. Actions queue standard MDM commands; device
+    behavior is validated in the device-testing phase.</p>
+    <label>Device <select id="app-device"></select></label>
+    <div id="app-policy-box">
+      <label>Mode <select id="app-mode">
+        <option value="blocklist">blocklist (block only the listed apps)</option>
+        <option value="allowlist">allowlist (allow only the listed apps)</option>
+      </select></label>
+      <label>Bundle IDs (one per line)
+        <textarea id="app-bundle-ids" rows="4"
+          placeholder="com.example.app"></textarea></label>
+      <button id="app-save">Save policy</button>
+      <button id="app-apply" class="link">Apply to device (queues InstallProfile)</button>
+      <span class="error" id="app-error"></span>
+      <span class="ok" id="app-ok"></span>
+    </div>
+    <h3 style="margin-top:1.2rem">Actions</h3>
+    <label>App Store ID (numeric, for install) <input id="app-store-id"
+      inputmode="numeric" placeholder="284815942"></label>
+    <label>Bundle ID (for remove) <input id="app-remove-id"
+      placeholder="com.example.app"></label>
+    <button id="app-install">Install app</button>
+    <button id="app-remove" class="link">Remove managed app</button>
+    <button id="app-list" class="link">List installed apps</button>
+    <button id="app-managed-list" class="link">List managed apps</button>
+    <div id="app-cmd-result"></div>
+  </section>
+
   <section class="panel hidden" id="audit-logs-panel">
     <h2>System logs</h2>
     <p class="muted">Append-only audit of account and policy actions in this
