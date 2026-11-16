@@ -33,8 +33,7 @@ def make_app(engine, role=Role.owner):
 
 
 def login(client, email="owner@example.com", password=PASSWORD):
-    return client.post("/api/auth/login", json={
-        "email": email, "password": password}, headers=HDR)
+    return mfa_login(client, json={'email': email, 'password': password}, headers=HDR)
 
 
 def invite_and_accept(client, email="second@example.com"):
@@ -258,6 +257,7 @@ class TestCredentialIssuance:
                 "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
                 "KG_DEVICE_TOKEN_KEY": "k"})
             c2 = TestClient(create_app(settings, engine=engine))
+            c2.app.state._fixture_mfa = c.app.state._fixture_mfa
             login(c2)
             assert c2.post(f"/api/devices/{did}/dataset-credential",
                            headers=HDR).status_code == 404
@@ -542,3 +542,5 @@ class TestRevocation:
         # No tokens minted -> empty feed, no error.
         assert c.get("/api/credential-revocations").json()[
             "revoked_jtis"] == []
+
+from mfa_support import mfa_login
