@@ -61,6 +61,19 @@ completed before external approvals, the integration is built at
    PASS 2026-11-16 on node v26.13.1 via
    `deploy/ohttp/interop/run-local-interop.sh`. Requires node >= 24.7
    (upstream engines; node 22 fails ML-KEM-768 native derivation).
+
+   Exactly what this proves, and what it does not:
+   - PROVEN: the pinned gateway builds and runs as wired, serves its
+     key config, and completes a standards-correct round trip with an
+     ohttp-ts client against a STUB target.
+   - NOT proven: the Docker image build (never run); interop with
+     Apple's actual PIR service as the target (never attempted);
+     ciphersuite/protocol compatibility with Apple's OHTTP relay and
+     the on-device NEURLFilter client (Apple's exact requirements are
+     unverified - the gateway's X25519 + ML-KEM-768 key config may or
+     may not match what Apple accepts); any behavior on a real device.
+   These are separate validation steps, not one item collapsible into
+   "waiting on Apple's relay approval."
 4. **Still gated on Apple**: live NEURLFilter traffic requires Apple's
    OHTTP relay approval; the gateway has no production traffic until
    then. `martinthomson/ohttp` remains the conformance reference.
