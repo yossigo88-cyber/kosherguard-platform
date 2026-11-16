@@ -57,7 +57,7 @@ class AssignmentBody(BaseModel):
 
 class EnrollmentBody(BaseModel):
     device_id: int
-    supervised: bool = False
+    supervision_requested: bool = False
 
 
 class MDMCommandBody(BaseModel):
@@ -406,7 +406,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def enrollment_json(row):
         return {"id": row.id, "device_id": row.device_id,
                 "enrollment_id": row.enrollment_id, "state": row.state,
-                "supervised": row.supervised,
+                "supervision_requested": row.supervision_requested,
+                "supervision_verified": row.supervision_verified,
                 "last_seen_at": (row.last_seen_at.isoformat()
                                  if row.last_seen_at else None),
                 "created_at": row.created_at.isoformat()}
@@ -428,7 +429,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return denied
         try:
             row = mdm_ops.create_enrollment(
-                session, user.tenant_id, body.device_id, body.supervised)
+                session, user.tenant_id, body.device_id,
+                body.supervision_requested)
         except mdm_ops.MDMError as exc:
             return error(exc.status, str(exc))
         session.commit()
