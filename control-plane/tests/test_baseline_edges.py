@@ -92,6 +92,8 @@ def test_category_admin_requires_owner_and_platform_flag(client, engine):
     with session_scope(engine) as s:
         s.scalar(select(User).where(
             User.email == 'g@example.com')).is_platform_admin = True
+        s.scalar(select(User).where(
+            User.email == 'g@example.com')).staff_role = 'owner'
     assert client.post('/api/admin/categories', json={
         'domain': 'bad.example', 'category': 'adult', 'verdict': 'block',
         'source': 'review'}, headers=HDR).status_code == 200
