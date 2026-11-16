@@ -143,3 +143,73 @@ def publish_selected(session: Session, tenant_id: int, root: str,
     session.flush()
     return {"revision": revision, "generation": generation,
             "policy": policy.name, "policy_version": version.version}
+
+
+def publish_revocation_cleanup(session: Session, tenant_id: int, root: str,
+                               actor_email: str,
+                               publication_job_id: int | None = None) -> dict:
+    """Republish the LAST PUBLISHED snapshot minus revoked exceptions.
+
+    Narrow system cleanup for exception revocation: it never exports the
+    tenant's current saved state, so pending policy, assignment or
+    exception changes stay pending. The only mutation is removing
+    exception entries whose revocation is recorded in the database.
+    """
+    from .models import PolicyException
+    state = session.scalar(select(PublicationState).where(
+        PublicationState.tenant_id == tenant_id).with_for_update())
+    if state is None:
+        raise PolicyError("publication state missing", 500)
+    revoked = {row.id for row in session.scalars(
+        select(PolicyException).where(
+            PolicyException.tenant_id == tenant_id,
+            PolicyException.revoked_at.isnot(None)))}
+    publisher = Publisher(tenant_root(root, tenant_id))
+    with publisher.locked():
+        manifest = publisher.current()
+        if manifest is None:
+            # Never published: a revoked exception never shipped.
+            return {"revision": state.revision or 0,
+                    "cleanup": "nothing-published"}
+        generation_dir = os.path.join(tenant_root(root, tenant_id),
+                                      "generations", manifest["generation"])
+        with open(os.path.join(generation_dir, "policy.json"),
+                  "rb") as fh:
+            policy_json = fh.read()
+        with open(os.path.join(generation_dir, "categories.json"),
+                  "rb") as fh:
+            categories_json = fh.read()
+        extras = {}
+        old_overlay = {}
+        for name in manifest.get("files", []):
+            if name in ("policy.json", "categories.json", "manifest.json"):
+                continue
+            with open(os.path.join(generation_dir, name), "rb") as fh:
+                data = fh.read()
+            if name == "exceptions.json":
+                old_overlay = json.loads(data.decode("utf-8"))
+            else:
+                extras[name] = data
+        new_overlay = {}
+        removed = 0
+        for device_id, entries in old_overlay.items():
+            kept = [e for e in entries
+                    if e.get("exception_id") not in revoked]
+            removed += len(entries) - len(kept)
+            if kept:
+                new_overlay[device_id] = kept
+        if new_overlay == old_overlay:
+            return {"revision": manifest["revision"], "cleanup": "no-op"}
+        if new_overlay:
+            extras["exceptions.json"] = canonical_json(new_overlay)
+        state.revision = (state.revision or 0) + 1
+        generation = publisher.publish(
+            state.revision, policy_json, categories_json,
+            {"tenant_id": tenant_id,
+             "published_by": actor_email,
+             "publication_job_id": publication_job_id,
+             "cleanup": f"removed {removed} revoked exception entrant(s)"},
+            extra_documents=extras)
+        session.flush()
+        return {"revision": state.revision, "generation": generation,
+                "cleanup": f"removed {removed} revoked exception entrant(s)"}
