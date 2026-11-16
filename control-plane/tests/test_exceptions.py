@@ -265,3 +265,56 @@ def test_api_enqueued_job_has_no_system_marker(client, engine):
     with session_scope(engine) as s:
         job = s.get(PublicationJob, jid)
         assert job.system_action is None
+
+
+def test_cleanup_does_not_ship_pending_changes(client, engine, pub_root):
+    """Revocation cleanup is removal-only: it must republish the last
+    published snapshot minus the revoked exception, never the tenant's
+    current saved state. A saved-but-unpublished delegated weakening
+    (still above baseline) and a newly saved owner disable_policy
+    exception both stay pending."""
+    did = setup(client)
+    pid, gid = block_policy(client, did)  # school policy: +games.example
+    # Strengthen the assigned policy with a second block, then publish
+    # with an exception on the first.
+    r = client.put(f'/api/policies/{pid}', json=dict(
+        BASE, name='school',
+        blocklist=['bad.example', 'games.example', 'chat.example']),
+        headers=HDR)
+    assert r.status_code == 200, r.text
+    r = client.post('/api/exceptions', json={
+        'kind': 'allow_domains', 'scope_type': 'device', 'device_id': did,
+        'domains': ['games.example'], 'reason': 'tournament',
+        'expires_at': future(2)}, headers=HDR)
+    assert r.status_code == 200, r.text
+    ex_id = r.json()['id']
+    assert client.post('/api/publications', headers=HDR).status_code == 200
+    with session_scope(engine) as s:
+        tid = s.scalar(select(User).where(User.email == 'g@example.com')).tenant_id
+    root = tenant_root(pub_root, tid)
+    now = datetime.now(timezone.utc)
+    eng1 = load_bundle(root, now=lambda: now).for_device(did)
+    assert eng1.decide('games.example').action == 'allow'      # exception
+    assert eng1.decide('chat.example').action == 'block'       # published
+    # Pending change 1: delegated weakening above baseline (drop chat).
+    r = client.put(f'/api/policies/{pid}', json=dict(
+        BASE, name='school', blocklist=['bad.example', 'games.example']),
+        headers=HDR)
+    assert r.status_code == 200, r.text
+    # Pending change 2: a brand-new owner disable_policy exception.
+    r = client.post('/api/exceptions', json={
+        'kind': 'disable_policy', 'scope_type': 'device', 'device_id': did,
+        'reason': 'repair window', 'expires_at': future(2)}, headers=HDR)
+    assert r.status_code == 200, r.text
+    # Revoke the original exception; the cleanup runs.
+    assert client.delete(f"/api/exceptions/{ex_id}",
+                         headers=HDR).status_code == 200
+    from app.worker import run_once
+    from test_baseline_edges import settings
+    assert run_once(engine, settings(pub_root))
+    eng2 = load_bundle(root, now=lambda: now).for_device(did)
+    # Revoked exception removed...
+    assert eng2.decide('games.example').action == 'block'
+    # ...but neither pending change shipped.
+    assert eng2.decide('chat.example').action == 'block'  # weakening pending
+    assert eng2.decide('bad.example').action == 'block'   # no disable_policy
