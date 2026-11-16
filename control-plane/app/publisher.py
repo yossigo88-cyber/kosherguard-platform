@@ -148,7 +148,7 @@ class Publisher:
         extra_documents = dict(extra_documents or {})
         for name, value in extra_documents.items():
             import re
-            if not re.fullmatch(r"(?:device-map|assigned-policy-[1-9][0-9]*)\.json", name):
+            if not re.fullmatch(r"(?:device-map|exceptions|assigned-policy-[1-9][0-9]*)\.json", name):
                 raise PublicationError("invalid supplemental document name")
             json.loads(value)
 
@@ -160,6 +160,8 @@ class Publisher:
             if not isinstance(mapping["devices"], dict):
                 raise PublicationError("invalid authenticated device map entries")
             referenced = {"device-map.json"}
+            if "exceptions.json" in extra_documents:
+                referenced.add("exceptions.json")
             for device_id, entry in mapping["devices"].items():
                 if not device_id.isdigit() or int(device_id) < 1 or str(int(device_id)) != device_id:
                     raise PublicationError("invalid device identity")
@@ -268,7 +270,7 @@ class Publisher:
                     f"{generation_dir}/{name}: mode {oct(mode)} != 0o600")
         for name, digest in manifest.get("extra_sha256", {}).items():
             import re
-            if not re.fullmatch(r"(?:device-map|assigned-policy-[1-9][0-9]*)\.json", name):
+            if not re.fullmatch(r"(?:device-map|exceptions|assigned-policy-[1-9][0-9]*)\.json", name):
                 raise PublicationError("invalid supplemental document name")
             if hashlib.sha256((generation_dir / name).read_bytes()).hexdigest() != digest:
                 raise PublicationError("supplemental document hash mismatch")
