@@ -34,6 +34,7 @@ TMP="$BACKUP_DIR/.kosherguard-$STAMP.dump.tmp.$$"
 trap 'rm -f "$TMP"' EXIT
 
 pg_dump --format=custom --no-owner --no-privileges \
+        --exclude-table-data=public.filter_decisions \
         --file="$TMP" "$URL"
 
 # Verify the archive is a readable pg_dump archive before it counts.
