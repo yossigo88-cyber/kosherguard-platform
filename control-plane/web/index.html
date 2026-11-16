@@ -94,8 +94,30 @@ h2 { margin-bottom:.4rem; }
     <table id="commands"><thead><tr><th>#</th><th>Command</th><th>Status</th><th>Applied</th><th>Detail</th></tr></thead><tbody></tbody></table>
   </section>
 
+  <section class="panel hidden" id="categories-panel">
+    <h2>Filter categories (platform admin)</h2>
+    <p>Seed dataset assignments with provenance. Changes here are the
+       human-reviewed fallback for the commercial category feed.</p>
+    <form id="category-form">
+      <label>Domain <input id="cat-domain" placeholder="example.com" required></label>
+      <label>Category <input id="cat-category" placeholder="gambling" required></label>
+      <label>Verdict <select id="cat-verdict">
+        <option value="block">block</option>
+        <option value="allow">allow</option>
+      </select></label>
+      <label>Source (provenance) <input id="cat-source" placeholder="manual-review-YYYY-MM" value="manual-review"></label>
+      <button type="submit">Add rule</button>
+      <div class="error" id="cat-error"></div>
+      <div class="ok" id="cat-ok"></div>
+    </form>
+    <table id="cat-table">
+      <thead><tr><th>Domain</th><th>Category</th><th>Verdict</th><th>Source</th><th>Active</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <section class="panel hidden" id="signout-panel"><button id="signout">Sign out</button></section>
 </main>
 <script src="/web/app.js"></script>
 </body>
-  </html>
+</html>
