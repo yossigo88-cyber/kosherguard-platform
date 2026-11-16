@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KosherGuard Family Portal</title>
+<style>
+:root { --ink:#16202b; --accent:#1f6f5f; --paper:#f7f5f0; }
+* { box-sizing: border-box; margin: 0; }
+body { font-family: Georgia, serif; color: var(--ink); background: var(--paper); line-height: 1.55; }
+header { padding: 1rem 6vw; border-bottom: 1px solid #ddd5c5; display:flex; justify-content:space-between; }
+.logo { font-weight: bold; color: var(--accent); font-size: 1.25rem; }
+main { max-width: 46rem; margin: 2.5rem auto; padding: 0 1rem; }
+.panel { background:#fff; border:1px solid #e2dccb; border-radius:10px; padding:1.6rem; margin-bottom:1.4rem; }
+label { display:block; margin:.7rem 0 .2rem; font-size:.95rem; }
+input { width:100%; padding:.5rem; border:1px solid #c9c2b0; border-radius:6px; font-size:1rem; }
+button { background:var(--accent); color:#fff; border:0; padding:.55rem 1.2rem; border-radius:6px; font-size:1rem; margin-top:.9rem; cursor:pointer; }
+table { width:100%; border-collapse:collapse; margin-top:.8rem; }
+th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3; font-size:.95rem; }
+.error { color:#a33; margin-top:.6rem; }
+.hidden { display:none; }
+</style>
+</head>
+<body>
+<header><div class="logo">KosherGuard Family Portal</div><div id="who"></div></header>
+<main>
+  <section class="panel" id="login-panel">
+    <h2>Sign in</h2>
+    <form id="login-form">
+      <label>Email <input id="email" type="email" required autocomplete="username"></label>
+      <label>Password <input id="password" type="password" required autocomplete="current-password"></label>
+      <label>Authenticator code (if enabled) <input id="totp" inputmode="numeric" autocomplete="one-time-code"></label>
+      <button type="submit">Sign in</button>
+      <div class="error" id="login-error"></div>
+    </form>
+  </section>
+  <section class="panel hidden" id="devices-panel">
+    <h2>Your devices</h2>
+    <table id="devices"><thead><tr><th>Name</th><th>State</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="panel hidden" id="policies-panel">
+    <h2>Family policies</h2>
+    <table id="policies"><thead><tr><th>Name</th><th>Default action</th><th>Enabled</th></tr></thead><tbody></tbody></table>
+    <button id="signout">Sign out</button>
+  </section>
+</main>
+<script src="/portal/app.js"></script>
+</body>
+      </html>
