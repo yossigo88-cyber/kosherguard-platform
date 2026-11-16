@@ -106,26 +106,52 @@ def application_access_profile(mode: str, bundle_ids,
 
 
 def install_application_command(*, itunes_store_id: int | None = None,
-                                bundle_id: str | None = None) -> dict:
+                                bundle_id: str | None = None,
+                                configuration: dict | None = None) -> dict:
     """InstallApplication command payload.
 
     An App Store app is installed by its numeric iTunes Store ID. A
     bundle ID alone cannot install anything (the store lookup needs the
     ID), so one of the two forms is required and the store form wins
     when both are given. Not-yet-validated on device (BUILT-UNVERIFIED).
+
+    configuration, when given, is emitted as the command's
+    "Configuration" dictionary: the app's initial managed
+    configuration. Verified contract: apple/device-management release
+    branch @ 9e7fdbe23990b2551c4b29b39bc8b0de956805eb,
+    mdm/commands/application.install.yaml - "Configuration", optional
+    dictionary, "the initial configuration of the app", arbitrary
+    keys, iOS 7.0+/macOS 11.0+. A managed app's configuration is how
+    the KosherGuard iOS app receives its server settings: the Swift
+    reader (ios/Sources/URLFilter/AppConfiguration.swift) reads
+    controlPlaneBaseURL and deviceID from the standard managed-app
+    configuration suite (com.apple.configuration.managed).
     """
+    payload: dict = {}
     if itunes_store_id is not None:
         if not isinstance(itunes_store_id, int) or itunes_store_id <= 0:
             raise AppManagementError("itunes_store_id must be a positive int")
-        return {"ITunesStoreID": itunes_store_id,
-                "Options": {"NotManaged": False}}
-    if bundle_id is not None:
+        payload = {"ITunesStoreID": itunes_store_id,
+                   "Options": {"NotManaged": False}}
+    elif bundle_id is not None:
         validate_bundle_id(bundle_id)
         raise AppManagementError(
             "installation requires the numeric iTunes Store ID; a bundle "
             "ID alone cannot locate the App Store product")
-    raise AppManagementError(
-        "install requires itunes_store_id (numeric App Store ID)")
+    else:
+        raise AppManagementError(
+            "install requires itunes_store_id (numeric App Store ID)")
+    if configuration is not None:
+        if not isinstance(configuration, dict):
+            raise AppManagementError("configuration must be a dictionary")
+        import json as _json
+        try:
+            _json.dumps(configuration)
+        except (TypeError, ValueError) as exc:
+            raise AppManagementError(
+                f"configuration must be JSON-serializable: {exc}") from exc
+        payload["Configuration"] = configuration
+    return payload
 
 
 def remove_application_command(bundle_id: str) -> dict:
