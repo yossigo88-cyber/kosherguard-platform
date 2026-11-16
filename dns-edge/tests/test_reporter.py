@@ -42,17 +42,18 @@ def test_batches_and_stamps_dns_source():
         f"http://127.0.0.1:{srv.server_address[1]}", "tok-1",
         batch_size=2)
     r.log_decision({"domain": "a.example", "outcome": "answered_blocked",
-                    "rule": "adult", "reason": "category"})
-    assert _Sink.posts == []  # buffered below batch size
+                    "rule": "blocked", "reason": "policy blocked domain"})
+    assert len(_Sink.posts) == 1  # immediate blocked-only, no history buffer
     r.log_decision({"domain": "b.example", "outcome": "forwarded"})
     assert len(_Sink.posts) == 1
     auth, body = _Sink.posts[0]
     assert auth == "Bearer tok-1"
     assert body["decisions"][0] == {
         "domain": "a.example", "action": "block", "source": "dns",
-        "rule": "adult", "reason": "category"}
-    assert body["decisions"][1]["action"] == "allow"
-    assert r.sent == 2
+        "rule": "blocked", "reason": "policy blocked domain"}
+    assert len(body["decisions"]) == 1
+    assert r.sent == 1
+    assert r._pending == []
     srv.shutdown()
     srv.server_close()
 
@@ -62,7 +63,7 @@ def test_flush_and_best_effort_drop():
     r = reporter.DNSDecisionReporter(
         f"http://127.0.0.1:{srv.server_address[1]}", "tok-1",
         batch_size=100)
-    r.log_decision({"domain": "a.example", "outcome": "forwarded"})
+    r.log_decision({"domain": "a.example", "outcome": "answered_blocked"})
     r.flush()
     assert r.sent == 1
     srv.shutdown()
@@ -70,7 +71,7 @@ def test_flush_and_best_effort_drop():
     # Unreachable control plane: dropped, counted, never raised.
     r2 = reporter.DNSDecisionReporter("http://127.0.0.1:1", "tok-1",
                                       batch_size=1, timeout=0.2)
-    r2.log_decision({"domain": "x.example", "outcome": "forwarded"})
+    r2.log_decision({"domain": "x.example", "outcome": "answered_blocked"})
     assert r2.dropped == 1
 
 
