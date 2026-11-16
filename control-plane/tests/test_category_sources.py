@@ -56,12 +56,15 @@ def mk_source(client, name="ut1"):
     return r.json()
 
 
-def mk_import(client, source_id, version="2024-01", sha=HASH1):
+def mk_import(client, source_id, version="2024-01", sha=HASH1,
+              rules=None):
+    if rules is None:
+        rules = [{"domain": "bet365.com", "category": "gambling",
+                  "verdict": "block"}]
     r = client.post(f"/api/admin/category-sources/{source_id}/imports",
                     json={"version": version, "sha256": sha,
                           "category_mapping": {"gambling": "gambling"},
-                          "validation_results": {"rows": 100,
-                                                 "rejected": 2}},
+                          "rules": rules},
                     headers=HDR)
     assert r.status_code == 200, r.json()
     return r.json()
@@ -114,6 +117,10 @@ class TestImportsAndReview:
         update = mk_import(c, source["id"])
         assert update["status"] == "pending_review"
         assert update["sha256"] == HASH1
+        assert update["rules_count"] == 1
+        # Pending data is never effective before review.
+        rules = c.get("/api/admin/categories").json()["rules"]
+        assert rules == []
 
     def test_import_validates_sha256(self, engine):
         c = make_client(engine)
@@ -121,6 +128,65 @@ class TestImportsAndReview:
         r = c.post(f"/api/admin/category-sources/{source['id']}/imports",
                    json={"version": "1", "sha256": "not-a-hash"},
                    headers=HDR)
+        assert r.status_code == 400
+
+    def test_import_rejects_malformed_rules(self, engine):
+        c = make_client(engine)
+        source = mk_source(c)
+        r = c.post(f"/api/admin/category-sources/{source['id']}/imports",
+                   json={"version": "1", "sha256": HASH1,
+                         "rules": [{"domain": "not a domain!!",
+                                    "category": "gambling"}]},
+                   headers=HDR)
+        assert r.status_code == 400
+        r = c.post(f"/api/admin/category-sources/{source['id']}/imports",
+                   json={"version": "1", "sha256": HASH1,
+                         "rules": [{"domain": "x.com"}]},
+                   headers=HDR)
+        assert r.status_code == 400
+
+    def test_activation_applies_rules_with_provenance(self, engine):
+        c = make_client(engine)
+        source = mk_source(c)
+        update = mk_import(c, source["id"])
+        assert activate(c, source["id"], update["id"]).status_code == 200
+        rules = c.get("/api/admin/categories").json()["rules"]
+        assert len(rules) == 1
+        assert rules[0]["domain"] == "bet365.com"
+        assert rules[0]["category"] == "gambling"
+        assert rules[0]["source"] == "ut1@2024-01"
+        assert rules[0]["active"] is True
+
+    def test_activation_replaces_and_rollback_restores(self, engine):
+        c = make_client(engine)
+        source = mk_source(c)
+        u1 = mk_import(c, source["id"], version="2024-01", sha=HASH1,
+                       rules=[{"domain": "old.com", "category": "ads"}])
+        u2 = mk_import(c, source["id"], version="2024-02", sha=HASH2,
+                       rules=[{"domain": "new.com", "category": "ads"}])
+        assert activate(c, source["id"], u1["id"]).status_code == 200
+        assert activate(c, source["id"], u2["id"]).status_code == 200
+        rules = {r["domain"]: r for r in
+                 c.get("/api/admin/categories").json()["rules"]}
+        assert rules["old.com"]["active"] is False
+        assert rules["new.com"]["active"] is True
+        # Rollback: real data rollback, not just status.
+        r = c.post(f"/api/admin/category-sources/{source['id']}/rollback",
+                   json={"update_id": u1["id"],
+                         "totp_code": fresh_code(c),
+                         "confirm": "rollback-category-update"},
+                   headers=HDR)
+        assert r.status_code == 200
+        rules = {r["domain"]: r for r in
+                 c.get("/api/admin/categories").json()["rules"]}
+        assert rules["old.com"]["active"] is True
+        assert rules["new.com"]["active"] is False
+
+    def test_rules_less_update_cannot_activate(self, engine):
+        c = make_client(engine)
+        source = mk_source(c)
+        update = mk_import(c, source["id"], rules=[])
+        r = activate(c, source["id"], update["id"])
         assert r.status_code == 400
 
     def test_activate_requires_fresh_mfa(self, engine):
