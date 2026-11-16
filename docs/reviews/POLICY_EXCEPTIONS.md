@@ -96,7 +96,11 @@ protection removal and high-impact bypasses are owner-only.
   publish, and failed publication with 500 when an exception existed
   without any assigned policy. All three were corrected in the follow-up
   commit that added the baseline floor, revocation auto-republication
-  and the empty-device-map fix, with the tests above. Reviewers should
+  and the empty-device-map fix, with the tests above. A first version
+  of the auto-republication enqueued the job as the tenant owner; that
+  was replaced with the server-set system-cleanup marker so no owner
+  approval is fabricated and the real revoker stays the job actor.
+  Reviewers should
   treat any checkout at or before 9e72bac as carrying the flaw.
 
 ## Not yet implemented (known gaps)
