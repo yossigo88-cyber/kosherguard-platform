@@ -319,3 +319,103 @@ class TestOverviewAndTenants:
         by_name = {t["name"]: t for t in body}
         assert by_name["fam-b"]["devices"] == 1
         assert by_name["fam-a"]["guardians"] == 1
+
+
+class TestProxyScopeMinting:
+    """8B issuance: proxy-scoped tokens are bound to the device's
+    effective policy (active assignment, else tenant default)."""
+
+    def _app_with_device(self, engine, with_policy=False, assigned=False):
+        with session_scope(engine) as s:
+            tenant = Tenant(name="family-proxy")
+            s.add(tenant)
+            s.flush()
+            s.add(User(tenant_id=tenant.id, email="p@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+            from app.models import Device, Policy, DeviceAssignment, PublicationState
+            dev = Device(tenant_id=tenant.id, name="kid-phone")
+            s.add(dev)
+            s.flush()
+            pid = None
+            if with_policy:
+                import json as _json
+                pol = Policy(tenant_id=tenant.id, name="base",
+                             engine_doc=_json.dumps({
+                                 "default_policy": "allow",
+                                 "blocklist": ["bad.example"],
+                                 "allowlist": [], "category_allow": [],
+                                 "category_block": []}))
+                s.add(pol)
+                s.flush()
+                pid = pol.id
+                if assigned:
+                    s.add(DeviceAssignment(tenant_id=tenant.id,
+                                           device_id=dev.id,
+                                           policy_id=pid, active=True))
+                else:
+                    s.add(PublicationState(tenant_id=tenant.id,
+                                           selected_policy_id=pid))
+            s.flush()
+            did = dev.id
+        settings = Settings({
+            "KG_DATABASE_URL": "postgresql://placeholder",
+            "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
+            "KG_DEVICE_TOKEN_KEY": "proxy-mint-key"})
+        c = TestClient(create_app(settings, engine=engine))
+        login(c, "p@example.com")
+        return c, did, pid
+
+    def _verify(self, token, scope, policy_id=None):
+        import importlib.util as ilu
+        spec = ilu.spec_from_file_location(
+            "kg_device_auth_test2",
+            os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "..",
+                "url-filter-server", "app", "device_auth.py")))
+        da = ilu.module_from_spec(spec)
+        spec.loader.exec_module(da)
+        return da.verify_token(b"proxy-mint-key", token, scope,
+                               required_policy_id=policy_id)
+
+    def test_proxy_scope_binds_assigned_policy(self, engine):
+        c, did, pid = self._app_with_device(
+            engine, with_policy=True, assigned=True)
+        r = c.post(f"/api/devices/{did}/dataset-credential",
+                   json={"scope": "proxy"}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        assert r.json()["scope"] == "proxy"
+        assert r.json()["policy_id"] == pid
+        payload = self._verify(r.json()["credential"], "proxy", pid)
+        assert payload["policy_id"] == pid
+
+    def test_proxy_scope_binds_tenant_default(self, engine):
+        c, did, pid = self._app_with_device(
+            engine, with_policy=True, assigned=False)
+        r = c.post(f"/api/devices/{did}/dataset-credential",
+                   json={"scope": "proxy"}, headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["policy_id"] == pid
+        self._verify(r.json()["credential"], "proxy", pid)
+
+    def test_proxy_scope_without_policy_409(self, engine):
+        c, did, _ = self._app_with_device(engine, with_policy=False)
+        r = c.post(f"/api/devices/{did}/dataset-credential",
+                   json={"scope": "proxy"}, headers=HDR)
+        assert r.status_code == 409
+
+    def test_dataset_scope_unchanged_default(self, engine):
+        c, did, _ = self._app_with_device(engine, with_policy=True,
+                                          assigned=True)
+        r = c.post(f"/api/devices/{did}/dataset-credential", headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["scope"] == "dataset"
+        assert r.json()["policy_id"] is None
+        payload = self._verify(r.json()["credential"], "dataset")
+        assert "policy_id" not in payload
+
+    def test_bad_scope_400(self, engine):
+        c, did, _ = self._app_with_device(engine)
+        r = c.post(f"/api/devices/{did}/dataset-credential",
+                   json={"scope": "admin"}, headers=HDR)
+        assert r.status_code == 400
