@@ -8,6 +8,8 @@ from test_protected_baseline import guardian_client, grant
 from app.models import AuditEvent, User
 from app.db import session_scope
 from app.publication_ops import tenant_root
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../dns-edge')))
+from policy_bundle import load_bundle
 
 
 def future(hours):
@@ -61,8 +63,6 @@ def test_guardian_limited_exception_publishes_and_expires(client, engine,
     assert r.status_code == 200, r.text
     # Publication carries the active window; the edge honors it.
     assert client.post('/api/publications', headers=HDR).status_code == 200
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../dns-edge')))
-    from policy_bundle import load_bundle
     with session_scope(engine) as s:
         tid = s.scalar(select(User).where(User.email == 'g@example.com')).tenant_id
     root = tenant_root(pub_root, tid)
@@ -101,8 +101,6 @@ def test_owner_high_impact_scope_and_validation(client, engine, pub_root):
         'reason': 'repair window', 'expires_at': future(72)}, headers=HDR)
     assert r.status_code == 200, r.text
     assert client.post('/api/publications', headers=HDR).status_code == 200
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../dns-edge')))
-    from policy_bundle import load_bundle
     with session_scope(engine) as s:
         tid = s.scalar(select(User).where(User.email == 'g@example.com')).tenant_id
     now = datetime.now(timezone.utc)
@@ -116,3 +114,95 @@ def test_owner_high_impact_scope_and_validation(client, engine, pub_root):
         'expires_at': future(1)}, headers=HDR).status_code == 403
     assert client.delete(f"/api/exceptions/{r.json()['id']}",
                          headers=HDR).status_code == 403
+
+
+def test_guardian_exception_cannot_weaken_protected_baseline(client, engine,
+                                                             pub_root):
+    """13:32 rule: delegated exceptions relax guardian-added restrictions
+    but never the owner-controlled protected baseline (domain, default
+    or schedule blocks), at the edge both consumers load."""
+    did = setup(client)
+    pid, gid = block_policy(client, did)
+    g, uid = guardian_client(client, engine)
+    grant(client, uid, ['exceptions'])
+    r = g.post('/api/exceptions', json={
+        'kind': 'allow_domains', 'scope_type': 'group', 'group_id': gid,
+        'domains': ['bad.example', 'games.example'], 'reason': 'test',
+        'expires_at': future(2)}, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert client.post('/api/publications', headers=HDR).status_code == 200
+    with session_scope(engine) as s:
+        tid = s.scalar(select(User).where(User.email == 'g@example.com')).tenant_id
+    root = tenant_root(pub_root, tid)
+    now = datetime.now(timezone.utc)
+    device_engine = load_bundle(root, now=lambda: now).for_device(did)
+    # bad.example is blocked by the protected baseline (default policy):
+    # the exception cannot open it.
+    decision = device_engine.decide('bad.example')
+    assert decision.action == 'block'
+    assert 'protected baseline' in decision.reason
+    # games.example is blocked only by the guardian-added group policy:
+    # a legitimate exception relaxes it.
+    assert device_engine.decide('games.example').action == 'allow'
+
+
+def test_revoke_enqueues_republication(client, engine, pub_root):
+    """Revocation is eventual: it enqueues a republication that must
+    execute even though the revoking guardian lacks publish delegation,
+    and the resulting edge generation must no longer carry the bypass."""
+    did = setup(client)
+    g, uid = guardian_client(client, engine)
+    grant(client, uid, ['exceptions'])  # no 'publish' delegation
+    r = g.post('/api/exceptions', json={
+        'kind': 'allow_domains', 'scope_type': 'device', 'device_id': did,
+        'domains': ['games.example'], 'reason': 'x',
+        'expires_at': future(2)}, headers=HDR)
+    assert r.status_code == 200, r.text
+    ex_id = r.json()['id']
+    assert client.post('/api/publications', headers=HDR).status_code == 200
+    with session_scope(engine) as s:
+        tid = s.scalar(select(User).where(User.email == 'g@example.com')).tenant_id
+    root = tenant_root(pub_root, tid)
+    now = datetime.now(timezone.utc)
+    assert load_bundle(root, now=lambda: now).for_device(did).decide(
+        'games.example').rule == 'exception_allow_domains'
+    assert g.delete(f"/api/exceptions/{ex_id}", headers=HDR).status_code == 200
+    from app.models import PublicationJob
+    from app.worker import run_once
+    from test_baseline_edges import settings
+    with session_scope(engine) as s:
+        job = s.scalar(select(PublicationJob).where(
+            PublicationJob.request_key.like(f'exception-revoke-{ex_id}-%')))
+    assert job is not None and job.status == 'queued'
+    # The guardian revoker has no publish delegation; the job still runs
+    # because revocation republication executes as the tenant owner.
+    assert run_once(engine, settings(pub_root))
+    with session_scope(engine) as s:
+        job = s.get(PublicationJob, job.id)
+        assert job.status == 'completed', job.last_error
+    # The resulting generation no longer carries the exception.
+    decision = load_bundle(root, now=lambda: now).for_device(did).decide(
+        'games.example')
+    assert decision.rule != 'exception_allow_domains'
+    assert 'exception' not in decision.reason
+
+
+def test_cross_tenant_exception_targeting_refused(client, engine):
+    did = setup(client)
+    g, uid = guardian_client(client, engine)
+    grant(client, uid, ['exceptions'])
+    # A device id outside the guardian's tenant must not be targetable.
+    with session_scope(engine) as s:
+        from app.models import Device, Tenant
+        other = Tenant(name='foreign-tenant')
+        s.add(other)
+        s.flush()
+        s.add(Device(tenant_id=other.id, name='foreign'))
+        s.flush()
+        foreign_id = s.scalar(select(Device).where(
+            Device.tenant_id == other.id)).id
+    r = g.post('/api/exceptions', json={
+        'kind': 'allow_domains', 'scope_type': 'device',
+        'device_id': foreign_id, 'domains': ['x.example'], 'reason': 'x',
+        'expires_at': future(1)}, headers=HDR)
+    assert r.status_code in (400, 404)
