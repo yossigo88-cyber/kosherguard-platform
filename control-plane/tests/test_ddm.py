@@ -221,14 +221,17 @@ class TestEnrollmentAuthorization:
 
     def test_checkin_activates_pending_enrollment(self, engine):
         c = self._pending_client(engine)
-        body = json.dumps({"enrollment_id": "ENR-PENDING",
-                           "supervised": True}).encode()
+        body = json.dumps({"enrollment_id": "ENR-PENDING"}).encode()
         r = c.post("/api/mdm/enrollment-checkin", content=body,
                    headers={"X-Hmac-Signature": sig(body)})
         assert r.status_code == 200, r.json()
         assert r.json() == {"enrollment_id": "ENR-PENDING",
-                            "state": "enrolled",
-                            "supervision_verified": True}
+                            "state": "enrolled"}
+        # A caller-claimed supervision flag is never accepted.
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            assert row.supervision_verified is False
         # Once confirmed, the enrollment may sync declarations.
         r = c.get("/api/ddm/tokens",
                   headers=ddm_headers(enrollment="ENR-PENDING"))
@@ -236,8 +239,7 @@ class TestEnrollmentAuthorization:
 
     def test_checkin_requires_valid_hmac(self, engine):
         c = self._pending_client(engine)
-        body = json.dumps({"enrollment_id": "ENR-PENDING",
-                           "supervised": True}).encode()
+        body = json.dumps({"enrollment_id": "ENR-PENDING"}).encode()
         r = c.post("/api/mdm/enrollment-checkin", content=body,
                    headers={"X-Hmac-Signature": "bogus"})
         assert r.status_code == 401
@@ -248,17 +250,15 @@ class TestEnrollmentAuthorization:
 
     def test_checkin_unknown_enrollment_404(self, engine):
         c = make_client(engine, {"KG_DDM_HMAC_KEY": HMAC_KEY})
-        body = json.dumps({"enrollment_id": "NOPE",
-                           "supervised": False}).encode()
+        body = json.dumps({"enrollment_id": "NOPE"}).encode()
         r = c.post("/api/mdm/enrollment-checkin", content=body,
                    headers={"X-Hmac-Signature": sig(body)})
         assert r.status_code == 404
 
-    def test_checkin_idempotent_update(self, engine):
+    def test_checkin_idempotent(self, engine):
         c = self._pending_client(engine)
-        for supervised in (True, False):
-            body = json.dumps({"enrollment_id": "ENR-PENDING",
-                               "supervised": supervised}).encode()
+        for _ in range(2):
+            body = json.dumps({"enrollment_id": "ENR-PENDING"}).encode()
             r = c.post("/api/mdm/enrollment-checkin", content=body,
                        headers={"X-Hmac-Signature": sig(body)})
             assert r.status_code == 200
@@ -266,4 +266,18 @@ class TestEnrollmentAuthorization:
             row = s.query(MDMEnrollment).filter_by(
                 enrollment_id="ENR-PENDING").one()
             assert row.state == "enrolled"
-            assert row.supervision_verified is False  # latest wins
+            assert row.supervision_verified is False
+
+    def test_checkin_never_sets_supervision(self, engine):
+        """Supervision claims on the sync route are ignored: only
+        device-reported check-in data may set supervision_verified."""
+        c = self._pending_client(engine)
+        body = json.dumps({"enrollment_id": "ENR-PENDING",
+                           "supervised": True}).encode()
+        r = c.post("/api/mdm/enrollment-checkin", content=body,
+                   headers={"X-Hmac-Signature": sig(body)})
+        assert r.status_code == 200
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            assert row.supervision_verified is False
