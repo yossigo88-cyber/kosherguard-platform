@@ -153,7 +153,9 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 
 - control-plane/web: policies, devices, MDM (enrollments, commands,
   supervision split), categories, overview, customers, schedules,
-  credentials, guardians, account panels. Rendered evidence exists for
+  credentials, guardians, account panels. The command select now
+  offers exactly the adapter's SUPPORTED_COMMANDS (added
+  ManagedApplicationList and DeclarativeManagement, this head). Rendered evidence exists for
   MDM, categories, credentials (3 shots), schedules (4), overview/
   customers, and the guardian + account self-service flow (9 shots:
   guardians list, one-time invite link, SIGNED-OUT invite acceptance
@@ -364,14 +366,19 @@ No credentials invented or hardcoded.
    is labeled UNKNOWN, device behavior BUILT-UNVERIFIED.
 12 Customer management: DONE as code (guardian lifecycle M6).
 13 Customer-facing website: DONE as code (not live).
-14 Database and migrations: DONE. Full alembic coverage (0001-0008):
+14 Database and migrations: DONE. Full alembic coverage (0001-0009):
    0008 adds the tables previously created only by
    metadata.create_all (device_app_policies, ddm_status_reports,
    filter_decisions, category_rules, invite_tokens,
    credential_artifacts, issued_credentials), and 0007 adds
    mdm_enrollments.device_udid. Tested: clean alembic-only install
    (all 20 model tables present, ORM writes work, no create_all) and
-   upgrade from the preserved prior schema with rows preserved.
+   upgrade from the preserved prior schema with rows preserved;
+   0009 fixes the parity gaps the schema/constraint/index comparison
+   (alembic-built vs create_all-built, SQLite; PostgreSQL deployment
+   uses the same migration chain via psycopg) caught:
+   users.is_platform_admin and the unique
+   ix_auth_sessions_token_hash index.
 15 Hosting/deployment configuration: DONE as code + executable backup
    evidence (see Part 15); live hosting not purchased/authorized.
 16 Security implementation: DONE incl. the three user-approved
