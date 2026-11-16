@@ -111,6 +111,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -128,11 +129,38 @@ from generation_io import (
     _sha256,
     _validate_generation_manifest,
     load_json_strict,
+    open_generation_dir_nofollow,
+    open_optional_manifest_under,
+    open_parent_dir_nofollow,
     read_fd_bytes,
+    read_file_under,
+    read_under,
     safe_open_generation_file,
+    stat_entry_under,
     validate_multidoc_manifest,
 )
 from policy_engine import PolicyConfigError, PolicyEngine
+
+
+def safe_open_under_policies_dir(dir_fd, real_dir):
+    """Open the generation's policies/ subdirectory as a no-follow
+    directory under the pinned generation descriptor; an entry that is
+    not a real directory (for example a planted symlink) fails closed.
+    Returns the pinned subdirectory descriptor."""
+    try:
+        fd = os.open("policies", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                     | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                     dir_fd=dir_fd)
+    except OSError as exc:
+        raise EngineSetError(
+            f"generation directory {real_dir}: cannot open policies/ "
+            f"safely ({exc}); refusing to load")
+    if not stat.S_ISDIR(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise EngineSetError(
+            f"generation directory {real_dir}: policies/ is not a real "
+            "directory; refusing to load")
+    return fd
 
 
 class EngineSetError(PolicyConfigError):
@@ -466,8 +494,27 @@ def load_validated_engine(policy_path, categories_path):
     """
     policy_path = str(policy_path)
     categories_path = str(categories_path)
-    policy_bytes = Path(policy_path).read_bytes()
-    categories_bytes = Path(categories_path).read_bytes()
+    # Every byte is read relative to a no-follow-verified parent
+    # directory descriptor: a symlink in any parent directory component
+    # is rejected, and a swap of any ancestor after the check cannot
+    # redirect the read (the descriptor pins the directory).
+    policy_dir_fd, policy_dir_name, policy_name = open_parent_dir_nofollow(
+        policy_path, f"policy file {policy_path}")
+    try:
+        policy_bytes = read_file_under(
+            policy_dir_fd, policy_name, f"policy file {policy_path}")
+        manifest_fd = open_optional_manifest_under(
+            policy_dir_fd, f"generation manifest next to {policy_path}")
+    finally:
+        os.close(policy_dir_fd)
+    categories_dir_fd, _, categories_name = open_parent_dir_nofollow(
+        categories_path, f"categories file {categories_path}")
+    try:
+        categories_bytes = read_file_under(
+            categories_dir_fd, categories_name,
+            f"categories file {categories_path}")
+    finally:
+        os.close(categories_dir_fd)
     info = {
         "policy_path": policy_path,
         "categories_path": categories_path,
@@ -475,16 +522,16 @@ def load_validated_engine(policy_path, categories_path):
         "categories_sha256": _sha256(categories_bytes),
     }
     manifest_path = Path(policy_path).parent / "manifest.json"
-    manifest_fd = _safe_open_manifest(manifest_path)
     if manifest_fd is not None:
-        # Verified regular on the opened descriptor inside
-        # _safe_open_manifest; the bytes come from that SAME
-        # descriptor. A present-but-invalid manifest is NEVER ignored;
-        # only a genuinely absent path (None) loads unverified.
+        # Verified regular on the opened descriptor; the bytes come
+        # from that SAME descriptor. A present-but-invalid manifest is
+        # NEVER ignored; only a genuinely absent path (None) loads
+        # unverified.
         manifest = _read_manifest_fd(manifest_fd, manifest_path)
         _validate_generation_manifest(
             manifest, policy_path, categories_path,
-            info["policy_sha256"], info["categories_sha256"])
+            info["policy_sha256"], info["categories_sha256"],
+            resolved_dir_name=policy_dir_name)
         info["generation"] = manifest["generation"]
         info["manifest_revision"] = manifest["revision"]
     try:
@@ -517,36 +564,63 @@ def _load_multidoc_engine_set(generation_dir, categories_path):
     and verified against the manifest BEFORE any document is used.
     """
     given_dir = str(generation_dir)
-    real_dir = os.path.realpath(given_dir)
-    if not os.path.isdir(real_dir):
-        raise EngineSetError(
-            f"{given_dir}: not a generation directory; refusing to load")
-    dir_name = os.path.basename(real_dir)
+    # No-follow directory-descriptor traversal: the generation
+    # directory and every parent component are opened with
+    # O_DIRECTORY|O_NOFOLLOW, so a planted or swapped parent symlink
+    # cannot redirect reads outside the intended generation directory.
+    # Only the FINAL component may be a symlink, and only one that
+    # points inside its own parent (the publisher's atomic "current"
+    # pattern); the returned descriptor pins the verified directory.
+    try:
+        dir_fd, dir_name = open_generation_dir_nofollow(
+            given_dir, f"generation directory {given_dir}")
+    except PolicyConfigError as exc:
+        raise EngineSetError(str(exc))
+    try:
+        return _load_multidoc_from_dir_fd(
+            dir_fd, dir_name, given_dir, categories_path)
+    finally:
+        os.close(dir_fd)
+
+
+def _load_multidoc_from_dir_fd(dir_fd, dir_name, given_dir,
+                               categories_path):
+    """Body of _load_multidoc_engine_set once the generation directory
+    is pinned by a no-follow-verified descriptor."""
+    real_dir = given_dir  # display name for messages only; never opened
 
     categories_path = str(categories_path)
-    expected_categories = os.path.join(real_dir, "categories.json")
-    # Compare the DIRECTORY fully resolved but the final component as
-    # given: a symlinked categories.json inside this directory must flow
-    # through to the descriptor-based safe open (O_NOFOLLOW) and be
-    # rejected there as an unsafe file, not misreported as a
-    # mixed-generation file set.
-    given_categories = os.path.join(
-        os.path.realpath(os.path.dirname(categories_path) or "."),
-        os.path.basename(categories_path))
-    if given_categories != expected_categories:
+    # --categories must name THIS generation's categories.json: same
+    # directory (compared by pinned device+inode, not by resolved path
+    # strings) and the exact final name. A symlinked categories.json
+    # inside the directory flows through to the descriptor-based safe
+    # open (O_NOFOLLOW) and is rejected there as an unsafe file, not
+    # misreported as a mixed-generation file set.
+    categories_name = os.path.basename(categories_path)
+    try:
+        categories_dir_fd, _, _ = open_parent_dir_nofollow(
+            categories_path, f"categories file {categories_path}")
+    except PolicyConfigError as exc:
+        raise EngineSetError(str(exc))
+    try:
+        same_dir = (
+            os.fstat(categories_dir_fd).st_dev == os.fstat(dir_fd).st_dev
+            and os.fstat(categories_dir_fd).st_ino == os.fstat(dir_fd).st_ino
+        )
+    finally:
+        os.close(categories_dir_fd)
+    if not same_dir or categories_name != "categories.json":
         raise EngineSetError(
             f"--categories {categories_path} does not name this generation's "
-            f"categories.json ({expected_categories}); a generation's "
-            "documents must come from ONE directory (mixed-generation "
-            "file sets are rejected)")
+            "categories.json; a generation's documents must come from ONE "
+            "directory (mixed-generation file sets are rejected)")
 
     # The multi-document format REQUIRES a manifest: without one there
     # is no verified file set, and unverified multi-policy loading is
     # never silently attempted.
     manifest_path = os.path.join(real_dir, "manifest.json")
-    fd = safe_open_generation_file(manifest_path, "generation manifest")
-    manifest = load_json_strict(read_fd_bytes(
-        fd, f"generation manifest {manifest_path}"),
+    manifest = load_json_strict(read_under(
+        dir_fd, "manifest.json", f"generation manifest {manifest_path}"),
         f"generation manifest {manifest_path}")
     files = validate_multidoc_manifest(manifest, dir_name, manifest_path)
 
@@ -581,13 +655,25 @@ def _load_multidoc_engine_set(generation_dir, categories_path):
     # in a verified generation and rejects it, exactly like a missing
     # file. (manifest.json itself is the verifier, never listed.)
     on_disk = set()
-    for entry in os.listdir(real_dir):
+    for entry in os.listdir(dir_fd):
         if entry == "manifest.json":
             continue
-        full = os.path.join(real_dir, entry)
-        if entry == "policies" and os.path.isdir(full):
-            for sub in os.listdir(full):
-                on_disk.add(f"policies/{sub}")
+        if entry == "policies":
+            try:
+                st = stat_entry_under(dir_fd, "policies")
+            except OSError as exc:
+                raise EngineSetError(
+                    f"generation directory {real_dir}: cannot inspect "
+                    f"policies/ ({exc}); refusing to load")
+            if stat.S_ISDIR(st.st_mode):
+                policies_fd = safe_open_under_policies_dir(dir_fd, real_dir)
+                try:
+                    for sub in os.listdir(policies_fd):
+                        on_disk.add(f"policies/{sub}")
+                finally:
+                    os.close(policies_fd)
+            else:
+                on_disk.add(entry)
         else:
             on_disk.add(entry)
     unlisted = sorted(on_disk - set(files))
@@ -599,11 +685,13 @@ def _load_multidoc_engine_set(generation_dir, categories_path):
             "load")
 
     # Read and hash-verify EVERY listed file before using any of them.
+    # Every open is relative to the pinned generation directory
+    # descriptor with per-component no-follow, so neither a symlinked
+    # file nor a symlinked policies/ directory can redirect the read.
     contents = {}
     for rel_path, expected_hash in files.items():
-        fd = safe_open_generation_file(os.path.join(real_dir, rel_path),
-                                       f"generation file {rel_path!r}")
-        data = read_fd_bytes(fd, f"generation file {rel_path!r}")
+        data = read_under(dir_fd, rel_path,
+                          f"generation file {rel_path!r}")
         actual = _sha256(data)
         if actual != expected_hash:
             raise EngineSetError(
