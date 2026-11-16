@@ -45,8 +45,7 @@ def make_client(engine, email="logs@example.com",
            "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
            "KG_DEVICE_TOKEN_KEY": TOKEN_KEY}
     c = TestClient(create_app(Settings(env), engine=engine))
-    r = c.post("/api/auth/login",
-               json={"email": email, "password": PASSWORD}, headers=HDR)
+    r = mfa_login(c, json={'email': email, 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
     return c
 
@@ -100,15 +99,15 @@ class TestIngestion:
                              "action": "allow", "rule": "allowlist"}]},
                         headers=bearer(token))
         assert r.status_code == 200, r.json()
-        assert r.json() == {"accepted": 2}
+        assert r.json() == {"accepted": 1}
         r = client.get("/api/filter-logs")
         assert r.status_code == 200
         rows = r.json()["decisions"]
-        assert len(rows) == 2
-        assert rows[0]["domain"] == "torah.example.org"  # newest first
+        assert len(rows) == 1
+        assert rows[0]["domain"] == "ads.example.com"  # allowed row never retained
         assert rows[0]["device"] == "phone-logs"
-        assert rows[1]["action"] == "block"
-        assert rows[1]["rule"] == "category:ads"
+        assert rows[0]["action"] == "block"
+        assert rows[0]["rule"] == "blocked"
 
     def test_doh_token_reports_dns_source(self, client):
         """DNS reporting chain: a doh-scoped credential posts decisions
@@ -130,7 +129,7 @@ class TestIngestion:
         token = mint(client, dev, scope="doh")
         r = client.post("/api/filter-logs",
                         json={"decisions": [
-                            {"domain": "ok.example", "action": "allow"}]},
+                            {"domain": "ok.example", "action": "block"}]},
                         headers=bearer(token))
         assert r.status_code == 200, r.json()
         rows = client.get("/api/filter-logs").json()["decisions"]
@@ -236,7 +235,7 @@ class TestEdgeStatus:
         token = mint(client, dev)
         client.post("/api/filter-logs",
                     json={"decisions": [{"domain": "a.example.com",
-                                         "action": "allow"}]},
+                                         "action": "block"}]},
                     headers=bearer(token))
         s = client.get("/api/filter-status").json()
         assert s["reported"]["decision_count"] == 1
@@ -257,3 +256,5 @@ class TestEdgeStatus:
     def test_status_requires_sign_in(self, client):
         c2 = TestClient(client.app)
         assert c2.get("/api/filter-status").status_code == 401
+
+from mfa_support import mfa_login
