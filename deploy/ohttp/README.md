@@ -43,6 +43,14 @@ intact"). The fixture seed is generated per run by
 `crypto.randomBytes`, passed only via environment, never stored or
 logged.
 
+Precise scope of that PASS: the pinned gateway runs as wired and
+completes a standards-correct round trip against a STUB target. It
+does NOT prove: the Docker image build (never run), interop with
+Apple's actual PIR service as the target (never attempted),
+ciphersuite/protocol compatibility with Apple's OHTTP relay or the
+on-device NEURLFilter client (Apple's exact requirements unverified),
+or any real-device behavior. Each is a separate pending validation.
+
 ## Production path (when Apple's relay approval lands)
 
 1. Build the image from `Dockerfile`; the build fetches exactly the
