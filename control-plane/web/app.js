@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -35,6 +35,7 @@ async function refresh() {
   refreshCredentials();
   refreshGuardians();
   refreshMfaState();
+  refreshAuditLogs();
   const policies = await api("/api/policies");
   policyList = policies.body.policies || [];
   refreshSchedules();
@@ -48,6 +49,30 @@ async function refresh() {
     `</select><button class="link" data-assign="${d.id}">assign</button></td></tr>`).join("");
   deviceList = devices.body.devices || [];
   await refreshMdm();
+}
+
+async function refreshAuditLogs() {
+  const status = $("audit-logs-status");
+  const table = $("audit-logs-table");
+  const r = await api("/api/audit-logs");
+  if (r.status !== 200) {
+    status.textContent = "Could not load logs.";
+    table.classList.add("hidden");
+    return;
+  }
+  const events = r.body.events || [];
+  if (!events.length) {
+    status.textContent = "No activity recorded yet.";
+    table.classList.add("hidden");
+    return;
+  }
+  status.textContent = "";
+  table.classList.remove("hidden");
+  table.querySelector("tbody").innerHTML = events.map(e => {
+    const when = e.created_at ? new Date(e.created_at).toLocaleString() : "";
+    return `<tr><td>${esc(when)}</td><td>${esc(e.action || "")}</td>` +
+      `<td>${esc(e.actor || "")}</td><td>${esc(e.detail || "")}</td></tr>`;
+  }).join("");
 }
 
 let deviceList = [];
