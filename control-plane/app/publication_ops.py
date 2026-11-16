@@ -101,12 +101,11 @@ def publish_selected(session: Session, tenant_id: int, root: str,
     from .policy_ops import prove_tighten_only
     extras = {}
     mapping = {}
-    assignments = list(session.scalars(select(DeviceAssignment).where(
-        DeviceAssignment.tenant_id == tenant_id,
-        DeviceAssignment.active.is_(True)).order_by(DeviceAssignment.id)))
-    for assignment in assignments:
-        device = session.get(Device, assignment.device_id)
-        assigned = session.get(Policy, assignment.policy_id)
+    from .group_ops import effective_assignments
+    assignments = effective_assignments(session, tenant_id)
+    for device_id, policy_id in assignments.items():
+        device = session.get(Device, device_id)
+        assigned = session.get(Policy, policy_id)
         if (device is None or device.tenant_id != tenant_id or
                 assigned is None or assigned.tenant_id != tenant_id or
                 not assigned.enabled):
