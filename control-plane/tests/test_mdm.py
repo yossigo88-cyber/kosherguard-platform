@@ -134,8 +134,17 @@ class TestCommands:
     def test_unsupported_command_rejected(self, client):
         enr = mk_enrollment(client, mk_device(client))
         r = client.post(f"/api/mdm/enrollments/{enr['id']}/commands",
-                        json={"command": "EraseDevice"}, headers=HDR)
+                        json={"command": "WipeEverything"}, headers=HDR)
         assert r.status_code == 400
+
+    def test_destructive_command_needs_verification(self, client):
+        """EraseDevice is a destructive command (Answer 25): without
+        fresh TOTP verification it is refused before queueing - it is
+        no longer a plain 'unsupported command' 400."""
+        enr = mk_enrollment(client, mk_device(client))
+        r = client.post(f"/api/mdm/enrollments/{enr['id']}/commands",
+                        json={"command": "EraseDevice"}, headers=HDR)
+        assert r.status_code == 403
 
     def test_no_adapter_stays_queued(self, client):
         """Without an MDM server the honest state is queued: nothing
