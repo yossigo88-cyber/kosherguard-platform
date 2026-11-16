@@ -72,8 +72,9 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 - Reviewed Stage 1-11 engine preserved (policy engine, category db,
   DNS service, comparison/tighten-only). DONE (pre-existing, audited).
 - proxy-edge: PAC generation + proxy server. DONE as code. Proxy
-  authentication (spec 8B): PARTIAL - per-device scoped credentials
-  exist for dataset/DoH; proxy-edge's own auth binding OUTSTANDING.
+  authentication (spec 8B): DONE - policy-bound device tokens in
+  Proxy-Authorization, fail-closed 407/403, credentials stripped
+  before relay, token never logged; 25 proxy-edge tests pass locally.
 - dns-edge: runner + DoH per-device identity + per-device policy
   selection. DONE as code (fail-closed).
 - NE content filter + iOS 26 NEURLFilter: iOS Swift sources +
@@ -81,11 +82,18 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   BUILT-UNVERIFIED.
 - PIR/OHTTP: Apple's vetted pir-service-example integrated
   (deploy/pir), dataset export in Apple's format + tests. OHTTP
-  gateway OUTSTANDING (no vetted choice), relay BLOCKED (Apple
-  approval).
+  gateway: candidate selected + deployment wiring + local stub-target
+  interop test PASS (deploy/ohttp; see
+  docs/reviews/OHTTP_GATEWAY_ASSESSMENT.md for the exact proven/
+  unproven split - image build, Apple PIR interop, relay ciphersuite
+  compat, device validation each separately unproven). Relay BLOCKED
+  (Apple approval).
 - Capabilities matrix (8F): categories/domain allow/block/custom rules/
   policy assignment per device (device_policy.py) exist; filtering
-  SCHEDULES OUTSTANDING; diagnostics PARTIAL.
+  SCHEDULES: control-plane API + ScheduledPolicyEngine + schedule-aware
+  tighten-only proof + UI DONE as code; whole-pipeline INCOMPLETE -
+  per-device/multi-policy schedule emission held pending the user's
+  decision on the held publication set; diagnostics PARTIAL.
 
 ## Part 9 - Category database
 
@@ -99,8 +107,9 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 
 - control-plane/web: policies, devices, MDM (enrollments, commands,
   supervision split), categories panels - rendered evidence exists for
-  MDM and categories. PARTIAL: Overview (stats/system health),
-  Customers section, schedules UI OUTSTANDING.
+  MDM and categories. Overview, Customers, schedules UI, credentials
+  screen added (schedules + overview rendered; credentials screen
+  rendered evidence OWED).
 
 ## Part 11 - Customer-facing website
 
@@ -144,15 +153,19 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 
 - docs/setup/APPLE_CREDENTIALS.md distinguishes ADE token vs MDM push
   cert, full gate checklist. Configuration screens: MDM panel covers
-  enrollment/commands; dedicated credential-upload screens PARTIAL.
-  No credentials invented or hardcoded.
+  enrollment/commands; dedicated credential-upload screens DONE
+  (fixture-only build): metadata-only API, secret bytes 0600 on
+  server filesystem outside Git, rotate/revoke lifecycle, owner-only,
+  tenant-scoped, environment-stamped with an on-screen fixture-only
+  banner. 12 tests pass locally. No credentials invented or hardcoded.
 
 ## Part 17 - Testing
 
-- Local suites: control-plane 75, mdm 34, url-filter-server 29,
-  dns-edge 24, proxy-edge 11, category-pipeline 6 - all passing on
-  local tree. Published-tree fresh-clone verification is M7
-  OUTSTANDING. No published-tree claim is made for post-M5 files yet.
+- Local suites: control-plane 111, mdm 34, url-filter-server 29,
+  dns-edge 60, proxy-edge 25, category-pipeline 6 - passing on the
+  local tree at the times their features landed. Published-tree
+  fresh-clone verification is M7 OUTSTANDING. No published-tree claim
+  is made for post-M5 files yet.
 
 ## Part 18 - 22 deliverables
 
