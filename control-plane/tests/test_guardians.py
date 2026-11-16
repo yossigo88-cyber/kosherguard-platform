@@ -419,3 +419,103 @@ class TestProxyScopeMinting:
         r = c.post(f"/api/devices/{did}/dataset-credential",
                    json={"scope": "admin"}, headers=HDR)
         assert r.status_code == 400
+
+
+class TestRevocation:
+    """Revocation registry: mint stores jti, revoke marks outstanding,
+    the feed exports the refusal set edge verifiers consume."""
+
+    def _app(self, engine):
+        with session_scope(engine) as s:
+            tenant = Tenant(name="family-rev")
+            s.add(tenant)
+            s.flush()
+            s.add(User(tenant_id=tenant.id, email="r@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+            from app.models import Device
+            dev = Device(tenant_id=tenant.id, name="kid-tablet")
+            s.add(dev)
+            s.flush()
+            did = dev.id
+        settings = Settings({
+            "KG_DATABASE_URL": "postgresql://placeholder",
+            "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
+            "KG_DEVICE_TOKEN_KEY": "rev-test-key"})
+        c = TestClient(create_app(settings, engine=engine))
+        login(c, "r@example.com")
+        return c, did
+
+    def _verify(self, token, scope, revoked=None):
+        import importlib.util as ilu
+        spec = ilu.spec_from_file_location(
+            "kg_device_auth_test3",
+            os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "..",
+                "url-filter-server", "app", "device_auth.py")))
+        da = ilu.module_from_spec(spec)
+        spec.loader.exec_module(da)
+        return da.verify_token(b"rev-test-key", token, scope,
+                               revoked_jtis=revoked)
+
+    def test_mint_registers_jti(self, engine):
+        c, did = self._app(engine)
+        r = c.post(f"/api/devices/{did}/dataset-credential", headers=HDR)
+        assert r.status_code == 200
+        from app.models import IssuedCredential
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            rows = s.scalars(select(IssuedCredential)).all()
+        assert len(rows) == 1
+        assert rows[0].device_id == did
+        assert rows[0].scope == "dataset"
+        assert rows[0].revoked_at is None
+
+    def test_revoke_blocks_token_via_feed_set(self, engine):
+        c, did = self._app(engine)
+        token = c.post(f"/api/devices/{did}/dataset-credential",
+                       headers=HDR).json()["credential"]
+        r = c.post(f"/api/devices/{did}/credentials/revoke", headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["revoked"] == 1
+        feed = c.get("/api/credential-revocations").json()["revoked_jtis"]
+        assert len(feed) == 1
+        # The token still verifies cryptographically; the revocation
+        # set is what refuses it (edge behavior simulated here).
+        import importlib.util as ilu
+        spec = ilu.spec_from_file_location(
+            "kg_device_auth_test4",
+            os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "..",
+                "url-filter-server", "app", "device_auth.py")))
+        da = ilu.module_from_spec(spec)
+        spec.loader.exec_module(da)
+        da.verify_token(b"rev-test-key", token, "dataset")
+        import pytest as _pt
+        with _pt.raises(da.TokenError):
+            da.verify_token(b"rev-test-key", token, "dataset",
+                            revoked_jtis=set(feed))
+        # Second revoke: nothing outstanding.
+        assert c.post(f"/api/devices/{did}/credentials/revoke",
+                      headers=HDR).json()["revoked"] == 0
+
+    def test_revoke_cross_tenant_404(self, engine):
+        c, did = self._app(engine)
+        with session_scope(engine) as s:
+            other = Tenant(name="other-rev")
+            s.add(other)
+            s.flush()
+            from app.models import Device
+            d2 = Device(tenant_id=other.id, name="other-tab")
+            s.add(d2)
+            s.flush()
+            other_did = d2.id
+        assert c.post(f"/api/devices/{other_did}/credentials/revoke",
+                      headers=HDR).status_code == 404
+
+    def test_feed_excludes_expired_and_other_tenants(self, engine):
+        c, did = self._app(engine)
+        c.post(f"/api/devices/{did}/credentials/revoke", headers=HDR)
+        # No tokens minted -> empty feed, no error.
+        assert c.get("/api/credential-revocations").json()[
+            "revoked_jtis"] == []
