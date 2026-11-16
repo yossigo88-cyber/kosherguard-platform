@@ -185,6 +185,31 @@ class MDMEnrollment(Base):
         DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class DeviceAppPolicy(Base):
+    """Per-device application allow/block policy (spec Part 10:
+    Applications). Stored intent; applying it queues an InstallProfile
+    command carrying a com.apple.applicationaccess payload through the
+    normal MDM command lifecycle. Device behavior of that payload is
+    BUILT-UNVERIFIED until the spec Part 17 device-testing phase.
+    """
+    __tablename__ = "device_app_policies"
+    __table_args__ = (UniqueConstraint("tenant_id", "device_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int] = mapped_column(
+        ForeignKey("devices.id"), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False,
+                                      default="blocklist")
+    bundle_ids: Mapped[str] = mapped_column(Text, nullable=False,
+                                            default="[]")
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow,
+        nullable=False)
+
+
 class MDMCommand(Base):
     """One MDM command sent to one enrollment, with its full lifecycle.
 
