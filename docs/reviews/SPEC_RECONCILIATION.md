@@ -99,6 +99,15 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   tokens it accepts, so app-mediated DoH identity cannot run end to
   end until the held set lands. Revocation registry, revoke route and
   revocation feed are also HELD (local only, 4 TestRevocation tests).
+- iOS request-path clients (606bdf4, 4b83612): STANDALONE SOURCE ONLY.
+  No app call sites reference them; they are absent from
+  KosherGuard.xcodeproj/project.pbxproj (SwiftPM's directory-based
+  URLFilter target would include them, an Xcode build would not); no
+  execution evidence exists, so dataset/proxy minting is tested
+  server-side only and is NOT working iOS functionality. Open gaps:
+  session acquisition (guardian cookie + CSRF, no native token
+  exchange server-side) and credential storage (in-memory only, no
+  Keychain integration).
 - NE content filter + iOS 26 NEURLFilter: iOS Swift sources +
   Xcode project structure, UNCOMPILED/UNSIGNED/UNTESTED.
   BUILT-UNVERIFIED.
