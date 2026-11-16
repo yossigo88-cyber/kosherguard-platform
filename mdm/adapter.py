@@ -23,6 +23,7 @@ SUPPORTED_COMMANDS = frozenset({
     "RemoveProfile",
     "InstallApplication",
     "RemoveApplication",
+    "ManagedApplicationList",
     "DeviceLock",
     "RestartDevice",
 })
