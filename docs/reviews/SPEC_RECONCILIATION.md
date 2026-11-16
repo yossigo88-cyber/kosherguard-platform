@@ -281,8 +281,10 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   check-in sync; supervision never caller-claimed) and credential
   revocation registry - all published af763a7..c8e09bf with
   regression tests. Full report: docs/reviews/SECURITY_FIXES_2026-11-16.md.
-  INCOMPLETE (explicit): edge consumption of the revocation feed
-  (distribution design pending); check-in sync deployment wiring;
+  Revocation distribution + consumption now implemented and
+  exercised (this head): scoped-token feed, RevocationFeed in-place
+  set, proxy-edge revoked-token refusal, all with tests.
+  INCOMPLETE (explicit): check-in sync deployment wiring;
   device-side behavior BUILT-UNVERIFIED.
 - Secrets: none in repo; credentials redacted from logs by design
   (device_auth never logs token values, tested).
@@ -356,7 +358,8 @@ No credentials invented or hardcoded.
    evidence (see Part 15); live hosting not purchased/authorized.
 16 Security implementation: DONE incl. the three user-approved
    2026-11-16 fixes (see docs/reviews/SECURITY_FIXES_2026-11-16.md);
-   edge revocation consumption + check-in sync wiring INCOMPLETE.
+   check-in sync deployment wiring INCOMPLETE; revocation
+   distribution/consumption DONE with tests (this head).
 17 Monitoring and logging: DONE as config/docs (not running).
 18 Backup and recovery: DONE (PG roundtrip 2026-11-16 + 16 dashboard
    backup/restore tests).
