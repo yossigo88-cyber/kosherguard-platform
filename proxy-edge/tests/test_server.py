@@ -350,3 +350,62 @@ def test_credentials_stripped_from_relayed_request(authed_proxy):
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+class _FeedHandler(http.server.BaseHTTPRequestHandler):
+    body = b'{"revoked_jtis": []}'
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(type(self).body)
+
+    def log_message(self, *a):
+        pass
+
+
+def test_revocation_feed_runtime_refresh():
+    """Runtime distribution: a FilteringProxy built on the feed's
+    shared set refuses a token after the background loop refreshes,
+    with no restart or rewiring."""
+    import json as _json
+    sys.path.insert(0, os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "..",
+        "url-filter-server", "app")))
+    import revocations  # noqa: E402
+    feed_srv = http.server.HTTPServer(("127.0.0.1", 0), _FeedHandler)
+    threading.Thread(target=feed_srv.serve_forever, daemon=True).start()
+    tok = make_token()
+    feed = revocations.RevocationFeed(
+        f"http://127.0.0.1:{feed_srv.server_address[1]}",
+        token_provider=lambda: tok)
+    stop = feed.start_refresh_loop(interval=0.1)
+    srv = server.FilteringProxy(
+        ("127.0.0.1", 0), make_authed_engine_set(),
+        read_timeout=5, connect_timeout=2,
+        decision_log=lambda r: None, token_key=KEY,
+        revoked_jtis=feed.shared_set)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    req = b"GET http://example.com/ HTTP/1.1\r\n\r\n"
+    try:
+        out = authed_request(srv.server_address[1], req, token=tok)
+        assert b"407" not in status_of(out)
+        jti = device_auth.verify_token(KEY, tok, "proxy")["jti"]
+        _FeedHandler.body = _json.dumps({"revoked_jtis": [jti]}).encode()
+        end = time.time() + 5
+        ok = False
+        while time.time() < end:
+            out = authed_request(srv.server_address[1], req, token=tok)
+            if b"407" in status_of(out):
+                ok = True
+                break
+            time.sleep(0.05)
+        assert ok
+    finally:
+        stop.set()
+        srv.shutdown()
+        srv.server_close()
+        feed_srv.shutdown()
+        feed_srv.server_close()
