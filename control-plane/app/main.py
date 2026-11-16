@@ -109,6 +109,7 @@ class AppCommandBody(BaseModel):
     action: str
     itunes_store_id: int | None = None
     bundle_id: str | None = None
+    configuration: dict | None = None
 
 
 
@@ -816,7 +817,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             row = app_ops.queue_app_command(
                 session, user.tenant_id, device_id, body.action, user.id,
                 itunes_store_id=body.itunes_store_id,
-                bundle_id=body.bundle_id, adapter=make_adapter())
+                bundle_id=body.bundle_id, configuration=body.configuration,
+                adapter=make_adapter())
         except app_ops.AppOpsError as exc:
             return error(exc.status, str(exc))
         session.commit()
