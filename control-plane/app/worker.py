@@ -65,6 +65,8 @@ def run_once(engine, settings, now=None) -> bool:
                         actor.role not in (Role.owner, Role.guardian) or
                         not actor.totp_secret):
                     raise PermissionError("publication actor no longer authorized")
+                if actor.role == Role.guardian and "publish" not in json.loads(actor.delegated_settings):
+                    raise PermissionError("publication delegation revoked")
                 state = session.scalar(select(PublicationState).where(
                     PublicationState.tenant_id == job.tenant_id
                 ).with_for_update())
