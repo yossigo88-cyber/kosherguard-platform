@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _ENGINE_SRC = os.path.join(os.path.dirname(__file__), "..",
@@ -98,7 +98,8 @@ def validate_schedules(raw: object) -> list[dict]:
             raise ScheduleError(f"{where}: must be an object")
         unknown = set(entry) - {"name", "days", "start", "end",
                                 "timezone", "block_categories",
-                                "block_domains", "enabled"}
+                                "block_domains", "enabled",
+                                "start_date", "end_date"}
         if unknown:
             raise ScheduleError(f"{where}: unknown keys {sorted(unknown)}")
         name = entry.get("name")
@@ -125,6 +126,21 @@ def validate_schedules(raw: object) -> list[dict]:
         except (ZoneInfoNotFoundError, ValueError):
             raise ScheduleError(
                 f"{where}.timezone: unknown IANA timezone {tz_name!r}")
+        dates = {}
+        for field in ("start_date", "end_date"):
+            value = entry.get(field)
+            if value is not None:
+                try:
+                    if not isinstance(value, str):
+                        raise ValueError()
+                    parsed = date.fromisoformat(value)
+                    if parsed.isoformat() != value:
+                        raise ValueError()
+                except ValueError:
+                    raise ScheduleError(f"{where}.{field}: expected YYYY-MM-DD")
+                dates[field] = value
+        if len(dates) == 2 and dates["end_date"] < dates["start_date"]:
+            raise ScheduleError(f"{where}: end_date precedes start_date")
         # Reuse the reviewed engine's own list validators on a synthetic
         # policy so domains and categories are checked by the same code
         # that will enforce them.
@@ -151,6 +167,7 @@ def validate_schedules(raw: object) -> list[dict]:
             "block_categories": checked["category_block"],
             "block_domains": checked["blocklist"],
             "enabled": enabled,
+            **dates,
         })
     return normalized
 
@@ -163,6 +180,15 @@ def is_active(schedule: dict, moment: datetime) -> bool:
     minute = local.hour * 60 + local.minute
     weekday = local.weekday()
     start, end = schedule["start"], schedule["end"]
+    # Dates constrain the START DAY of a window, including overnight
+    # windows whose after-midnight portion belongs to yesterday.
+    anchor_day = local.date()
+    if start > end and minute < end:
+        anchor_day -= timedelta(days=1)
+    if schedule.get("start_date") and anchor_day < date.fromisoformat(schedule["start_date"]):
+        return False
+    if schedule.get("end_date") and anchor_day > date.fromisoformat(schedule["end_date"]):
+        return False
     if start == end:
         return False
     if start < end:
