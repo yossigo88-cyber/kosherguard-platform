@@ -491,7 +491,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         try:
             result = publication_ops.publish_selected(
                 session, user.tenant_id, settings.publications_root,
-                user.email, categories_path=settings.categories_file)
+                user.email)
         except publication_ops.PolicyError as exc:
             session.rollback()
             return error(exc.status, str(exc))
