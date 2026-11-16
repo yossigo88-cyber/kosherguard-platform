@@ -28,8 +28,8 @@ revoked, or policy-unbound credentials get 407 (credentials problem) or
 403 (authenticated but not bound to an available policy); no request is
 ever filtered or relayed without a verified token. The engine resolves
 by the token's policy binding, never by client address, in this mode.
-The token value is never logged; the decision log records the
-authenticated device_id instead. The proxy-authorization and
+The token and device identifier are never logged; local diagnostics contain
+no browsing identifiers. The proxy-authorization and
 proxy-connection headers are stripped before relaying upstream so
 credentials never leave the proxy. Constructing without token_key keeps
 the legacy network-binding behavior for development only - a production
@@ -137,13 +137,14 @@ class FilteringProxyHandler(socketserver.BaseRequestHandler):
         if isinstance(policy_id, bool) or not isinstance(policy_id, int):
             self._send(403, b"proxy token is not bound to a policy")
             return None
-        if getattr(srv, "policy_bundle", None) is not None:
+        bundle = getattr(srv, "policy_bundle", None)
+        if bundle is not None:
             # Resolve CURRENT assignment, not a stale token's old policy.
             # The token proves device identity; the publication owns policy.
-            if str(payload.get("tenant_id")) != str(srv.policy_bundle.tenant_id):
+            if str(payload.get("tenant_id")) != str(bundle.tenant_id):
                 self._send(403, b"credential belongs to a different tenant")
                 return None
-            engine = srv.policy_bundle.for_device(payload.get("device_id"))
+            engine = bundle.for_device(payload.get("device_id"))
         else:
             engine = srv.engine_set.per_policy.get(policy_id)
         if engine is None:
@@ -315,6 +316,18 @@ class FilteringProxy(socketserver.ThreadingTCPServer):
         self.revoked_jtis = revoked_jtis
         super().__init__(listen, FilteringProxyHandler)
 
+    def server_close(self):
+        revocation_stop = getattr(self, "revocation_stop", None)
+        if revocation_stop is not None:
+            revocation_stop.set()
+        stop = getattr(self, "publication_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "publication_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
+        super().server_close()
+
     def log_decision(self, host: str, decision, client_addr,
                      device_id=None) -> None:
         if self.decision_log is not None and decision.action == "block":
@@ -357,12 +370,14 @@ def build_proxy(listen, engine_set, token_key: bytes | None = None,
     return proxy, stop
 
 
-def build_published_proxy(listen, tenant_root, token_key, now=None, **kwargs):
+def build_published_proxy(listen, tenant_root, token_key, now=None,
+                          watch_interval=5.0, **kwargs):
     """Construct one explicitly tenant-scoped proxy from a complete bundle.
 
-    Call reload_published_proxy after publication notifications or from a
-    deployment-managed refresh loop. The retained bundle is last-known-good.
-    This constructor performs no external requests and no polling.
+    Owns a local generation refresh loop, stopped/joined by server_close.
+    Invalid/foreign/non-advancing generations retain the last-known-good
+    bundle. This watches local publication files, not a remote account.
+    Pass watch_interval=None only for manual deterministic tests.
     """
     import sys
     import os
@@ -376,6 +391,17 @@ def build_published_proxy(listen, tenant_root, token_key, now=None, **kwargs):
         raise ValueError('published proxy requires tenant-scoped manifest')
     proxy = FilteringProxy(listen, bundle.engines, token_key=token_key, **kwargs)
     proxy.policy_bundle = bundle
+    if watch_interval is not None:
+        if watch_interval <= 0:
+            proxy.server_close()
+            raise ValueError("watch_interval must be positive")
+        proxy.publication_stop = threading.Event()
+        def watch():
+            while not proxy.publication_stop.wait(watch_interval):
+                reload_published_proxy(proxy, tenant_root, now=now)
+        proxy.publication_thread = threading.Thread(target=watch,
+            name="proxy-publication-watch", daemon=True)
+        proxy.publication_thread.start()
     return proxy
 
 
@@ -385,7 +411,8 @@ def reload_published_proxy(proxy, tenant_root, now=None):
         bundle = load_bundle(tenant_root, now=now)
     except Exception:
         return False
-    if bundle.tenant_id != proxy.policy_bundle.tenant_id:
+    if (bundle.tenant_id != proxy.policy_bundle.tenant_id or
+            bundle.revision <= proxy.policy_bundle.revision):
         return False
     proxy.policy_bundle = bundle
     proxy.engine_set = bundle.engines
