@@ -159,6 +159,56 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   real TOTP code; pipeline: pgserver + uvicorn + puppeteer,
   /tmp/evidence/run_guard.py). Minor textarea-width polish noted on
   the credentials screen.
+- Applications panel (built 2026-11-16, f9715ad+): per-device app
+  allow/block policy + Install/Remove/inventory command queueing with
+  an explicit data-loss confirmation on removal (WWDC21 session 10136:
+  managed-app removal erases the app's data container; Apple command
+  list dep789n2k1qp). RemoveApplication stays device-unverified.
+- Filtering activity + edge status (built 2026-11-16, ebd1e2e..d2b8d1a):
+  - Ingestion POST/GET /api/filter-logs, proxy-scope bearer auth,
+    tenant/device binding from the verified token; proxy-edge
+    DecisionForwarder (best-effort batch POST, env-gated).
+  - END-TO-END evidence: the real FilteringProxy decided 3 requests
+    (explicit_block, category_block, default-allow RELAYED to a live
+    upstream), the real DecisionForwarder delivered them (sent=3,
+    dropped=0), and the UI rendered those rows (screenshot
+    filtering-02-e2e.png, run_filtering_e2e.py). Earlier fixture-post
+    evidence is ingestion/render-only history, kept labeled as such.
+  - GET /api/filter-status + panel block report EVIDENCED state only:
+    configured (selected policy, publication revision), reported
+    (decision count/sources/latest), "DNS decision reporting: not
+    connected", health hard-coded UNKNOWN with a note that issuance,
+    configuration and receipts are none of them health. No invented
+    operational status.
+- DDM app-settings delivery (built 2026-11-16, d2b8d1a): the control
+  plane now IS the DM server NanoMDM forwards to. Verified sources:
+  NanoMDM operations guide "-dm" flag (main branch, fetched
+  2026-11-16): NanoMDM v0.3.0+ appends the endpoint (tokens,
+  declaration-items, declaration/<type>/<id>, status) to the -dm base
+  URL with the enrollment id in X-Enrollment-ID, optional HMAC via
+  -dm-send/recv-hmac-key (X-Hmac-Signature, Base64 SHA-256);
+  KMFDDM ddm/items.go, token.go, declaration.go, http/ddm/ddm.go
+  (cloned 2026-11-16) for the exact wire shapes, each citing the Apple
+  documentation URLs. Built: GET /api/ddm/tokens, /declaration-items,
+  /declaration/<type>/<id>, PUT /api/ddm/status (verbatim
+  DDMStatusReport rows + enrollment last_seen); X-Enrollment-ID
+  resolved against MDMEnrollment; optional KG_DDM_HMAC_KEY
+  verification matching NanoMDM's flag; server tokens track policy
+  content so changes re-sync. DeclarativeManagement added to
+  SUPPORTED_COMMANDS as the activation command. 6 tests + full suite
+  green at d2b8d1a (control-plane 156, mdm 60).
+  REMAINING GAPS, explicitly: (a) running NanoMDM with -dm pointed at
+  the control plane is deployment configuration, not authorized code
+  work - the serving side is built and tested, the forwarding side is
+  NanoMDM's own verified behavior; (b) a served declaration is not an
+  applied one - only a device status report proves application, and
+  that awaits the Part 17 device-testing phase; (c) supervision/iOS27+
+  gates are device-side (Apple depd65c456fa).
+- DNS decision reporting: NOT connected. Two SEPARATE dependencies:
+  (1) doh minting scope lives in held unpublished commit 7cbdbef
+  (user decision pending) - blocked on the held set; (2) the dns-edge
+  directory-layout mismatch is its own issue, independent of the held
+  doh work, and stays listed as a separate open item.
 
 ## Part 11 - Customer-facing website
 
