@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import security
 from .config import Settings
-from .db import make_engine
+from .db import ScopedSession, make_engine
 from .models import AuthSession, LoginAttempt, User
 
 SESSION_COOKIE = "kg_session"
@@ -33,6 +33,25 @@ LOCKOUT_SECONDS = 60
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class PolicyBody(BaseModel):
+    name: str
+    description: str = ""
+    default_policy: str
+    allowlist: list[str] = []
+    blocklist: list[str] = []
+    category_allow: list[str] = []
+    category_block: list[str] = []
+    enabled: bool = True
+
+
+class DeviceBody(BaseModel):
+    name: str
+
+
+class AssignmentBody(BaseModel):
+    policy_id: int
 
 
 class LoginBody(BaseModel):
@@ -185,6 +204,174 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"email": user.email, "role": user.role.value,
                 "tenant_id": user.tenant_id,
                 "mfa_enabled": user.totp_secret is not None}
+
+    # -- Milestone 2: policies, devices, tighten-only enforcement ------
+
+    from . import policy_ops
+    from .models import (Device, DeviceAssignment, Policy, PolicyVersion,
+                         PublicationState)
+
+    def policy_json(policy, session):
+        import json as _json
+        versions = len(session.scalars(
+            select(PolicyVersion).where(
+                PolicyVersion.policy_id == policy.id)).all())
+        doc = _json.loads(policy.engine_doc)
+        return {"id": policy.id, "name": policy.name,
+                "description": policy.description,
+                "enabled": policy.enabled, "versions": versions,
+                "default_policy": doc["default_policy"],
+                "allowlist": doc["allowlist"], "blocklist": doc["blocklist"],
+                "category_allow": doc["category_rules"]["allow"],
+                "category_block": doc["category_rules"]["block"]}
+
+    def get_tenant_policy(session, tenant_id, policy_id):
+        policy = session.get(Policy, policy_id)
+        if policy is None or policy.tenant_id != tenant_id:
+            return None
+        return policy
+
+    @app.post("/api/policies", dependencies=[Depends(require_csrf_header)])
+    def create_policy(body: PolicyBody,
+                      user: User = Depends(current_user),
+                      session: Session = Depends(db_session)):
+        import json as _json
+        try:
+            doc = policy_ops.normalize_engine_doc(body.model_dump())
+        except policy_ops.PolicyError as exc:
+            return error(exc.status, str(exc))
+        existing = session.scalar(select(Policy).where(
+            Policy.tenant_id == user.tenant_id, Policy.name == body.name))
+        if existing is not None:
+            return error(409, f"policy named {body.name!r} already exists")
+        policy = Policy(tenant_id=user.tenant_id, name=body.name,
+                        description=body.description, enabled=body.enabled,
+                        engine_doc=_json.dumps(doc))
+        session.add(policy)
+        session.flush()
+        version = policy_ops.snapshot_version(session, policy, user.id)
+        ScopedSession(session, user.tenant_id).audit("policy.create",
+                     f"created policy {body.name!r} (version {version})",
+                     actor_user_id=user.id)
+        session.commit()
+        return policy_json(policy, session)
+
+    @app.get("/api/policies")
+    def list_policies(user: User = Depends(current_user),
+                      session: Session = Depends(db_session)):
+        rows = session.scalars(select(Policy).where(
+            Policy.tenant_id == user.tenant_id).order_by(Policy.id))
+        return {"policies": [policy_json(p, session) for p in rows]}
+
+    @app.put("/api/policies/{policy_id}",
+             dependencies=[Depends(require_csrf_header)])
+    def update_policy(policy_id: int, body: PolicyBody,
+                      user: User = Depends(current_user),
+                      session: Session = Depends(db_session)):
+        import json as _json
+        policy = get_tenant_policy(session, user.tenant_id, policy_id)
+        if policy is None:
+            return error(404, "policy not found")
+        try:
+            doc = policy_ops.normalize_engine_doc(body.model_dump())
+            policy_ops.enforce_on_content_mutation(
+                session, user.tenant_id, policy, doc)
+        except policy_ops.PolicyError as exc:
+            return error(exc.status, str(exc))
+        policy.name = body.name
+        policy.description = body.description
+        policy.enabled = body.enabled
+        policy.engine_doc = _json.dumps(doc)
+        version = policy_ops.snapshot_version(session, policy, user.id)
+        ScopedSession(session, user.tenant_id).audit(
+            "policy.update", f"updated policy {body.name!r} "
+            f"(version {version})", actor_user_id=user.id)
+        session.commit()
+        return policy_json(policy, session)
+
+    @app.post("/api/policies/{policy_id}/select",
+              dependencies=[Depends(require_csrf_header)])
+    def select_default_policy(policy_id: int,
+                              user: User = Depends(current_user),
+                              session: Session = Depends(db_session)):
+        policy = get_tenant_policy(session, user.tenant_id, policy_id)
+        if policy is None:
+            return error(404, "policy not found")
+        if not policy.enabled:
+            return error(409, "a disabled policy cannot be the default")
+        try:
+            policy_ops.enforce_on_default_selection(
+                session, user.tenant_id, policy)
+        except policy_ops.PolicyError as exc:
+            return error(exc.status, str(exc))
+        state = session.get(PublicationState, user.tenant_id)
+        if state is None:
+            state = PublicationState(tenant_id=user.tenant_id)
+            session.add(state)
+        state.selected_policy_id = policy.id
+        ScopedSession(session, user.tenant_id).audit(
+            "policy.select_default", f"selected policy {policy.name!r} "
+            "as the tenant default", actor_user_id=user.id)
+        session.commit()
+        return {"status": "selected", "policy_id": policy.id}
+
+    @app.post("/api/devices", dependencies=[Depends(require_csrf_header)])
+    def create_device(body: DeviceBody,
+                      user: User = Depends(current_user),
+                      session: Session = Depends(db_session)):
+        existing = session.scalar(select(Device).where(
+            Device.tenant_id == user.tenant_id, Device.name == body.name))
+        if existing is not None:
+            return error(409, f"device named {body.name!r} already exists")
+        device = Device(tenant_id=user.tenant_id, name=body.name)
+        session.add(device)
+        session.flush()
+        ScopedSession(session, user.tenant_id).audit(
+            "device.create", f"registered device {body.name!r}",
+            actor_user_id=user.id)
+        session.commit()
+        return {"id": device.id, "name": device.name,
+                "state": device.state}
+
+    @app.get("/api/devices")
+    def list_devices(user: User = Depends(current_user),
+                     session: Session = Depends(db_session)):
+        rows = session.scalars(select(Device).where(
+            Device.tenant_id == user.tenant_id).order_by(Device.id))
+        return {"devices": [{"id": d.id, "name": d.name, "state": d.state}
+                            for d in rows]}
+
+    @app.post("/api/devices/{device_id}/assignment",
+              dependencies=[Depends(require_csrf_header)])
+    def assign_policy(device_id: int, body: AssignmentBody,
+                      user: User = Depends(current_user),
+                      session: Session = Depends(db_session)):
+        device = session.get(Device, device_id)
+        if device is None or device.tenant_id != user.tenant_id:
+            return error(404, "device not found")
+        policy = get_tenant_policy(session, user.tenant_id, body.policy_id)
+        if policy is None:
+            return error(404, "policy not found")
+        if not policy.enabled:
+            return error(409, "a disabled policy cannot be assigned")
+        try:
+            policy_ops.enforce_on_new_assignment(
+                session, user.tenant_id, policy)
+        except policy_ops.PolicyError as exc:
+            return error(exc.status, str(exc))
+        for old in session.scalars(select(DeviceAssignment).where(
+                DeviceAssignment.device_id == device.id,
+                DeviceAssignment.active.is_(True))):
+            old.active = False
+        session.add(DeviceAssignment(tenant_id=user.tenant_id,
+                                     device_id=device.id,
+                                     policy_id=policy.id))
+        ScopedSession(session, user.tenant_id).audit(
+            "device.assign", f"assigned policy {policy.name!r} to "
+            f"device {device.name!r}", actor_user_id=user.id)
+        session.commit()
+        return {"status": "assigned", "device_id": device.id,
+                "policy_id": policy.id}
 
     @app.exception_handler(Exception)
     def unhandled(request: Request, exc: Exception):
