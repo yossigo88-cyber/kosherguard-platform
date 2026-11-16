@@ -1858,7 +1858,29 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             ScopedSession(session, user.tenant_id).audit(
                 "exception.revoke", f"exception {row.id}",
                 actor_user_id=user.id)
-            session.commit()
+            session.flush()
+            # A revoked exception keeps filtering-open at the edge until a
+            # new generation ships, so revocation enqueues its own
+            # publication instead of waiting for a manual publish. The job
+            # runs as the tenant owner: the worker re-checks publish
+            # delegation at execution, and a guardian revoker usually
+            # lacks it - the republication must not die on that check and
+            # leave the revoked bypass effective.
+            from .worker import enqueue
+            from .models import Role
+            from sqlalchemy.exc import IntegrityError
+            owner = session.scalar(select(User).where(
+                User.tenant_id == user.tenant_id, User.role == Role.owner))
+            if owner is None:
+                session.rollback()
+                return error(500, "revoked, but no owner can republish")
+            try:
+                enqueue(session, user.tenant_id, owner.id, owner.email,
+                        f"exception-revoke-{row.id}-{int(utcnow().timestamp())}")
+                session.commit()
+            except (ValueError, IntegrityError):
+                session.rollback()
+                return error(500, "revoked, but republication could not be queued")
         from . import exception_ops
         return exception_ops.exception_json(row)
 
