@@ -59,8 +59,9 @@ class TestAuthenticate:
 class TestTenantRoot:
     def test_maps_signed_tenant(self, tmp_path):
         root = tenant_root_for_token(
-            str(tmp_path), {"tenant_id": "tenant-7"})
-        assert root.endswith(os.path.join("tenants", "tenant-7"))
+            str(tmp_path), {"tenant_id": "7"})
+        # Matches publication_ops.tenant_root: <root>/tenant-<id>.
+        assert root.endswith(os.path.join("tenant-7"))
 
     def test_traversal_refused(self, tmp_path):
         for bad in ("..", ".", "../..", "a/../../b", ""):
