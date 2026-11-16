@@ -130,16 +130,25 @@ _APP_COMMANDS = {
 
 def queue_app_command(session: Session, tenant_id: int, device_id: int,
                       action: str, actor_user_id: int,
-                      itunes_store_id=None, bundle_id=None, adapter=None):
-    _device(session, tenant_id, device_id)
+                      itunes_store_id=None, bundle_id=None,
+                      configuration=None, adapter=None):
+    device = _device(session, tenant_id, device_id)
     if action not in _APP_COMMANDS:
         raise AppOpsError(
             f"action must be one of {sorted(_APP_COMMANDS)}", 400)
     enrollment = _active_enrollment(session, tenant_id, device_id)
     try:
         if action == "install":
+            # The KosherGuard app's managed configuration
+            # (com.apple.configuration.managed) needs the device record
+            # id, which only this server knows: fill it when the
+            # operator did not. controlPlaneBaseURL is never invented -
+            # no live value is baked in; the operator supplies it.
+            if configuration is not None:
+                configuration = dict(configuration)
+                configuration.setdefault("deviceID", device.id)
             payload = app_management.install_application_command(
-                itunes_store_id=itunes_store_id)
+                itunes_store_id=itunes_store_id, configuration=configuration)
         elif action == "remove":
             if not bundle_id:
                 raise AppOpsError("remove requires bundle_id", 400)
