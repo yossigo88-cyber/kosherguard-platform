@@ -40,8 +40,12 @@ push, and command delivery are explicitly untested and labeled as such.
 - Go tools + library for Apple's Device Enrollment Program (ADE/DEP) API:
   token sync, device fetch, profile assignment. MIT license (verified).
 - Covers the ABM/ASM side: syncing enrolled devices and assigning the MDM
-  enrollment profile. Blocked until the Apple Business organization issue is
-  resolved; code here is an adapter shell with no live calls.
+  enrollment profile. `mdm/nanodep.py` implements the documented depserver
+  contract (HTTP Basic auth, /v1/assigner, cursor-paginated device fetch and
+  profile assignment through the transparent-auth /proxy/{name}/... path),
+  contract-tested against a local fixture server. It is IMPLEMENTED but
+  UNVERIFIED against Apple: no Apple Business organization, DEP tokens, or
+  NanoDEP server exist yet, so no live call has ever been made.
 
 ### Alternatives considered and rejected
 
