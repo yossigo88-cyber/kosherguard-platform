@@ -95,6 +95,12 @@ class MDMCommandBody(BaseModel):
     payload: dict = {}
 
 
+class CredentialBody(BaseModel):
+    kind: str
+    label: str
+    content_base64: str
+
+
 class LoginBody(BaseModel):
     email: str
     password: str
@@ -333,6 +339,13 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                     doc = schedule_ops.with_schedules(doc, existing)
             policy_ops.enforce_on_content_mutation(
                 session, user.tenant_id, policy, doc)
+            if not body.enabled:
+                default = policy_ops.selected_default(session,
+                                                      user.tenant_id)
+                if default is not None and default.id == policy.id:
+                    raise policy_ops.PolicyError(
+                        "cannot disable the selected default policy; "
+                        "select another default first", 409)
         except policy_ops.PolicyError as exc:
             return error(exc.status, str(exc))
         policy.name = body.name
@@ -607,6 +620,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"tenants": rows}
 
     # -- Device dataset-credential issuance (M6) ----------------------
+
     # Mints the short-lived scoped tokens url-filter-server verifies.
     # The raw token is returned once to the guardian and never stored
     # or logged; revocation is by short expiry (+ jti list server-side).
@@ -647,7 +661,121 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         session.commit()
         return {"device_id": device.id, "credential": token}
 
+    # -- Credential artifacts (Part 16 upload screens) ------------------
+
+    # Full lifecycle (upload/list/rotate/revoke) with the secret bytes
+    # on the server filesystem only. Fixture-only during this build:
+    # artifacts are stamped with settings.environment and the screen
+    # warns on any non-production build. Content is never returned.
+    from .credential_ops import (KINDS, CredentialError, artifact_json,
+                                 decode_content, delete_secret,
+                                 fingerprint, write_secret)
+    from .models import CredentialArtifact
+
+    def credential_routes():
+        @app.get("/api/credentials")
+        def list_credentials(user: User = Depends(current_user),
+                             session: Session = Depends(db_session)):
+            rows = session.execute(select(CredentialArtifact).where(
+                CredentialArtifact.tenant_id == user.tenant_id
+            ).order_by(CredentialArtifact.id)).scalars().all()
+            return {"environment": settings.environment,
+                    "fixture_only": settings.environment != "production",
+                    "credentials": [artifact_json(r) for r in rows]}
+
+        @app.post("/api/credentials",
+                  dependencies=[Depends(require_csrf_header)])
+        def upload_credential(body: CredentialBody,
+                              user: User = Depends(current_user),
+                              session: Session = Depends(db_session)):
+            denied = require_owner(user)
+            if denied is not None:
+                return denied
+            if body.kind not in KINDS:
+                return error(400, f"kind must be one of {', '.join(KINDS)}")
+            label = body.label.strip()
+            if not label:
+                return error(400, "label is required")
+            try:
+                raw = decode_content(body.content_base64)
+            except CredentialError as exc:
+                return error(400, str(exc))
+            try:
+                rel = write_secret(settings.credentials_root,
+                                   user.tenant_id, raw)
+            except CredentialError as exc:
+                return error(503, str(exc))
+            row = CredentialArtifact(
+                tenant_id=user.tenant_id, kind=body.kind, label=label,
+                sha256=fingerprint(raw), byte_size=len(raw),
+                storage_path=rel, environment=settings.environment,
+                uploaded_by_user_id=user.id)
+            session.add(row)
+            session.flush()
+            ScopedSession(session, user.tenant_id).audit(
+                "credential.upload", f"{row.kind} '{row.label}' "
+                f"(sha256 {row.sha256[:12]}..., {row.byte_size} bytes, "
+                f"env={row.environment})", actor_user_id=user.id)
+            session.commit()
+            return artifact_json(row)
+
+        @app.post("/api/credentials/{credential_id}/rotate",
+                  dependencies=[Depends(require_csrf_header)])
+        def rotate_credential(credential_id: int, body: CredentialBody,
+                              user: User = Depends(current_user),
+                              session: Session = Depends(db_session)):
+            denied = require_owner(user)
+            if denied is not None:
+                return denied
+            row = session.get(CredentialArtifact, credential_id)
+            if row is None or row.tenant_id != user.tenant_id:
+                return error(404, "credential not found")
+            if row.status != "active":
+                return error(409, "credential is revoked")
+            try:
+                raw = decode_content(body.content_base64)
+            except CredentialError as exc:
+                return error(400, str(exc))
+            rel = write_secret(settings.credentials_root,
+                               user.tenant_id, raw)
+            delete_secret(settings.credentials_root, row.storage_path)
+            row.storage_path = rel
+            row.sha256 = fingerprint(raw)
+            row.byte_size = len(raw)
+            row.version += 1
+            row.rotated_at = utcnow()
+            ScopedSession(session, user.tenant_id).audit(
+                "credential.rotate", f"{row.kind} '{row.label}' "
+                f"-> version {row.version}", actor_user_id=user.id)
+            session.commit()
+            return artifact_json(row)
+
+        @app.delete("/api/credentials/{credential_id}",
+                    dependencies=[Depends(require_csrf_header)])
+        def revoke_credential(credential_id: int,
+                              user: User = Depends(current_user),
+                              session: Session = Depends(db_session)):
+            denied = require_owner(user)
+            if denied is not None:
+                return denied
+            row = session.get(CredentialArtifact, credential_id)
+            if row is None or row.tenant_id != user.tenant_id:
+                return error(404, "credential not found")
+            if row.status != "active":
+                return error(409, "credential already revoked")
+            delete_secret(settings.credentials_root, row.storage_path)
+            row.status = "revoked"
+            row.revoked_at = utcnow()
+            ScopedSession(session, user.tenant_id).audit(
+                "credential.revoke", f"{row.kind} '{row.label}' "
+                f"(secret bytes deleted)", actor_user_id=user.id)
+            session.commit()
+            return artifact_json(row)
+
+    credential_routes()
+
     # -- Guardian account lifecycle (M6) ------------------------------
+
     # Approved requirement: multiple authorized parent/guardian
     # accounts per family tenant. Owners invite; invite tokens are
     # single-use, expiring, and stored hashed.
@@ -781,6 +909,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return user_json(target)
 
     # -- Platform category dataset administration (M6) -----------------
+
     # Approved fallback for the commercial category feed: a
     # human-reviewed seed dataset managed through these routes.
     # Platform-admin only (is_platform_admin is set out of band, never
@@ -908,7 +1037,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         try:
             result = publication_ops.publish_selected(
                 session, user.tenant_id, settings.publications_root,
-                user.email)
+                user.email, categories_path=settings.categories_file)
         except publication_ops.PolicyError as exc:
             session.rollback()
             return error(exc.status, str(exc))
@@ -923,7 +1052,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def publication_current(user: User = Depends(current_user)):
         from .publisher import Publisher
         try:
-            manifest = Publisher(settings.publications_root).current()
+            manifest = Publisher(publication_ops.tenant_root(
+                settings.publications_root, user.tenant_id)).current()
         except Exception as exc:
             return error(500, f"could not read current generation: {exc}")
         if manifest is None:
