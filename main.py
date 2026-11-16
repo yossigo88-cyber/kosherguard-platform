@@ -244,7 +244,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     # -- Milestone 2: policies, devices, tighten-only enforcement ------
 
     from . import policy_ops, publication_ops
-    from .models import (Device, DeviceAssignment, Policy, PolicyVersion,
+    from .models import (AuditEvent, Device, DeviceAssignment,
+                         MDMEnrollment, Policy, PolicyVersion,
                          PublicationState)
 
     def require_guardian(user: User) -> JSONResponse | None:
@@ -504,6 +505,56 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         except mdm_ops.MDMError as exc:
             return error(exc.status, str(exc))
         return command_json(row)
+
+# -- Overview and customer (tenant) administration (M6) -----------
+    @app.get("/api/overview")
+    def overview(user: User = Depends(current_user),
+                 session: Session = Depends(db_session)):
+        """Guardian-facing overview: this tenant's own numbers only."""
+        from sqlalchemy import func
+        tid = user.tenant_id
+        devices = session.execute(select(func.count()).select_from(
+            Device).where(Device.tenant_id == tid)).scalar()
+        policies = session.execute(select(func.count()).select_from(
+            Policy).where(Policy.tenant_id == tid)).scalar()
+        guardians = session.execute(select(func.count()).select_from(
+            User).where(User.tenant_id == tid)).scalar()
+        enrollments = session.execute(select(func.count()).select_from(
+            MDMEnrollment).where(MDMEnrollment.tenant_id == tid)).scalar()
+        recent = session.execute(
+            select(AuditEvent).where(AuditEvent.tenant_id == tid)
+            .order_by(AuditEvent.id.desc()).limit(10)).scalars().all()
+        return {
+            "devices": devices, "policies": policies,
+            "guardians": guardians, "enrollments": enrollments,
+            "recent_activity": [
+                {"action": a.action, "detail": a.detail,
+                 "at": a.created_at.isoformat()} for a in recent],
+        }
+
+    @app.get("/api/admin/tenants")
+    def admin_list_tenants(user: User = Depends(current_user),
+                           session: Session = Depends(db_session)):
+        """Platform-admin customer list: tenant names and counts only -
+        never another tenant's policies, devices or user details."""
+        denied = require_platform_admin(user)
+        if denied is not None:
+            return denied
+        from sqlalchemy import func
+        from .models import Tenant
+        rows = []
+        for tenant in session.execute(select(Tenant)).scalars().all():
+            rows.append({
+                "id": tenant.id, "name": tenant.name,
+                "created_at": tenant.created_at.isoformat(),
+                "devices": session.execute(select(func.count())
+                    .select_from(Device).where(
+                        Device.tenant_id == tenant.id)).scalar(),
+                "guardians": session.execute(select(func.count())
+                    .select_from(User).where(
+                        User.tenant_id == tenant.id)).scalar(),
+            })
+        return {"tenants": rows}
 
     # -- Device dataset-credential issuance (M6) ----------------------
     # Mints the short-lived scoped tokens url-filter-server verifies.
