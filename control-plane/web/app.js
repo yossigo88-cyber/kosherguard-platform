@@ -21,8 +21,8 @@ $("login-form").addEventListener("submit", async (e) => {
 });
 
 async function showApp() {
-  ["login-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
+  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -33,6 +33,8 @@ async function refresh() {
   refreshCategories();
   refreshCustomers();
   refreshCredentials();
+  refreshGuardians();
+  refreshMfaState();
   const policies = await api("/api/policies");
   policyList = policies.body.policies || [];
   refreshSchedules();
@@ -202,6 +204,175 @@ $("category-form").addEventListener("submit", async (e) => {
     err.textContent = r.body.detail || r.body.error || `Error ${r.status}`;
   }
 });
+
+
+
+$("password-change-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("pc-error"), ok = $("pc-ok");
+  err.textContent = ""; ok.textContent = "";
+  const r = await api("/api/auth/password-change", {
+    method: "POST",
+    headers: {"Content-Type": "application/json",
+              "X-KosherGuard-Request": "1"},
+    body: JSON.stringify({current_password: $("pc-current").value,
+                          new_password: $("pc-new").value}),
+  });
+  if (r.status === 200) {
+    ok.textContent = "Password changed.";
+    $("pc-current").value = ""; $("pc-new").value = "";
+  } else {
+    err.textContent = (r.body && r.body.error) || "Change failed.";
+  }
+});
+
+async function refreshMfaState() {
+  const r = await api("/api/auth/me");
+  if (r.status !== 200) return;
+  const enrolled = r.body.mfa_enabled;
+  $("mfa-state").textContent = enrolled
+    ? "Two-factor authentication is ON for your account."
+    : "Two-factor authentication is off.";
+  $("mfa-start").classList.toggle("hidden", enrolled);
+}
+
+$("mfa-start").addEventListener("click", async () => {
+  const r = await api("/api/auth/mfa/enroll-start", {
+    method: "POST", headers: {"X-KosherGuard-Request": "1"}});
+  if (r.status !== 200) return;
+  $("mfa-uri").value = r.body.provisioning_uri;
+  $("mfa-enroll-box").classList.remove("hidden");
+  $("mfa-start").classList.add("hidden");
+});
+
+$("mfa-confirm-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("mfa-error"), ok = $("mfa-ok");
+  err.textContent = ""; ok.textContent = "";
+  const uri = $("mfa-uri").value;
+  const secret = new URLSearchParams(uri.split("?")[1] || "")
+    .get("secret") || "";
+  const r = await api("/api/auth/mfa/enroll-confirm", {
+    method: "POST",
+    headers: {"Content-Type": "application/json",
+              "X-KosherGuard-Request": "1"},
+    body: JSON.stringify({secret, code: $("mfa-code").value,
+                          password: $("mfa-password").value}),
+  });
+  if (r.status === 200) {
+    ok.textContent = "Two-factor authentication enabled.";
+    $("mfa-enroll-box").classList.add("hidden");
+    refreshMfaState();
+  } else {
+    err.textContent = (r.body && r.body.error) || "Confirmation failed.";
+  }
+});
+
+async function refreshGuardians() {
+  const r = await api("/api/guardians");
+  const tbody = $("guardians-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  if (r.status !== 200) return;
+  for (const g of r.body.guardians || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(g.email)}</td><td>${esc(g.role)}</td>` +
+      `<td>${g.mfa_enrolled ? "enrolled" : "not enrolled"}</td>` +
+      `<td>${esc((g.created_at || "").slice(0, 10))}</td>`;
+    const td = document.createElement("td");
+    const roleBtn = document.createElement("button");
+    roleBtn.className = "link";
+    roleBtn.textContent = "change role";
+    roleBtn.onclick = async () => {
+      const role = prompt("New role for " + g.email +
+                          " (guardian, viewer, owner):");
+      if (!role) return;
+      const rr = await api(`/api/guardians/${g.id}/role`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json",
+                  "X-KosherGuard-Request": "1"},
+        body: JSON.stringify({role}),
+      });
+      const err = $("guardian-error");
+      err.textContent = rr.status === 200 ? "" :
+        ((rr.body && rr.body.error) || "Role change failed.");
+      refreshGuardians();
+    };
+    const mfaBtn = document.createElement("button");
+    mfaBtn.className = "link";
+    mfaBtn.textContent = "reset MFA";
+    mfaBtn.onclick = async () => {
+      const password = prompt(
+        "Your password (fresh authentication) to reset MFA for " +
+        g.email + ":");
+      if (!password) return;
+      const rr = await api(`/api/guardians/${g.id}/mfa-reset`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json",
+                  "X-KosherGuard-Request": "1"},
+        body: JSON.stringify({password}),
+      });
+      const err = $("guardian-error");
+      err.textContent = rr.status === 200 ? "" :
+        ((rr.body && rr.body.error) || "MFA reset failed.");
+      refreshGuardians();
+    };
+    td.appendChild(roleBtn);
+    td.appendChild(document.createTextNode(" "));
+    td.appendChild(mfaBtn);
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+}
+
+$("guardian-invite-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("guardian-error"), ok = $("guardian-ok");
+  err.textContent = ""; ok.textContent = "";
+  const r = await api("/api/guardians/invite", {
+    method: "POST",
+    headers: {"Content-Type": "application/json",
+              "X-KosherGuard-Request": "1"},
+    body: JSON.stringify({email: $("g-email").value,
+                          role: $("g-role").value}),
+  });
+  if (r.status === 200) {
+    ok.textContent = "Invite created for " + r.body.invited +
+      " (expires " + r.body.expires_at.slice(0, 10) + ").";
+    const link = location.origin + location.pathname + "?invite=" + r.body.invite_token;
+    $("invite-link").value = link;
+    $("invite-result").classList.remove("hidden");
+    $("g-email").value = "";
+  } else {
+    $("invite-result").classList.add("hidden");
+    err.textContent = (r.body && r.body.error) || "Invite failed.";
+  }
+});
+
+$("invite-accept-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("accept-error"), ok = $("accept-ok");
+  err.textContent = ""; ok.textContent = "";
+  const r = await api("/api/invites/accept", {
+    method: "POST",
+    headers: {"Content-Type": "application/json",
+              "X-KosherGuard-Request": "1"},
+    body: JSON.stringify({token: $("a-token").value,
+                          password: $("a-password").value}),
+  });
+  if (r.status === 200) {
+    ok.textContent = "Invite accepted for " + r.body.accepted +
+      " - sign in above.";
+    $("a-token").value = ""; $("a-password").value = "";
+  } else {
+    err.textContent = (r.body && r.body.error) || "Accept failed.";
+  }
+});
+
+// Prefill the accept form when arriving via an invite link.
+(function () {
+  const t = new URLSearchParams(location.search).get("invite");
+  if (t) { $("a-token").value = t; }
+})();
 
 async function refreshOverview() {
   const r = await api("/api/overview");
