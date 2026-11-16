@@ -12,6 +12,7 @@ Revision: 0008
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = "0008"
 down_revision = "0007"
@@ -94,8 +95,11 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.Integer(),
                   sa.ForeignKey("tenants.id"), nullable=False),
         sa.Column("email", sa.String(length=320), nullable=False),
-        sa.Column("role", sa.Enum("owner", "guardian", "viewer",
-                                  name="role"), nullable=False),
+        sa.Column("role", sa.Enum(
+            "owner", "guardian", "viewer", name="role").with_variant(
+            postgresql.ENUM("owner", "guardian", "viewer", name="role",
+                            create_type=False),
+            "postgresql"), nullable=False),
         sa.Column("token_hash", sa.String(length=64), nullable=False),
         sa.Column("invited_by_user_id", sa.Integer(),
                   sa.ForeignKey("users.id"), nullable=True),
