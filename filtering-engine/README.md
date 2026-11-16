@@ -392,7 +392,9 @@ ID, a validated network-binding map, and a reserved (always empty)
 credential structure for a future authenticated channel. The complete
 set is built and validated before activation; a query never observes a
 partially loaded or mixed configuration, and no per-query database,
-file, or network access happens during request processing.
+file, or network access happens for policy resolution during request
+processing. (Normal DNS forwarding of allowed queries to upstream
+resolvers is unchanged; the claim covers policy resolution only.)
 
 **Generation format** (what the Stage 11D publisher will emit; the
 engine loads it today):
@@ -415,10 +417,11 @@ device inventory in the format: each binding carries its device
 reference inline. A binding with missing, null, or malformed device
 metadata rejects the whole generation; whether a well-formed device_id
 exists in the dashboard registry is NOT verifiable from the generation
-format, and no registry lookup is performed - the publisher enforces
-registry existence upstream. The policy set must be exactly the default
-policy plus the policies referenced by bindings (the publisher emits
-exactly that set): a manifest listing a policy nothing references, or a
+format, and no registry lookup is performed - enforcing registry
+existence is a requirement on the future Stage 11D publisher, which
+does not exist yet. The policy set must be exactly the default policy
+plus the policies referenced by bindings (the future publisher is
+required to emit exactly that set): a manifest listing a policy nothing references, or a
 reference to a policy with no document, is an inconsistent generation
 and is rejected fail-closed - silently accepting it could mask a binding
 lost from `devices.json` and quietly demote those clients to the default
