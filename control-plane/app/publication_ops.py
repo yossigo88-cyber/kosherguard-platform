@@ -100,6 +100,10 @@ def publish_selected(session: Session, tenant_id: int, root: str,
     # immutable generation. No IP/device identity inference is made.
     from .policy_ops import prove_tighten_only
     extras = {}
+    from .exception_ops import export_exceptions
+    overlay = export_exceptions(session, tenant_id)
+    if overlay:
+        extras['exceptions.json'] = canonical_json(overlay)
     mapping = {}
     from .group_ops import effective_assignments
     assignments = effective_assignments(session, tenant_id)
