@@ -31,6 +31,11 @@ from .models import (AuthSession, LoginAttempt,
                      PendingMfaEnrollment, Role, User)
 
 
+class PolicyPreviewBody(BaseModel):
+    domain: str
+    at: datetime | None = None
+
+
 class PublicationJobBody(BaseModel):
     request_key: str
 
@@ -1552,6 +1557,29 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "result": json.loads(job.result) if job.result else None,
                 "error": job.last_error,
                 "semantics": "publishes the selected policy at worker execution time"}
+
+    @app.get("/api/policy-templates")
+    def policy_templates(user: User = Depends(current_user)):
+        from .policy_preview import TEMPLATES
+        return {"templates": TEMPLATES,
+                "notice": "Examples only; categories require owner approval"}
+
+    @app.post("/api/policies/{policy_id}/preview",
+              dependencies=[Depends(require_csrf_header)])
+    def preview_policy(policy_id: int, body: PolicyPreviewBody,
+                       user: User = Depends(current_user),
+                       session: Session = Depends(db_session)):
+        from .models import Policy
+        from .policy_preview import preview
+        import json
+        row = session.get(Policy, policy_id)
+        if row is None or row.tenant_id != user.tenant_id:
+            return error(404, "policy not found")
+        try:
+            return preview(json.loads(row.engine_doc), body.domain,
+                           settings.categories_file, body.at)
+        except (ValueError, OSError) as exc:
+            return error(400, str(exc))
 
     @app.post("/api/publications/jobs", dependencies=[Depends(require_csrf_header)])
     def enqueue_publication(body: PublicationJobBody,
