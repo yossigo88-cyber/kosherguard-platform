@@ -31,37 +31,68 @@ struct FilterStatus: Equatable {
     }
 }
 
-/// Call site for the scoped-credential request path: the app owns a
-/// CredentialIssuanceClient and surfaces issuance state honestly.
-/// "Not requested" is the only state reachable in this build - there
-/// is no server session acquisition (native token exchange) yet, so
-/// no mint can actually run; the UI says so instead of pretending.
+/// Call site for the scoped-credential request path: sign in natively
+/// (AuthSessionClient), mint a scoped credential
+/// (CredentialIssuanceClient), store both in the Keychain
+/// (KeychainCredentialStore). This is the real flow as code - still
+/// UNCOMPILED/UNSIGNED/UNTESTED with no configured server URL in this
+/// build, so it has never run; that is stated, not hidden.
 @Observable
 final class CredentialController {
     enum State: String {
-        case notRequested = "Not requested (sign-in for devices not built)"
-        case issued = "Issued"
-        case failed = "Issuance failed"
+        case signedOut = "Not signed in"
+        case signingIn = "Signing in"
+        case issuing = "Requesting device credential"
+        case issued = "Device credential issued"
+        case failed = "Failed"
     }
-    private(set) var state: State = .notRequested
-    private let client: CredentialIssuanceClient?
+    private(set) var state: State = .signedOut
+    private(set) var lastError: String?
 
-    init(client: CredentialIssuanceClient?) {
-        self.client = client
+    private let auth: AuthSessionClient
+    private let issuance: CredentialIssuanceClient
+    private let store: KeychainCredentialStore
+
+    init(baseURL: URL, session: URLSession = .shared,
+         store: KeychainCredentialStore = KeychainCredentialStore()) {
+        self.auth = AuthSessionClient(baseURL: baseURL, session: session)
+        self.issuance = CredentialIssuanceClient(baseURL: baseURL,
+                                                 session: session)
+        self.store = store
     }
 
-    /// Wired for the future native-auth flow: without a guardian
-    /// session (see CredentialIssuanceClient docs) there is nothing
-    /// to send, so this is a deliberate no-op that keeps the honest
-    /// state. It exists so the call site is real and reviewable.
-    func requestDatasetCredential(deviceID: Int) async {
-        guard client != nil else { return }  // stays .notRequested
+    /// Full native flow: sign in, mint a dataset-scoped credential for
+    /// this device, persist both in the Keychain. Dataset scope is the
+    /// only scope useful to the app today (prefilter updates); doh
+    /// stays refused until the held server change lands.
+    func signInAndIssue(email: String, password: String,
+                        totpCode: String?, deviceID: Int) async {
+        state = .signingIn
+        do {
+            let cookie = try await auth.signIn(.init(
+                email: email, password: password, totpCode: totpCode))
+            try store.save(key: "session", value: cookie)
+            state = .issuing
+            let credential = try await issuance.mint(
+                deviceID: deviceID, scope: .dataset,
+                sessionCookie: cookie)
+            try store.save(key: "credential.dataset",
+                           value: credential.token)
+            state = .issued
+        } catch {
+            lastError = String(describing: error)
+            state = .failed
+        }
     }
 }
 
 @main
 struct KosherGuardApp: App {
-    @State private var credentials = CredentialController(client: nil)
+    // FIXTURE base URL: this build has no configured server, so the
+    // controller is created against an invalid host and cannot reach
+    // anything. A signed build would read this from MDM configuration.
+    @State private var credentials = CredentialController(
+        baseURL: URL(string: "https://control-plane.invalid")!)
 
     var body: some Scene {
         WindowGroup {
