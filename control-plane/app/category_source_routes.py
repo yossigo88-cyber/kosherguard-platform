@@ -1,14 +1,27 @@
 """Category source registry routes (Answer 22): provenance (license +
-attribution), versioned imports with SHA-256, category mapping and
-validation results on record, manual review before activation, and
-rollback. Staff-only (owner / security_admin), mirroring the category
-dataset admin gate. A repository's open-source license is NOT assumed
-to make its dataset commercially usable - license and attribution are
-required fields and review is explicit. No paid classification feed is
-introduced here; that needs separate approval."""
+attribution), versioned imports whose SHA-256 is VERIFIED against the
+canonical dataset bytes (canonical JSON of the validated rows: sorted
+keys, 2-space indent, trailing newline - app.publisher.canonical_json),
+category mapping and validation results on record, manual review before
+activation, and rollback. Staff-only (owner / security_admin), mirroring
+the category dataset admin gate. A repository's open-source license is
+NOT assumed to make its dataset commercially usable - license and
+attribution are required fields and review is explicit. No paid
+classification feed is introduced here; that needs separate approval.
+
+Activation/rollback commit the rule changes first, then re-sync the
+categories file AFTER the commit with an atomic replace (tempfile +
+os.replace) and a post-write digest check, so the on-disk document
+can never be ahead of the committed rules and a failed sync leaves
+the last-known-good file untouched (audited). Concurrent activations
+serialize on the source row (FOR UPDATE). The publish flow re-verifies
+the file against the committed rules before shipping, so effective
+categories cannot diverge from the database."""
+import hashlib
 import json
 import os
 import re
+import tempfile
 
 from fastapi import Depends
 from pydantic import BaseModel, Field
@@ -16,6 +29,7 @@ from sqlalchemy import select
 
 from .models import (CategoryRule, CategorySource, CategorySourceUpdate,
                      StaffRole, utcnow)
+from .publication_ops import build_categories_doc, canonical_json
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UPDATE_STATUSES = ("pending_review", "active", "rejected",
@@ -153,6 +167,15 @@ def register_category_source_routes(app, *, error, current_user,
             rules = _validate_rules(body.rules)
         except ValueError as exc:
             return error(400, f"invalid rules: {exc}")
+        # Payload integrity: the declared hash must match the canonical
+        # bytes of the validated dataset, so a tampered or truncated
+        # import can never be activated under a format-valid hash.
+        digest = hashlib.sha256(canonical_json(rules)).hexdigest()
+        if digest != body.sha256:
+            return error(
+                400, "sha256 does not match the canonical dataset bytes "
+                     "(sha256 over canonical JSON of the validated rules: "
+                     "sorted keys, 2-space indent, trailing newline)")
         update = CategorySourceUpdate(
             source_id=source.id, version=body.version,
             sha256=body.sha256,
@@ -190,7 +213,11 @@ def register_category_source_routes(app, *, error, current_user,
         denied = _staff(user)
         if denied is not None:
             return denied, None
-        source = session.get(CategorySource, source_id)
+        # Lock the source row so concurrent activations/rollbacks of
+        # the same source serialize: the loser sees the winner's
+        # committed state instead of interleaving rule writes.
+        source = session.get(CategorySource, source_id,
+                             with_for_update=True)
         if source is None:
             return error(404, "source not found"), None
         update = session.get(CategorySourceUpdate, body.update_id)
@@ -235,40 +262,66 @@ def register_category_source_routes(app, *, error, current_user,
             row.deactivated_at = None
             row.added_by_user_id = user.id
         session.flush()
-        _rebuild_categories_file(session)
         update.status = "active"
         update.reviewed_by_user_id = user.id
         update.reviewed_at = now
         return len(rules)
 
-    def _rebuild_categories_file(session):
-        """Regenerate the categories document the publish flow ships
-        (KG_CATEGORIES_FILE) from the active rules, and prove it with
-        the engine's own loader before writing."""
-        import sys as _sys
-        _engine_src = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__)))),
-            "filtering-engine", "src")
-        if _engine_src not in _sys.path:
-            _sys.path.insert(0, _engine_src)
-        import category_db
-        from .publication_ops import canonical_json
-        rows = session.scalars(select(CategoryRule).where(
-            CategoryRule.active.is_(True))).all()
-        doc = {"_meta": {"source": "kosherguard-control-plane",
-                         "note": "registry-managed dataset"},
-               "domains": {}}
-        for row in rows:
-            doc["domains"].setdefault(row.domain, [])
-            if row.category not in doc["domains"][row.domain]:
-                doc["domains"][row.domain].append(row.category)
-        for domain in doc["domains"]:
-            doc["domains"][domain] = sorted(doc["domains"][domain])
-        category_db.CategoryDB(doc["domains"], meta=doc["_meta"])
-        if settings.categories_file:
-            with open(settings.categories_file, "wb") as fh:
-                fh.write(canonical_json(doc))
-        return len(doc["domains"])
+    def _sync_categories_file(session, user):
+        """Re-sync the categories file (KG_CATEGORIES_FILE) from the
+        COMMITTED active rules. Runs after the database commit so the
+        file can never be ahead of the database: the document is built
+        and validated with the engine's own loader, written to a
+        tempfile and atomically os.replace'd into place (a failed sync
+        leaves the last-known-good file untouched), then re-read and
+        digest-checked. A failure is audited and reported; the
+        committed rules stay the source of truth and the publish flow
+        refuses to ship a diverged file."""
+        if not settings.categories_file:
+            return None
+        from .db import ScopedSession
+        try:
+            doc = build_categories_doc(session)
+            payload = canonical_json(doc)
+            path = settings.categories_file
+            directory = os.path.dirname(os.path.abspath(path)) or "."
+            fd, tmp = tempfile.mkstemp(dir=directory,
+                                       prefix=".categories-",
+                                       suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            with open(path, "rb") as fh:
+                if hashlib.sha256(fh.read()).hexdigest() != \
+                        hashlib.sha256(payload).hexdigest():
+                    raise OSError("post-write digest mismatch")
+        except Exception as exc:
+            ScopedSession(session, user.tenant_id).audit(
+                "category_source.file_sync_failed",
+                f"categories file sync failed after commit: {exc}",
+                actor_user_id=user.id)
+            session.commit()
+            return error(
+                500, "category rules committed, but syncing the "
+                     "categories file failed; the previous file is "
+                     "untouched (last-known-good) and publication "
+                     "refuses diverged data. Re-run category-source "
+                     "resync once the filesystem is writable.")
+        ScopedSession(session, user.tenant_id).audit(
+            "category_source.file_synced",
+            f"categories file synced: {len(doc['domains'])} domains",
+            actor_user_id=user.id)
+        session.commit()
+        return None
 
     @app.post("/api/admin/category-sources/{source_id}/activate",
               dependencies=[Depends(require_csrf_header)])
@@ -298,6 +351,9 @@ def register_category_source_routes(app, *, error, current_user,
             f"version={update.version!r} rules={applied}",
             actor_user_id=user.id)
         session.commit()
+        sync_error = _sync_categories_file(session, user)
+        if sync_error is not None:
+            return sync_error
         return _update_json(update)
 
     @app.post("/api/admin/category-sources/{source_id}/rollback",
@@ -341,7 +397,6 @@ def register_category_source_routes(app, *, error, current_user,
             row.deactivated_at = None
             row.added_by_user_id = user.id
         session.flush()
-        _rebuild_categories_file(session)
         update.status = "active"
         update.reviewed_by_user_id = user.id
         update.reviewed_at = utcnow()
@@ -351,4 +406,25 @@ def register_category_source_routes(app, *, error, current_user,
             f"source {source.id} update {update.id} "
             f"version={update.version!r}", actor_user_id=user.id)
         session.commit()
+        sync_error = _sync_categories_file(session, user)
+        if sync_error is not None:
+            return sync_error
         return _update_json(update)
+
+    @app.post("/api/admin/category-sources/resync",
+              dependencies=[Depends(require_csrf_header)])
+    def resync_categories_file(user=Depends(current_user),
+                               session=Depends(db_session)):
+        """Rebuild the categories file from the committed active rules.
+        Staff-only repair path for a failed sync; it cannot change the
+        effective rules, only re-materialize them."""
+        denied = _staff(user)
+        if denied is not None:
+            return denied
+        sync_error = _sync_categories_file(session, user)
+        if sync_error is not None:
+            return sync_error
+        if not settings.categories_file:
+            return {"synced": False,
+                    "detail": "no categories file configured"}
+        return {"synced": True}
