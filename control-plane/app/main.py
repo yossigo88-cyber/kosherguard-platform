@@ -505,6 +505,47 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return error(exc.status, str(exc))
         return command_json(row)
 
+    # -- Device dataset-credential issuance (M6) ----------------------
+    # Mints the short-lived scoped tokens url-filter-server verifies.
+    # The raw token is returned once to the guardian and never stored
+    # or logged; revocation is by short expiry (+ jti list server-side).
+    @app.post("/api/devices/{device_id}/dataset-credential",
+              dependencies=[Depends(require_csrf_header)])
+    def mint_dataset_credential(device_id: int,
+                                user: User = Depends(current_user),
+                                session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        if not settings.device_token_key:
+            return error(503, "device credential issuance not configured")
+        row = session.get(Device, device_id)
+        if row is None or row.tenant_id != user.tenant_id:
+            return error(404, "device not found")
+        device = row
+        # Load the shared device_auth by file path - the control
+        # plane's own package is also named "app", so a plain import
+        # would resolve to the wrong package.
+        import importlib.util as _ilu
+        _da_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "..",
+            "url-filter-server", "app", "device_auth.py"))
+        _spec = _ilu.spec_from_file_location("kg_device_auth", _da_path)
+        _da = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_da)
+        issue_token = _da.issue_token
+        token = issue_token(
+            settings.device_token_key.encode(),
+            device_id=str(device.id),
+            tenant_id=str(user.tenant_id),
+            scope="dataset",
+            lifetime_seconds=min(
+                settings.session_lifetime_seconds, 86400))
+        ScopedSession(session, user.tenant_id).audit(
+            "device.credential_mint", device.name, actor_user_id=user.id)
+        session.commit()
+        return {"device_id": device.id, "credential": token}
+
     # -- Guardian account lifecycle (M6) ------------------------------
     # Approved requirement: multiple authorized parent/guardian
     # accounts per family tenant. Owners invite; invite tokens are
