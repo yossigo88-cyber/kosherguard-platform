@@ -98,8 +98,10 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   at bda1279. The "doh" mint scope, revocation registry, revoke route
   and per-tenant revocation feed are now PUBLISHED (user-approved
   2026-11-16 10:31; f3518f5, 05454e0; tests 6b09060). The remaining
-  DNS-reporting gap is the dns-edge forwarder + ingestion source -
-  a separate open item, not part of the held set.
+  DNS-reporting chain now connected (this head): doh mint scope +
+  "dns" ingestion source bound to the doh credential scope, plus the
+  dns-edge DNSDecisionReporter wired into the runner as the service's
+  decision logger - all with tests.
 - iOS request-path clients (606bdf4, 4b83612): initially published as
   standalone source; since wired - real call site (CredentialController
   in KosherGuardApp.swift, deliberately no-op until native session
@@ -234,10 +236,16 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   applied one - only a device status report proves application, and
   that awaits the Part 17 device-testing phase; (c) supervision/iOS27+
   gates are device-side (Apple depd65c456fa).
-- DNS decision reporting: NOT connected. Two SEPARATE dependencies:
-  (1) doh minting scope PUBLISHED 2026-11-16 (f3518f5); (2) the
-  dns-edge forwarder + ingestion source remains the open item, its
-  own issue, next in the build queue.
+- DNS decision reporting: CONNECTED (this head). (1) doh mint scope
+  PUBLISHED 2026-11-16 (f3518f5); (2) "dns" ingestion source bound to
+  the doh credential scope (a proxy token cannot write "dns" rows and
+  vice versa, tested); (3) dns-edge DNSDecisionReporter batches real
+  service decisions and POSTs them with the doh credential, wired
+  into the runner as the service's decision logger (best-effort:
+  failures counted and dropped, never delaying a decision). Tests:
+  control-plane test_filter_logs.py (doh roundtrip, default source,
+  cross-scope refusal), dns-edge test_reporter.py (batching, source
+  stamp, drop semantics, runner wiring).
 
 ## Part 11 - Customer-facing website
 
@@ -356,13 +364,21 @@ No credentials invented or hardcoded.
    is labeled UNKNOWN, device behavior BUILT-UNVERIFIED.
 12 Customer management: DONE as code (guardian lifecycle M6).
 13 Customer-facing website: DONE as code (not live).
-14 Database and migrations: DONE.
+14 Database and migrations: DONE. Full alembic coverage (0001-0008):
+   0008 adds the tables previously created only by
+   metadata.create_all (device_app_policies, ddm_status_reports,
+   filter_decisions, category_rules, invite_tokens,
+   credential_artifacts, issued_credentials), and 0007 adds
+   mdm_enrollments.device_udid. Tested: clean alembic-only install
+   (all 20 model tables present, ORM writes work, no create_all) and
+   upgrade from the preserved prior schema with rows preserved.
 15 Hosting/deployment configuration: DONE as code + executable backup
    evidence (see Part 15); live hosting not purchased/authorized.
 16 Security implementation: DONE incl. the three user-approved
    2026-11-16 fixes (see docs/reviews/SECURITY_FIXES_2026-11-16.md);
    check-in sync deployment wiring INCOMPLETE; revocation
-   distribution/consumption DONE with tests (this head).
+   distribution/consumption DONE at the service entrypoints with
+   tests (this head).
 17 Monitoring and logging: DONE as config/docs (not running).
 18 Backup and recovery: DONE (PG roundtrip 2026-11-16 + 16 dashboard
    backup/restore tests).
