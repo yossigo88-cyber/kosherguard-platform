@@ -22,14 +22,16 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["policies-panel", "devices-panel", "mdm-panel", "categories-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["overview-panel", "policies-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
 }
 
 async function refresh() {
+  refreshOverview();
   refreshCategories();
+  refreshCustomers();
   const policies = await api("/api/policies");
   policyList = policies.body.policies || [];
   document.querySelector("#policies tbody").innerHTML = policyList.map(p =>
@@ -198,3 +200,35 @@ $("category-form").addEventListener("submit", async (e) => {
     err.textContent = r.body.detail || r.body.error || `Error ${r.status}`;
   }
 });
+
+async function refreshOverview() {
+  const r = await api("/api/overview");
+  if (r.status !== 200) return;
+  const b = r.body;
+  $("overview-table").querySelector("tbody").innerHTML =
+    [["Devices", b.devices], ["Enrollments", b.enrollments],
+     ["Policies", b.policies], ["Guardians", b.guardians]]
+      .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+  const tbody = $("activity-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const a of b.recent_activity || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(a.at)}</td><td>${esc(a.action)}</td><td>${esc(a.detail)}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function refreshCustomers() {
+  const r = await api("/api/admin/tenants");
+  const panel = $("customers-panel");
+  if (r.status === 403) { panel.classList.add("hidden"); return; }
+  if (r.status !== 200) return;
+  const tbody = $("customers-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const t of r.body.tenants || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(t.name)}</td><td>${t.devices}</td>` +
+      `<td>${t.guardians}</td><td>${esc(t.created_at.slice(0, 10))}</td>`;
+    tbody.appendChild(tr);
+  }
+}
