@@ -84,6 +84,7 @@ ALL_TABLES = {
     "filter_decisions", "category_rules", "pending_mfa_enrollments",
     "invite_tokens", "credential_artifacts", "issued_credentials", "publication_jobs", "device_groups", "group_memberships", "policy_exceptions", "sensitive_command_approvals",
     "enrollment_tickets", "offboarding_cases",
+    "category_sources", "category_source_updates",
 }
 
 
