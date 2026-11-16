@@ -7,13 +7,15 @@ to make its dataset commercially usable - license and attribution are
 required fields and review is explicit. No paid classification feed is
 introduced here; that needs separate approval."""
 import json
+import os
 import re
 
 from fastapi import Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from .models import CategorySource, CategorySourceUpdate, StaffRole, utcnow
+from .models import (CategoryRule, CategorySource, CategorySourceUpdate,
+                     StaffRole, utcnow)
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UPDATE_STATUSES = ("pending_review", "active", "rejected",
@@ -31,7 +33,33 @@ class ImportBody(BaseModel):
     version: str = Field(min_length=1, max_length=120)
     sha256: str
     category_mapping: dict = {}
-    validation_results: dict = {}
+    rules: list[dict] = []
+
+DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$")
+VERDICTS = ("allow", "block")
+
+
+def _validate_rules(raw_rules):
+    """Validate imported dataset rows. Any malformed row rejects the
+    whole import - a partially valid dataset must never become
+    effective. Returns (rules, rejected_count)."""
+    rules = []
+    for item in raw_rules:
+        if not isinstance(item, dict):
+            raise ValueError("each rule must be an object")
+        domain = str(item.get("domain", "")).strip().lower().rstrip(".")
+        category = str(item.get("category", "")).strip()
+        verdict = str(item.get("verdict", "block")).strip()
+        if not domain or not DOMAIN_RE.match(domain) or len(domain) > 253:
+            raise ValueError(f"invalid domain: {item.get('domain')!r}")
+        if not category:
+            raise ValueError(f"rule for {domain!r} has no category")
+        if verdict not in VERDICTS:
+            raise ValueError(f"rule for {domain!r}: verdict must be "
+                             f"one of {VERDICTS}")
+        rules.append({"domain": domain, "category": category,
+                      "verdict": verdict})
+    return rules
 
 
 class ReviewBody(BaseModel):
@@ -52,6 +80,7 @@ def _update_json(u: CategorySourceUpdate) -> dict:
         "id": u.id, "source_id": u.source_id, "version": u.version,
         "sha256": u.sha256,
         "category_mapping": json.loads(u.category_mapping),
+        "rules_count": len(json.loads(u.rules_json)),
         "validation_results": json.loads(u.validation_results),
         "status": u.status,
         "imported_by_user_id": u.imported_by_user_id,
@@ -64,7 +93,7 @@ def _update_json(u: CategorySourceUpdate) -> dict:
 
 def register_category_source_routes(app, *, error, current_user,
                                     db_session, require_csrf_header,
-                                    require_staff, fresh_check):
+                                    require_staff, fresh_check, settings):
     def _staff(user):
         return require_staff(error, user, StaffRole.owner,
                              StaffRole.security_admin)
@@ -120,11 +149,17 @@ def register_category_source_routes(app, *, error, current_user,
         for key, value in body.category_mapping.items():
             if not isinstance(key, str) or not isinstance(value, str):
                 return error(400, "category_mapping must map string to string")
+        try:
+            rules = _validate_rules(body.rules)
+        except ValueError as exc:
+            return error(400, f"invalid rules: {exc}")
         update = CategorySourceUpdate(
             source_id=source.id, version=body.version,
             sha256=body.sha256,
             category_mapping=json.dumps(body.category_mapping),
-            validation_results=json.dumps(body.validation_results),
+            validation_results=json.dumps(
+                {"rows": len(rules), "rejected": 0}),
+            rules_json=json.dumps(rules),
             imported_by_user_id=user.id)
         session.add(update)
         session.flush()
@@ -170,14 +205,81 @@ def register_category_source_routes(app, *, error, current_user,
             return denied, None
         return None, (source, update)
 
+    def _apply_rules(session, user, source, update, now):
+        """Make an update's rows effective: deactivate the rows of the
+        update(s) it replaces, upsert its own rows with provenance, and
+        rebuild the categories file the publisher ships. Rules of a
+        non-active update are never effective."""
+        replaced = session.scalars(select(CategorySourceUpdate).where(
+            CategorySourceUpdate.source_id == source.id,
+            CategorySourceUpdate.status == "active")).all()
+        for old in replaced:
+            old.status = "superseded" if old.id != update.id else old.status
+            for rule in session.scalars(select(CategoryRule).where(
+                    CategoryRule.source_update_id == old.id,
+                    CategoryRule.active.is_(True))).all():
+                rule.active = False
+                rule.deactivated_at = now
+        rules = json.loads(update.rules_json)
+        for item in rules:
+            row = session.scalar(select(CategoryRule).where(
+                CategoryRule.domain == item["domain"]))
+            if row is None:
+                row = CategoryRule(domain=item["domain"])
+                session.add(row)
+            row.category = item["category"]
+            row.verdict = item["verdict"]
+            row.source = f"{source.name}@{update.version}"
+            row.source_update_id = update.id
+            row.active = True
+            row.deactivated_at = None
+            row.added_by_user_id = user.id
+        session.flush()
+        _rebuild_categories_file(session)
+        update.status = "active"
+        update.reviewed_by_user_id = user.id
+        update.reviewed_at = now
+        return len(rules)
+
+    def _rebuild_categories_file(session):
+        """Regenerate the categories document the publish flow ships
+        (KG_CATEGORIES_FILE) from the active rules, and prove it with
+        the engine's own loader before writing."""
+        import sys as _sys
+        _engine_src = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))),
+            "filtering-engine", "src")
+        if _engine_src not in _sys.path:
+            _sys.path.insert(0, _engine_src)
+        import category_db
+        from .publication_ops import canonical_json
+        rows = session.scalars(select(CategoryRule).where(
+            CategoryRule.active.is_(True))).all()
+        doc = {"_meta": {"source": "kosherguard-control-plane",
+                         "note": "registry-managed dataset"},
+               "domains": {}}
+        for row in rows:
+            doc["domains"].setdefault(row.domain, [])
+            if row.category not in doc["domains"][row.domain]:
+                doc["domains"][row.domain].append(row.category)
+        for domain in doc["domains"]:
+            doc["domains"][domain] = sorted(doc["domains"][domain])
+        category_db.CategoryDB(doc["domains"], meta=doc["_meta"])
+        if settings.categories_file:
+            with open(settings.categories_file, "wb") as fh:
+                fh.write(canonical_json(doc))
+        return len(doc["domains"])
+
     @app.post("/api/admin/category-sources/{source_id}/activate",
               dependencies=[Depends(require_csrf_header)])
     def activate_update(source_id: int, body: ReviewBody,
                         user=Depends(current_user),
                         session=Depends(db_session)):
-        """Manual review gate: activate a pending_review update with a
-        fresh staff MFA code and explicit confirmation. The previously
-        active update is superseded (one active per source)."""
+        """Manual review gate + real activation: fresh staff MFA, then
+        the update's rows REPLACE the previously active update's rows
+        in category_rules (source/version/hash bound) and the
+        categories document is rebuilt. A pending update's rows are
+        never effective before this."""
         from .db import ScopedSession
         denied, found = _review(user, session, source_id, body,
                                 "pending_review", "active",
@@ -185,19 +287,16 @@ def register_category_source_routes(app, *, error, current_user,
         if denied is not None:
             return denied
         source, update = found
-        current = session.scalars(select(CategorySourceUpdate).where(
-            CategorySourceUpdate.source_id == source.id,
-            CategorySourceUpdate.status == "active")).all()
-        for row in current:
-            row.status = "superseded"
-        update.status = "active"
-        update.reviewed_by_user_id = user.id
-        update.reviewed_at = utcnow()
+        if not json.loads(update.rules_json):
+            return error(400, "update carries no rules; import the "
+                              "dataset rows before activation")
+        applied = _apply_rules(session, user, source, update, utcnow())
         update.review_notes = body.review_notes
         ScopedSession(session, user.tenant_id).audit(
             "category_source.activate",
             f"source {source.id} update {update.id} "
-            f"version={update.version!r}", actor_user_id=user.id)
+            f"version={update.version!r} rules={applied}",
+            actor_user_id=user.id)
         session.commit()
         return _update_json(update)
 
@@ -221,6 +320,28 @@ def register_category_source_routes(app, *, error, current_user,
             CategorySourceUpdate.status == "active")).all()
         for row in current:
             row.status = "rolled_back"
+            for rule in session.scalars(select(CategoryRule).where(
+                    CategoryRule.source_update_id == row.id,
+                    CategoryRule.active.is_(True))).all():
+                rule.active = False
+                rule.deactivated_at = utcnow()
+        # Reactivate the rollback target's rows (real data rollback,
+        # not just a status flip).
+        for item in json.loads(update.rules_json):
+            row = session.scalar(select(CategoryRule).where(
+                CategoryRule.domain == item["domain"]))
+            if row is None:
+                row = CategoryRule(domain=item["domain"])
+                session.add(row)
+            row.category = item["category"]
+            row.verdict = item["verdict"]
+            row.source = f"{source.name}@{update.version}"
+            row.source_update_id = update.id
+            row.active = True
+            row.deactivated_at = None
+            row.added_by_user_id = user.id
+        session.flush()
+        _rebuild_categories_file(session)
         update.status = "active"
         update.reviewed_by_user_id = user.id
         update.reviewed_at = utcnow()
