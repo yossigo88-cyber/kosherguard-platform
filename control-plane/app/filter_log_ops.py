@@ -13,10 +13,12 @@ from __future__ import annotations
 import importlib.util
 import os
 
-from sqlalchemy import select
+from sqlalchemy import select, delete, or_
 from sqlalchemy.orm import Session
 
-from .models import Device, FilterDecision
+from .models import Device, FilterDecision, Tenant
+from datetime import datetime, timedelta, timezone
+import re
 
 MAX_BATCH = 100
 ALLOWED_ACTIONS = {"allow", "block"}
@@ -78,15 +80,17 @@ def record_decisions(session: Session, claims: dict,
         if dev is None or dev.tenant_id != tenant_id:
             raise FilterLogError("credential binds an unknown device", 403)
         device_pk = dev.id
+    purge_expired(session, tenant_id=tenant_id)
     accepted = 0
     for raw in decisions:
         if not isinstance(raw, dict):
             raise FilterLogError("each decision must be an object")
-        domain = str(raw.get("domain") or raw.get("host") or "")[:255]
+        domain = str(raw.get("domain") or raw.get("host") or "")
         action = str(raw.get("action") or "")
         source = str(raw.get("source") or expected_source or "proxy")
-        if not domain:
-            raise FilterLogError("decision missing domain")
+        domain = domain.strip().lower().rstrip('.')
+        if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", domain):
+            raise FilterLogError("decision requires a domain, never a URL/path")
         if action not in ALLOWED_ACTIONS:
             raise FilterLogError(f"unsupported action: {action!r}")
         if source not in ALLOWED_SOURCES:
@@ -94,11 +98,15 @@ def record_decisions(session: Session, claims: dict,
         if expected_source is not None and source != expected_source:
             raise FilterLogError(
                 "credential scope cannot report this source", 403)
+        # Allowed browsing history is never persisted, even when a client
+        # submits it or includes extra metadata. Reason/rule strings are
+        # untrusted and may contain URL paths, so retain no arbitrary text.
+        if action == "allow":
+            continue
         session.add(FilterDecision(
             tenant_id=tenant_id, device_id=device_pk, source=source,
             domain=domain, action=action,
-            rule=str(raw.get("rule") or "")[:120],
-            reason=str(raw.get("reason") or "")[:300]))
+            rule="blocked", reason="policy blocked domain"))
         accepted += 1
     session.flush()
     return accepted
@@ -106,6 +114,7 @@ def record_decisions(session: Session, claims: dict,
 
 def recent_decisions(session: Session, tenant_id: int,
                      limit: int = 200) -> list[FilterDecision]:
+    purge_expired(session, tenant_id=tenant_id)
     return list(session.scalars(
         select(FilterDecision)
         .where(FilterDecision.tenant_id == tenant_id)
@@ -129,6 +138,7 @@ def edge_status(session: Session, tenant_id: int) -> dict:
 
     from app.models import FilterDecision, PublicationState
 
+    purge_expired(session, tenant_id=tenant_id)
     count, latest = session.execute(
         select(func.count(FilterDecision.id),
                func.max(FilterDecision.received_at))
@@ -160,3 +170,31 @@ def edge_status(session: Session, tenant_id: int) -> dict:
             "connected - ingestion route live, no dns decisions "
             "reported yet"),
     }
+
+
+def purge_expired(session: Session, tenant_id=None, now=None) -> int:
+    """Physical DELETE, including legacy allowed/invalid rows. Not hiding.
+
+    Called by ingestion, reads and the standalone maintenance loop. Offline
+    time stops a loop, but the next start/read deletes before serving data.
+    """
+    now = now or datetime.now(timezone.utc)
+    tenants = select(Tenant)
+    if tenant_id is not None:
+        tenants = tenants.where(Tenant.id == tenant_id)
+    removed = 0
+    for tenant in session.scalars(tenants):
+        days = tenant.blocked_log_retention_days
+        if not isinstance(days, int) or not 1 <= days <= 30:
+            days = 7
+        result = session.execute(delete(FilterDecision).where(
+            FilterDecision.tenant_id == tenant.id,
+            or_(FilterDecision.action != "block",
+                FilterDecision.domain.like("%/%"),
+                FilterDecision.domain.like("%?%"),
+                FilterDecision.domain.like("%#%"),
+                FilterDecision.domain.like("%@%"),
+                FilterDecision.domain.like("%:%"),
+                FilterDecision.received_at <= now - timedelta(days=days))))
+        removed += result.rowcount
+    return removed
