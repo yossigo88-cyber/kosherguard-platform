@@ -23,10 +23,20 @@ from policy_engine import PolicyEngine, Decision
 
 @dataclass(frozen=True)
 class ExceptionOverlay:
-    """Time-windowed per-device exceptions over the scheduled engine."""
+    """Time-windowed per-device exceptions over the scheduled engine.
+
+    The protected baseline is a floor no allow_domains exception can
+    cross: delegated exceptions exist to relax guardian-added
+    restrictions, never to weaken the owner-controlled baseline. A
+    matching allow_domains entry is honored only when the baseline
+    engine itself would allow the domain; a baseline block (domain,
+    category, default or schedule) stands. Privileged disable_policy
+    entries are owner-only by API rule and documented as full bypass.
+    """
     engine: object
     entries: tuple
     now: object
+    baseline: object = None
 
     def decide(self, domain):
         from datetime import datetime, timezone
@@ -44,6 +54,13 @@ class ExceptionOverlay:
                     reason=f"exception {entry['exception_id']}", category=None)
             for suffix in entry['domains']:
                 if domain == suffix or domain.endswith('.' + suffix):
+                    floor = self.baseline or self.engine
+                    base = floor.decide(domain)
+                    if base.action == 'block':
+                        return Decision(
+                            action='block', rule=base.rule,
+                            reason=f"protected baseline: {base.reason}",
+                            category=getattr(base, 'category', None))
                     return Decision(
                         action='allow', rule='exception_allow_domains',
                         reason=f"exception {entry['exception_id']}",
@@ -68,7 +85,8 @@ class PolicyBundle:
             engine = self.engines.per_policy[policy_id]
         entries = (self.exceptions or {}).get(str(device_id))
         if entries:
-            return ExceptionOverlay(engine, tuple(entries), self.now)
+            return ExceptionOverlay(engine, tuple(entries), self.now,
+                                    baseline=self.engines.default)
         return engine
 
 
