@@ -38,8 +38,7 @@ def make_client(engine, email="g@example.com", tenant_name="family-m",
     if nanomdm_url:
         env["KG_NANOMDM_URL"] = nanomdm_url
     c = TestClient(create_app(Settings(env), engine=engine))
-    r = c.post("/api/auth/login",
-               json={"email": email, "password": PASSWORD}, headers=HDR)
+    r = mfa_login(c, json={'email': email, 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
     return c
 
@@ -296,3 +295,5 @@ class TestReconciler:
             r = reconcile(s, tid, [{"command_id": 424242,
                                     "status": "Acknowledged"}])
             assert r.advanced == 0 and r.skipped == 1
+
+from mfa_support import mfa_login
