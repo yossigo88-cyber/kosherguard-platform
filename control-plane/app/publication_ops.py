@@ -146,4 +146,4 @@ def publish_selected(session: Session, tenant_id: int, root: str,
         "generation": generation,
         "policy": policy.name,
         "policy_version": version.version,
-                         }
+    }
