@@ -430,6 +430,9 @@ class PublicationJob(Base):
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     actor_email: Mapped[str] = mapped_column(String(320))
     request_key: Mapped[str] = mapped_column(String(100))
+    # Server-set only, never from the jobs API: marks a narrow
+    # server-initiated cleanup publication (e.g. "exception-revoke").
+    system_action: Mapped[str | None] = mapped_column(String(40), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
