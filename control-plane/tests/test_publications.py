@@ -45,8 +45,7 @@ def client(engine, pub_root):
 
 
 def login(c, email="g@example.com"):
-    r = c.post("/api/auth/login",
-               json={"email": email, "password": PASSWORD}, headers=HDR)
+    r = mfa_login(c, json={'email': email, 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
 
 
@@ -367,3 +366,5 @@ class TestCrossTenantIsolation:
             os.path.join(gen, "categories.json"))
         assert engine_obj.decide("bet365.com").action == "block"
         assert engine_obj.decide("wikipedia.org").action == "allow"
+
+from mfa_support import mfa_login
