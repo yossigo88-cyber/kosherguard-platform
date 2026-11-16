@@ -204,22 +204,47 @@ class TestEnrollmentAuthorization:
                                 state="pending"))
         return c
 
-    def test_pending_refused_on_all_ddm_routes(self, engine):
+    def test_pending_without_valid_hmac_authorizes_nothing(self, engine):
+        """An enrollment ID alone must never authorize: without a valid
+        peer HMAC every DDM route is 401 and the placeholder stays
+        pending."""
         c = self._pending_client(engine)
-        hdr = ddm_headers(enrollment="ENR-PENDING")
         for method, path in (
                 ("get", "/api/ddm/tokens"),
                 ("get", "/api/ddm/declaration-items"),
                 ("get", "/api/ddm/declaration/configuration/x"),
         ):
-            r = getattr(c, method)(path, headers=hdr)
-            assert r.status_code == 403, (path, r.status_code, r.json())
+            r = getattr(c, method)(path, headers={
+                "X-Enrollment-ID": "ENR-PENDING",
+                "X-Hmac-Signature": "bogus"})
+            assert r.status_code == 401, (path, r.status_code, r.json())
         body = b'{"StatusResponses":{}}'
-        r = c.put("/api/ddm/status", content=body,
-                  headers=ddm_headers(body, enrollment="ENR-PENDING"))
-        assert r.status_code == 403
+        r = c.put("/api/ddm/status", content=body, headers={
+            "X-Enrollment-ID": "ENR-PENDING", "X-Hmac-Signature": "bogus"})
+        assert r.status_code == 401
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            assert row.state == "pending"
 
-    def test_checkin_activates_pending_enrollment(self, engine):
+    def test_first_authenticated_checkin_activates(self, engine):
+        """NanoMDM only forwards DDM check-ins for enrollments it
+        authenticated via the MDM protocol (operations guide), so the
+        first peer-authenticated contact IS the check-in evidence: the
+        pending placeholder is enrolled and then served."""
+        c = self._pending_client(engine)
+        r = c.get("/api/ddm/tokens",
+                  headers=ddm_headers(enrollment="ENR-PENDING"))
+        assert r.status_code == 200, r.json()
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            assert row.state == "enrolled"
+            assert row.supervision_verified is False
+
+    def test_checkin_sync_activates_pending_enrollment(self, engine):
+        """The out-of-band sync route activates equally (same HMAC peer
+        auth) - and supervision claims on it are never accepted."""
         c = self._pending_client(engine)
         body = json.dumps({"enrollment_id": "ENR-PENDING"}).encode()
         r = c.post("/api/mdm/enrollment-checkin", content=body,
@@ -244,9 +269,10 @@ class TestEnrollmentAuthorization:
                    headers={"X-Hmac-Signature": "bogus"})
         assert r.status_code == 401
         # Bad-HMAC checkin must not activate anything.
-        r = c.get("/api/ddm/tokens",
-                  headers=ddm_headers(enrollment="ENR-PENDING"))
-        assert r.status_code == 403
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            assert row.state == "pending"
 
     def test_checkin_unknown_enrollment_404(self, engine):
         c = make_client(engine, {"KG_DDM_HMAC_KEY": HMAC_KEY})
