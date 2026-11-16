@@ -141,18 +141,35 @@ def ensure_active(session: Session, enrollment: MDMEnrollment) -> bool:
 
 
 def confirm_checkin(session: Session, enrollment_id: str | None,
-                    ) -> MDMEnrollment:
+                    *, nanomdm_id: str | None = None) -> MDMEnrollment:
     """Record that the NanoMDM peer confirmed a real device check-in.
 
-    Transitions a pending placeholder to 'enrolled'. Idempotent: an
-    already-active enrollment keeps its state. Callers must have
-    authenticated the NanoMDM peer via verify_hmac first - this route
-    is the control plane's record of the device->NanoMDM MDM
-    authentication, not a substitute for it. It records ENROLLMENT
-    ONLY: supervision is never accepted from this caller (see the
-    module docstring)."""
+    Transitions a pending placeholder to 'enrolled'. When nanomdm_id
+    is given it BINDS the record to NanoMDM's actual enrollment
+    identifier (the operations guide: NanoMDM normalizes the device
+    channel's UDID / User Enrollment's EnrollmentID into its
+    enrollment ID, which is what it forwards as X-Enrollment-ID).
+    Without binding, DDM traffic carrying the real ID can never match
+    the local 'pending-*' placeholder. Binding to an ID already used
+    by another enrollment is refused. Idempotent: an already-active
+    enrollment keeps its state and its ID.
+
+    Callers must have authenticated the NanoMDM peer via verify_hmac
+    first - this route is the control plane's record of the
+    device->NanoMDM MDM authentication, not a substitute for it. It
+    records ENROLLMENT ONLY: supervision is never accepted from this
+    caller (see the module docstring)."""
     enrollment = resolve_enrollment(session, enrollment_id)
     if enrollment.state == "pending":
+        if nanomdm_id:
+            clash = session.scalar(select(MDMEnrollment).where(
+                MDMEnrollment.enrollment_id == nanomdm_id,
+                MDMEnrollment.id != enrollment.id))
+            if clash is not None:
+                raise DDMError(
+                    "nanomdm_id already bound to another enrollment",
+                    409)
+            enrollment.enrollment_id = nanomdm_id
         enrollment.state = "enrolled"
     if enrollment.state not in DDM_AUTHORIZED_STATES:
         raise DDMError(
