@@ -31,6 +31,10 @@ from .models import (AuthSession, LoginAttempt,
                      PendingMfaEnrollment, Role, User)
 
 
+class PublicationJobBody(BaseModel):
+    request_key: str
+
+
 class CategoryRuleBody(BaseModel):
     domain: str
     category: str
@@ -1538,6 +1542,51 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             actor_user_id=user.id)
         session.commit()
         return result
+
+    def publication_job_json(job):
+        import json
+        return {"id": job.id, "status": job.status,
+                "attempts": job.attempts,
+                "created_at": job.created_at.isoformat(),
+                "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                "result": json.loads(job.result) if job.result else None,
+                "error": job.last_error,
+                "semantics": "publishes the selected policy at worker execution time"}
+
+    @app.post("/api/publications/jobs", dependencies=[Depends(require_csrf_header)])
+    def enqueue_publication(body: PublicationJobBody,
+                            user: User = Depends(current_user),
+                            session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        from .worker import enqueue
+        from sqlalchemy.exc import IntegrityError
+        try:
+            row = enqueue(session, user.tenant_id, user.id, user.email,
+                          body.request_key)
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            return error(400, str(exc))
+        except IntegrityError:
+            session.rollback()
+            from .models import PublicationJob
+            row = session.scalar(select(PublicationJob).where(
+                PublicationJob.tenant_id == user.tenant_id,
+                PublicationJob.request_key == body.request_key))
+            if row is None:
+                raise
+        return publication_job_json(row)
+
+    @app.get("/api/publications/jobs/{job_id}")
+    def publication_job_status(job_id: int, user: User = Depends(current_user),
+                               session: Session = Depends(db_session)):
+        from .models import PublicationJob
+        row = session.get(PublicationJob, job_id)
+        if row is None or row.tenant_id != user.tenant_id:
+            return error(404, "publication job not found")
+        return publication_job_json(row)
 
     @app.get("/api/publications/current")
     def publication_current(user: User = Depends(current_user)):
