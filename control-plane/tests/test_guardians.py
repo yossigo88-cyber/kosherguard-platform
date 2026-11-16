@@ -263,3 +263,59 @@ class TestCredentialIssuance:
                            headers=HDR).status_code == 404
         finally:
             _os.environ.pop("KG_DEVICE_TOKEN_KEY", None)
+
+
+class TestOverviewAndTenants:
+    def test_overview_own_tenant_only(self, engine):
+        c = TestClient(make_app(engine))
+        login(c)
+        invite_and_accept(c)
+        body = c.get("/api/overview").json()
+        assert body["guardians"] == 2
+        assert body["devices"] == 0
+        actions = [a["action"] for a in body["recent_activity"]]
+        assert "guardian.invite" in actions
+
+    def test_overview_excludes_other_tenants(self, engine):
+        c = TestClient(make_app(engine))
+        login(c)
+        with session_scope(engine) as s:
+            other = Tenant(name="family-y")
+            s.add(other)
+            s.flush()
+            s.add(User(tenant_id=other.id, email="o@y.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+            from app.models import Device
+            s.add(Device(tenant_id=other.id, name="other-phone"))
+        body = c.get("/api/overview").json()
+        assert body["devices"] == 0
+        assert body["guardians"] == 1
+
+    def test_admin_tenants_platform_admin_only(self, engine):
+        c = TestClient(make_app(engine))  # not platform admin
+        login(c)
+        assert c.get("/api/admin/tenants").status_code == 403
+
+    def test_admin_tenants_lists_counts(self, engine):
+        with session_scope(engine) as s:
+            t = Tenant(name="fam-a")
+            s.add(t); s.flush()
+            s.add(User(tenant_id=t.id, email="admin@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner, is_platform_admin=True))
+            t2 = Tenant(name="fam-b")
+            s.add(t2); s.flush()
+            s.add(User(tenant_id=t2.id, email="b@b.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+            from app.models import Device
+            s.add(Device(tenant_id=t2.id, name="b-phone"))
+        settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
+                             "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"})
+        c = TestClient(create_app(settings, engine=engine))
+        login(c, "admin@example.com")
+        body = c.get("/api/admin/tenants").json()["tenants"]
+        by_name = {t["name"]: t for t in body}
+        assert by_name["fam-b"]["devices"] == 1
+        assert by_name["fam-a"]["guardians"] == 1
