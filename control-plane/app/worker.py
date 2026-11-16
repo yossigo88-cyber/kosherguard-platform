@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import AuditEvent, PublicationJob, PublicationState
+from .models import AuditEvent, PublicationJob, PublicationState, User, Role
 from .publication_ops import publish_selected, tenant_root
 from .publisher import Publisher
 
@@ -60,6 +60,11 @@ def run_once(engine, settings, now=None) -> bool:
         job.attempts += 1
         try:
             with session.begin_nested():
+                actor = session.get(User, job.actor_user_id)
+                if (actor is None or actor.tenant_id != job.tenant_id or
+                        actor.role not in (Role.owner, Role.guardian) or
+                        not actor.totp_secret):
+                    raise PermissionError("publication actor no longer authorized")
                 state = session.scalar(select(PublicationState).where(
                     PublicationState.tenant_id == job.tenant_id
                 ).with_for_update())
@@ -116,6 +121,9 @@ def main(argv=None):
         signal.signal(sig, lambda *_: stop.set())
     try:
         while not stop.is_set():
+            from .filter_log_ops import purge_expired
+            with sessionmaker(bind=engine).begin() as maintenance:
+                purge_expired(maintenance)
             worked = run_once(engine, settings)
             if args.once:
                 break
