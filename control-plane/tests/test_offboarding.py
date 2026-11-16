@@ -20,13 +20,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from app import security  # noqa: E402
+from datetime import timedelta  # noqa: E402
+
+from app import ddm_ops, security  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.db import session_scope  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import (Device, DeviceAssignment, FilterDecision,  # noqa: E402
-                        MDMCommand, MDMEnrollment, OffboardingCase,
-                        Role, Tenant, User)
+                        IssuedCredential, MDMCommand, MDMEnrollment,
+                        OffboardingCase, Policy, Role, Tenant, User,
+                        utcnow)
 from mfa_support import mfa_login  # noqa: E402
 
 PASSWORD = "a long enough password"
@@ -180,8 +183,7 @@ class TestCompletion:
         attest(client, case["id"], "abm_release")
         with session_scope(engine) as s:
             tenant = s.query(Tenant).filter_by(name="fam-a").one()
-            policy = __import__("app.models", fromlist=["Policy"]).Policy(
-                tenant_id=tenant.id, name="p", engine_doc="{}")
+            policy = Policy(tenant_id=tenant.id, name="p", engine_doc="{}")
             s.add(policy)
             s.flush()
             s.add(DeviceAssignment(tenant_id=tenant.id, device_id=dev,
@@ -220,6 +222,90 @@ class TestCompletion:
                         json={"notes": "resolved: ownership confirmed"},
                         headers=HDR)
         assert r.status_code == 200
+
+
+    def test_transfer_revokes_issued_credentials(self, engine, client):
+        """Runtime access stop is REAL: outstanding scoped device
+        credentials are revoked at completion (edge verifiers refuse
+        revoked jtis via the revocation feed)."""
+        case, dev = self._transfer_case(client)
+        with session_scope(engine) as s:
+            tenant = s.query(Tenant).filter_by(name="fam-a").one()
+            s.add(IssuedCredential(tenant_id=tenant.id, device_id=dev,
+                                   jti="jti-transfer-1", scope="dataset",
+                                   expires_at=utcnow() + timedelta(hours=1)))
+        attest(client, case["id"], "activation_lock")
+        attest(client, case["id"], "abm_release")
+        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
+                        json={}, headers=HDR)
+        assert r.status_code == 200
+        with session_scope(engine) as s:
+            cred = s.query(IssuedCredential).filter_by(
+                device_id=dev).one()
+            assert cred.revoked_at is not None
+
+    def test_offboarded_enrollment_not_reactivated(self, engine, client):
+        """Offboarded enrollments cannot silently reactivate: the
+        authenticated DDM path refuses any state outside
+        enrolled/active, and new enrollment tickets refuse an
+        offboarded device (a fresh authorized enrollment requires an
+        explicit guardian/owner action)."""
+        case, dev = self._transfer_case(client)
+        with session_scope(engine) as s:
+            tenant = s.query(Tenant).filter_by(name="fam-a").one()
+            s.add(MDMEnrollment(tenant_id=tenant.id, device_id=dev,
+                                enrollment_id="ENR-OFF", device_udid="U-OFF",
+                                state="enrolled"))
+        attest(client, case["id"], "activation_lock")
+        attest(client, case["id"], "abm_release")
+        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
+                        json={}, headers=HDR)
+        assert r.status_code == 200
+        with session_scope(engine) as s:
+            enr = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-OFF").one()
+            assert enr.state == "offboarded"
+            with pytest.raises(ddm_ops.DDMError):
+                ddm_ops.ensure_active(s, enr)
+        r = client.post(f"/api/mdm/devices/{dev}/enrollment-tickets",
+                        json={}, headers=HDR)
+        assert r.status_code == 409
+
+    def test_cancellation_with_device_touches_nothing(self, engine, client):
+        """Nonpayment must never revoke protection: a cancellation
+        naming a device completes with assignments active, enrollment
+        untouched, credentials unrevoked, device state unchanged and
+        zero MDM commands."""
+        dev = mk_device(client)
+        with session_scope(engine) as s:
+            tenant = s.query(Tenant).filter_by(name="fam-a").one()
+            policy = Policy(tenant_id=tenant.id, name="p2",
+                            engine_doc="{}")
+            s.add(policy)
+            s.flush()
+            s.add(DeviceAssignment(tenant_id=tenant.id, device_id=dev,
+                                   policy_id=policy.id, active=True))
+            s.add(MDMEnrollment(tenant_id=tenant.id, device_id=dev,
+                                enrollment_id="ENR-KEEP", device_udid="U-K",
+                                state="enrolled"))
+            s.add(IssuedCredential(tenant_id=tenant.id, device_id=dev,
+                                   jti="jti-keep-1", scope="proxy",
+                                   expires_at=utcnow() + timedelta(hours=1)))
+        case = mk_case(client, "cancellation", dev, "nonpayment")
+        assert verify(client, case["id"]).status_code == 200
+        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
+                        json={}, headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["data_retention_until"] is not None
+        with session_scope(engine) as s:
+            assert s.query(DeviceAssignment).filter_by(
+                device_id=dev, active=True).count() == 1
+            assert s.query(MDMEnrollment).filter_by(
+                device_id=dev).one().state == "enrolled"
+            assert s.query(IssuedCredential).filter_by(
+                device_id=dev).one().revoked_at is None
+            assert s.get(Device, dev).state == "active"
+            assert s.query(MDMCommand).count() == 0
 
     def test_cancellation_completes_without_device_effects(self, engine,
                                                            client):
