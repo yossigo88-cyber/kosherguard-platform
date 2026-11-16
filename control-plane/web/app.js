@@ -22,13 +22,14 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["policies-panel", "devices-panel", "mdm-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["policies-panel", "devices-panel", "mdm-panel", "categories-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
 }
 
 async function refresh() {
+  refreshCategories();
   const policies = await api("/api/policies");
   policyList = policies.body.policies || [];
   document.querySelector("#policies tbody").innerHTML = policyList.map(p =>
@@ -135,4 +136,66 @@ $("device-form").addEventListener("submit", async (e) => {
 $("signout").addEventListener("click", async () => {
   await api("/api/auth/logout", {method: "POST", headers: HDR});
   location.reload();
+});
+
+async function refreshCategories() {
+  const err = $("cat-error"), ok = $("cat-ok");
+  err.textContent = ""; ok.textContent = "";
+  const r = await api("/api/admin/categories");
+  if (r.status === 403) {
+    $("categories-panel").querySelector("p").textContent =
+      "Platform-admin only. This account does not manage the category dataset.";
+    $("category-form").classList.add("hidden");
+    return;
+  }
+  const body = await r.json();
+  const tbody = $("cat-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const rule of body.rules || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(rule.domain)}</td><td>${esc(rule.category)}</td>` +
+      `<td>${esc(rule.verdict)}</td><td>${esc(rule.source)}</td>` +
+      `<td>${rule.active ? "yes" : "no"}</td>`;
+    if (rule.active) {
+      const td = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.className = "link";
+      btn.textContent = "deactivate";
+      btn.onclick = async () => {
+        await api(`/api/admin/categories/${rule.id}`,
+                  {method: "DELETE", headers: {"X-KosherGuard-Request": "1"}});
+        refreshCategories();
+      };
+      td.appendChild(btn);
+      tr.appendChild(td);
+    } else {
+      tr.appendChild(document.createElement("td"));
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+$("category-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("cat-error"), ok = $("cat-ok");
+  err.textContent = ""; ok.textContent = "";
+  const r = await api("/api/admin/categories", {
+    method: "POST",
+    headers: {"Content-Type": "application/json",
+              "X-KosherGuard-Request": "1"},
+    body: JSON.stringify({
+      domain: $("cat-domain").value,
+      category: $("cat-category").value,
+      verdict: $("cat-verdict").value,
+      source: $("cat-source").value,
+    }),
+  });
+  if (r.ok) {
+    ok.textContent = "Rule saved.";
+    $("cat-domain").value = "";
+    refreshCategories();
+  } else {
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || body.message || `Error ${r.status}`;
+  }
 });
