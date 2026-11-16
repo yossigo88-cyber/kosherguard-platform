@@ -31,37 +31,6 @@ def validate_domains(domains):
         raise PolicyError('allow_domains needs 1-100 valid domains', 400)
 
 
-Every exception has a reason, an approving user, a device/group scope
-and a start/expiration window; creation and revocation are audited.
-Owners may grant any kind; guardians need the explicit "exceptions"
-delegation and are limited to short allow-domains exceptions. Global
-baseline changes and protection removal stay owner-only: the
-"disable_policy" kind and durations over 24h are refused for guardians.
-"""
-from datetime import datetime, timedelta, timezone
-import json, re
-from sqlalchemy import select
-from .models import Device, DeviceGroup, GroupMembership, PolicyException
-from .policy_ops import PolicyError
-
-GUARDIAN_MAX_DURATION = timedelta(hours=24)
-OWNER_MAX_DURATION = timedelta(days=30)
-KINDS = ('allow_domains', 'disable_policy')
-OWNER_ONLY_KINDS = ('disable_policy',)
-DOMAIN_RE = re.compile(r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
-
-
-def now_utc():
-    return datetime.now(timezone.utc)
-
-
-def validate_domains(domains):
-    if (not isinstance(domains, list) or not domains or len(domains) > 100
-            or any(not isinstance(d, str) or not DOMAIN_RE.match(d)
-                   for d in domains)):
-        raise PolicyError('allow_domains needs 1-100 valid domains', 400)
-
-
 def active_exceptions(session, tenant_id, now=None):
     """Non-revoked exceptions whose window is open or still upcoming."""
     now = now or now_utc()
