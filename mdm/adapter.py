@@ -26,6 +26,14 @@ SUPPORTED_COMMANDS = frozenset({
     "ManagedApplicationList",
     "DeviceLock",
     "RestartDevice",
+    # Activates Declarative Device Management on the device; after this
+    # the device starts sending DeclarativeManagement check-ins, which
+    # NanoMDM (-dm flag) forwards to the control plane's /api/ddm/
+    # endpoints. Verified sources: NanoMDM operations guide "-dm"
+    # (main branch) and MicroMDM's WWDC21 declarative-management post
+    # (micromdm.io/blog/wwdc21-declarative-management), which shows
+    # exactly this command enqueued via cmdr.py.
+    "DeclarativeManagement",
 })
 
 
@@ -60,6 +68,14 @@ class MDMAdapter(abc.ABC):
 
 
 class NanoMDMAdapter(MDMAdapter):
+    """Classic MDM commands only. DDM declarations are NOT delivered
+    through this adapter: NanoMDM v0.3.0+ forwards DeclarativeManagement
+    check-ins to the DM server named by its -dm flag (operations guide,
+    docs/operations-guide.md), which for this platform is the control
+    plane's /api/ddm/ endpoints (control-plane/app/ddm_ops.py). Delivery
+    of a declaration therefore requires NanoMDM to be run with
+    -dm https://<control-plane>/api/ddm/ - that is deployment config,
+    not code in this class."""
     """HTTP client for a NanoMDM server's API.
 
     NanoMDM exposes command enqueueing and push over HTTP; device
