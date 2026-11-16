@@ -151,3 +151,56 @@ class PublicationState(Base):
     selected_policy_id: Mapped[int | None] = mapped_column(
         ForeignKey("policies.id"), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class MDMEnrollment(Base):
+    """One device's MDM enrollment under a tenant.
+
+    enrollment_id is the NanoMDM enrollment identifier once a real
+    enrollment exists; until then it is a locally generated placeholder
+    and the record carries state 'pending'.
+    """
+    __tablename__ = "mdm_enrollments"
+    __table_args__ = (UniqueConstraint("tenant_id", "enrollment_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int] = mapped_column(
+        ForeignKey("devices.id"), nullable=False, index=True)
+    enrollment_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False,
+                                       default="pending")
+    supervised: Mapped[bool] = mapped_column(nullable=False, default=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class MDMCommand(Base):
+    """One MDM command sent to one enrollment, with its full lifecycle.
+
+    status moves queued -> delivered -> acknowledged | error | not_now.
+    applied is set only from a positive device Acknowledged status plus,
+    where verifiable, a confirming query - never from a successful send.
+    """
+    __tablename__ = "mdm_commands"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    enrollment_pk: Mapped[int] = mapped_column(
+        ForeignKey("mdm_enrollments.id"), nullable=False, index=True)
+    command: Mapped[str] = mapped_column(String(60), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(20), nullable=False,
+                                        default="queued")
+    applied: Mapped[bool] = mapped_column(nullable=False, default=False)
+    result_detail: Mapped[str] = mapped_column(Text, nullable=False,
+                                               default="")
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow,
+        nullable=False)
