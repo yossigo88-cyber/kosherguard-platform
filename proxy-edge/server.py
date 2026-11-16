@@ -318,3 +318,35 @@ class FilteringProxy(socketserver.ThreadingTCPServer):
             if device_id is not None:
                 entry["device"] = device_id
             self.decision_log(entry)
+
+
+def build_proxy(listen, engine_set, token_key: bytes | None = None,
+                control_plane_url: str | None = None,
+                token_provider=None, refresh_interval: float = 60.0,
+                **kwargs):
+    """Service entrypoint wiring: build the FilteringProxy WITH its
+    revocation feed and refresh loop running. Returns
+    (proxy, stop_event); serve_forever on the proxy, set the event to
+    stop the loop. When control_plane_url and token_provider are absent
+    the proxy runs without revocation distribution (local development
+    only). The provider is the renewal source: consulted on every
+    refresh, it must return a current scoped credential (minted via
+    POST /api/devices/{id}/dataset-credential with a guardian session);
+    staleness after the last successful pull is bounded by the
+    credential's lifetime (at most 86400s)."""
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.abspath(_os.path.join(
+        _os.path.dirname(__file__), "..",
+        "url-filter-server", "app")))
+    import revocations as _rev
+    feed = None
+    stop = None
+    if control_plane_url and token_provider is not None:
+        feed = _rev.RevocationFeed(control_plane_url, token_provider)
+        stop = feed.start_refresh_loop(interval=refresh_interval)
+    proxy = FilteringProxy(
+        listen, engine_set, token_key=token_key,
+        revoked_jtis=(feed.shared_set if feed is not None else None),
+        **kwargs)
+    return proxy, stop
