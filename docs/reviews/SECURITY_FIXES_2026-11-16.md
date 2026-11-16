@@ -163,17 +163,31 @@ further user decision gate.
 ## Residual limitations (explicit)
 
 - Edge revocation distribution and consumption are implemented and
-  exercised (update, this head): edges pull GET
-  /api/credential-revocations with a dataset/proxy/doh scoped device
-  token (tenant from the token payload, so no cross-tenant read is
-  possible; revoked-not-expired jtis only); url-filter-server's
-  RevocationFeed refreshes an in-place set the verifier refuses
-  against, and proxy-edge's FilteringProxy takes the same set. Tests:
-  feed bearer/tenant/expiry semantics (control-plane
-  test_guardians.py) and refresh-replace, failed-refresh-keeps-set,
-  and end-to-end consumption (url-filter-server test_revocations.py;
-  proxy-edge test_server.py revoked-token 407). Between refreshes a
-  revoked unlisted token is bounded by its short expiry.
+  exercised at the SERVICE ENTRYPOINTS (update, this head): edges
+  pull GET /api/credential-revocations with a dataset/proxy/doh
+  scoped device token (tenant from the verified token payload, so no
+  cross-tenant read is possible; revoked-not-expired jtis only).
+  Entrypoints: url-filter-server build_runtime(...) constructs the
+  RevocationFeed, starts its background refresh loop, and hands the
+  shared set to the app; proxy-edge build_proxy(...) does the same
+  for FilteringProxy; dns-edge's DNSEdgeRunner starts/stops the feed
+  loop with the service and its shared set is handed to
+  doh_identity.authenticate_doh_request(revoked_jtis=...), the DoH
+  front's verification point. Staleness and renewal, precisely: a
+  failed refresh keeps the last pulled set; after the last
+  successful pull, exposure for an unlisted token is bounded by its
+  credential lifetime (at most 86400s, the mint cap) because expired
+  tokens fail verification anyway; renewed feed credentials come
+  from a fresh scoped credential minted via the guardian-
+  authenticated POST /api/devices/{id}/dataset-credential route,
+  supplied through the token_provider the deployment wires in (the
+  provider is consulted on every refresh). Tests: end-to-end
+  refusal after a live loop tick through BOTH entrypoints
+  (url-filter-server build_runtime, proxy-edge build_proxy),
+  runner start/stop of the loop, doh revocation refusal,
+  tenant-set isolation, renewal polling, bounded fail-open startup,
+  and feed bearer/tenant/expiry semantics (control-plane
+  test_guardians.py).
 - No unbuilt bridge remains for activation: the DDM serving path
   itself activates on first authenticated contact. Fail-closed
   unchanged: without KG_DDM_HMAC_KEY nothing is served (503); without
