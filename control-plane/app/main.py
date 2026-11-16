@@ -15,14 +15,14 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import app_ops
-from . import filter_log_ops
+from . import ddm_ops, filter_log_ops
 from . import mdm_ops, schedule_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
@@ -860,6 +860,61 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         # Evidenced configured/published/reported state only; health is
         # explicitly "unknown" (see filter_log_ops.edge_status).
         return filter_log_ops.edge_status(session, user.tenant_id)
+
+
+    # -- DDM serving (spec Part 10; NanoMDM -dm forwards device DDM
+    # check-ins here; see app/ddm_ops.py docstring for the verified
+    # protocol sources). No session cookie/CSRF: identity is the
+    # X-Enrollment-ID header NanoMDM attaches, plus optional HMAC.
+    def _ddm_enrollment(request: Request,
+                        session: Session = Depends(db_session)):
+        try:
+            body = getattr(request.state, "_ddm_body", None)
+            enrollment = ddm_ops.resolve_enrollment(
+                session, request.headers.get("x-enrollment-id"))
+            ddm_ops.verify_hmac(settings.ddm_hmac_key,
+                                request.headers.get("x-hmac-signature"),
+                                body or b"")
+        except ddm_ops.DDMError as exc:
+            raise HTTPException(exc.status, str(exc))
+        return enrollment
+
+    @app.get("/api/ddm/tokens")
+    def ddm_tokens(enrollment: MDMEnrollment = Depends(_ddm_enrollment),
+                   session: Session = Depends(db_session)):
+        return ddm_ops.tokens(session, enrollment)
+
+    @app.get("/api/ddm/declaration-items")
+    def ddm_declaration_items(
+            enrollment: MDMEnrollment = Depends(_ddm_enrollment),
+            session: Session = Depends(db_session)):
+        return ddm_ops.declaration_items(session, enrollment)
+
+    @app.get("/api/ddm/declaration/{dtype}/{identifier}")
+    def ddm_declaration(dtype: str, identifier: str,
+                        enrollment: MDMEnrollment = Depends(_ddm_enrollment),
+                        session: Session = Depends(db_session)):
+        try:
+            return ddm_ops.get_declaration(session, enrollment, dtype,
+                                           identifier)
+        except ddm_ops.DDMError as exc:
+            return error(exc.status, str(exc))
+
+    @app.put("/api/ddm/status")
+    async def ddm_status(request: Request,
+                         session: Session = Depends(db_session)):
+        body = await request.body()
+        request.state._ddm_body = body
+        try:
+            enrollment = ddm_ops.resolve_enrollment(
+                session, request.headers.get("x-enrollment-id"))
+            ddm_ops.verify_hmac(settings.ddm_hmac_key,
+                                request.headers.get("x-hmac-signature"), body)
+            ddm_ops.record_status(session, enrollment, body)
+        except ddm_ops.DDMError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return {"received": True}
 
     # -- Device scoped-credential issuance (M6, extended for 8B) -------
 
