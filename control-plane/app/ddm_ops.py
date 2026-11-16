@@ -24,12 +24,27 @@ reaches the routes below directly. No adapter delivery step exists for
 declarations; the adapter's role is only to enqueue the classic
 DeclarativeManagement command that activates DDM on the device.
 
-Trust model: X-Enrollment-ID is an IDENTIFIER, not authentication -
-any caller who learns an enrollment ID could otherwise read that
-device's declarations or forge status reports. The authenticated
-boundary is the shared HMAC key, matching NanoMDM's -dm-send-hmac-key:
-it authenticates the forwarding NanoMDM peer (the device itself
-authenticates to NanoMDM through the MDM protocol). Therefore
+Trust model - the actual trusted chain, link by link:
+
+1. Device -> NanoMDM: the device authenticates to NanoMDM through the
+   MDM protocol (client identity from the enrollment profile). Only a
+   device that completed MDM enrollment can send DeclarativeManagement
+   check-ins at all, so NanoMDM only forwards DDM traffic for devices
+   it has authenticated. This link is NanoMDM's responsibility; the
+   control plane never talks to the device directly.
+2. NanoMDM -> control plane: the shared HMAC key
+   (-dm-send-hmac-key / KG_DDM_HMAC_KEY) authenticates the FORWARDING
+   PEER on every request. It proves the request came through the
+   trusted NanoMDM, nothing more.
+3. Authorization: X-Enrollment-ID is an IDENTIFIER, never an
+   authenticator. A request is only authorized when the named
+   enrollment is in state 'enrolled' or 'active' - i.e. NanoMDM has
+   confirmed a real device check-in for it through the enrollment-info
+   sync route (POST /api/mdm/enrollment-checkin, same HMAC peer auth).
+   A 'pending' placeholder row (created by a guardian before any
+   device checked in) authorizes NOTHING: no declarations, no status
+   reports. Enrollment ID alone must never authorize.
+
 KG_DDM_HMAC_KEY is REQUIRED: without it every /api/ddm/* route answers
 503 "not configured", fail-closed, exactly like scoped-credential
 issuance without KG_DEVICE_TOKEN_KEY. No protection is inferred from
@@ -84,6 +99,50 @@ def resolve_enrollment(session: Session, enrollment_id: str | None,
     if row is None:
         raise DDMError("unknown enrollment", 404)
     return row
+
+
+# States that authorize DDM serving. 'pending' is a local placeholder
+# created before any device check-in; it must never authorize.
+DDM_AUTHORIZED_STATES = ("enrolled", "active")
+
+
+def authorize_active(enrollment: MDMEnrollment) -> None:
+    """Refuse DDM serving to an enrollment NanoMDM has not confirmed.
+
+    The HMAC check authenticates the forwarding peer; this check is the
+    authorization step: the named enrollment must correspond to a real
+    device check-in (state 'enrolled'/'active' via the enrollment-info
+    sync route). A pending placeholder enrollment ID alone authorizes
+    nothing."""
+    if enrollment.state not in DDM_AUTHORIZED_STATES:
+        raise DDMError(
+            f"enrollment is not active (state {enrollment.state!r}); "
+            "only a device NanoMDM has confirmed via check-in may "
+            "sync declarations or report status", 403)
+
+
+def confirm_checkin(session: Session, enrollment_id: str | None,
+                    *, supervised: bool) -> MDMEnrollment:
+    """NanoMDM enrollment-info sync: a real device checked in.
+
+    Transitions a pending placeholder to 'enrolled' and records
+    device-reported supervision (the only source allowed to set
+    supervision_verified). Idempotent: an already-active enrollment is
+    updated, not reset. Callers must have authenticated the NanoMDM
+    peer via verify_hmac first - this route is the control plane's
+    record of the device->NanoMDM MDM authentication, not a substitute
+    for it."""
+    enrollment = resolve_enrollment(session, enrollment_id)
+    if enrollment.state == "pending":
+        enrollment.state = "enrolled"
+    if enrollment.state not in DDM_AUTHORIZED_STATES:
+        raise DDMError(
+            f"cannot confirm check-in for enrollment in state "
+            f"{enrollment.state!r}", 409)
+    enrollment.supervision_verified = bool(supervised)
+    enrollment.last_seen_at = utcnow()
+    session.flush()
+    return enrollment
 
 
 def _app_policy(session: Session, enrollment: MDMEnrollment,
