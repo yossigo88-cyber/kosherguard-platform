@@ -58,4 +58,6 @@ class Settings:
         # Deployment environment stamp. Anything but an explicit
         # "production" marks uploaded credential artifacts (and the
         # upload screen) as development/fixture-only.
-        self.environment = env.get("KG_ENVIRONMENT", "development").strip() or                         "development"
+        self.environment = env.get("KG_ENVIRONMENT", "development").strip() or "development"
+        # Optional: path to the category-pipeline's built categories.json.
+        self.categories_file = env.get("KG_CATEGORIES_FILE", "").strip() or None
