@@ -38,12 +38,21 @@ Trust model - the actual trusted chain, link by link:
    trusted NanoMDM, nothing more.
 3. Authorization: X-Enrollment-ID is an IDENTIFIER, never an
    authenticator. A request is only authorized when the named
-   enrollment is in state 'enrolled' or 'active' - i.e. NanoMDM has
-   confirmed a real device check-in for it through the enrollment-info
-   sync route (POST /api/mdm/enrollment-checkin, same HMAC peer auth).
-   A 'pending' placeholder row (created by a guardian before any
-   device checked in) authorizes NOTHING: no declarations, no status
-   reports. Enrollment ID alone must never authorize.
+   enrollment is in state 'enrolled' or 'active'. Activation evidence
+   comes only through the HMAC-authenticated peer, which under the
+   operations guide forwards device traffic only for enrollments it
+   authenticated via the MDM protocol: the deployment syncs that
+   confirmation to POST /api/mdm/enrollment-checkin (same HMAC peer
+   auth). A 'pending' placeholder row (created by a guardian before
+   any device checked in) authorizes NOTHING: no declarations, no
+   status reports. Enrollment ID alone must never authorize.
+   NOTE on supervision: the check-in sync records enrollment only.
+   Supervision is device-reported state (Apple: the Authenticate /
+   DeviceInformation data NanoMDM stores); no caller-claimed flag on
+   any route may set supervision_verified - only
+   mdm_ops.mark_supervision_verified from device check-in data, and
+   that sync is not yet wired to a verified device channel, so
+   supervision_verified stays false until one exists.
 
 KG_DDM_HMAC_KEY is REQUIRED: without it every /api/ddm/* route answers
 503 "not configured", fail-closed, exactly like scoped-credential
@@ -122,16 +131,16 @@ def authorize_active(enrollment: MDMEnrollment) -> None:
 
 
 def confirm_checkin(session: Session, enrollment_id: str | None,
-                    *, supervised: bool) -> MDMEnrollment:
-    """NanoMDM enrollment-info sync: a real device checked in.
+                    ) -> MDMEnrollment:
+    """Record that the NanoMDM peer confirmed a real device check-in.
 
-    Transitions a pending placeholder to 'enrolled' and records
-    device-reported supervision (the only source allowed to set
-    supervision_verified). Idempotent: an already-active enrollment is
-    updated, not reset. Callers must have authenticated the NanoMDM
-    peer via verify_hmac first - this route is the control plane's
-    record of the device->NanoMDM MDM authentication, not a substitute
-    for it."""
+    Transitions a pending placeholder to 'enrolled'. Idempotent: an
+    already-active enrollment keeps its state. Callers must have
+    authenticated the NanoMDM peer via verify_hmac first - this route
+    is the control plane's record of the device->NanoMDM MDM
+    authentication, not a substitute for it. It records ENROLLMENT
+    ONLY: supervision is never accepted from this caller (see the
+    module docstring)."""
     enrollment = resolve_enrollment(session, enrollment_id)
     if enrollment.state == "pending":
         enrollment.state = "enrolled"
@@ -139,7 +148,6 @@ def confirm_checkin(session: Session, enrollment_id: str | None,
         raise DDMError(
             f"cannot confirm check-in for enrollment in state "
             f"{enrollment.state!r}", 409)
-    enrollment.supervision_verified = bool(supervised)
     enrollment.last_seen_at = utcnow()
     session.flush()
     return enrollment
