@@ -242,6 +242,52 @@ class TestEnrollmentAuthorization:
             assert row.state == "enrolled"
             assert row.supervision_verified is False
 
+    def test_first_contact_binds_by_device_udid(self, engine):
+        """The shipped association path: the pending record carries the
+        device UDID recorded at enrollment creation; NanoMDM forwards
+        that UDID as X-Enrollment-ID after authenticating the device;
+        the first authenticated DDM contact binds and activates the
+        record - no fixture bind call involved."""
+        c = self._pending_client(engine)
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            row.device_udid = "UDID-DEVICE-9"
+        r = c.get("/api/ddm/tokens",
+                  headers=ddm_headers(enrollment="UDID-DEVICE-9"))
+        assert r.status_code == 200, r.json()
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="UDID-DEVICE-9").one()
+            assert row.state == "enrolled"
+            assert row.supervision_verified is False
+            assert s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").first() is None
+
+    def test_unknown_id_without_hmac_still_401(self, engine):
+        """No existence oracle: HMAC is verified before any lookup."""
+        c = self._pending_client(engine)
+        r = c.get("/api/ddm/tokens", headers={
+            "X-Enrollment-ID": "UDID-DEVICE-9",
+            "X-Hmac-Signature": "bogus"})
+        assert r.status_code == 401
+
+    def test_ambiguous_pending_udid_refused(self, engine):
+        c = self._pending_client(engine)
+        with session_scope(engine) as s:
+            dev = s.query(Device).filter_by(name="kid-phone").one()
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            row.device_udid = "UDID-DUP"
+            s.add(MDMEnrollment(tenant_id=dev.tenant_id,
+                                device_id=dev.id,
+                                enrollment_id="pending-other",
+                                device_udid="UDID-DUP",
+                                state="pending"))
+        r = c.get("/api/ddm/tokens",
+                  headers=ddm_headers(enrollment="UDID-DUP"))
+        assert r.status_code == 409
+
     def test_checkin_binds_real_nanomdm_id(self, engine):
         """The actual NanoMDM identifier mapping: NanoMDM forwards its
         OWN normalized enrollment ID (operations guide: device-channel
