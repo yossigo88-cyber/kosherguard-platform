@@ -26,6 +26,6 @@ def engine(pg_uri):
     db_module.create_schema(eng)
     yield eng
     with eng.begin() as conn:
-        for table in ("category_rules", "mdm_commands", "mdm_enrollments", "login_attempts", "audit_events", "auth_sessions", "users", "tenants"):
+        for table in ("category_rules", "invite_tokens", "mdm_commands", "mdm_enrollments", "login_attempts", "audit_events", "auth_sessions", "users", "tenants"):
             conn.execute(text(f"TRUNCATE {table} CASCADE"))
     eng.dispose()
