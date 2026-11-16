@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KosherGuard Admin</title>
+<style>
+:root { --ink:#1a2330; --accent:#274b8f; --paper:#f4f6fa; }
+* { box-sizing: border-box; margin: 0; }
+body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: var(--ink); background: var(--paper); }
+header { padding: .9rem 5vw; background: var(--accent); color: #fff; display:flex; justify-content:space-between; align-items:center; }
+main { max-width: 62rem; margin: 2rem auto; padding: 0 1rem; }
+.panel { background:#fff; border:1px solid #dde3ee; border-radius:10px; padding:1.5rem; margin-bottom:1.3rem; }
+label { display:block; margin:.6rem 0 .15rem; font-size:.9rem; }
+input, select { width:100%; padding:.45rem; border:1px solid #c3cddd; border-radius:6px; font-size:.95rem; }
+button { background:var(--accent); color:#fff; border:0; padding:.5rem 1.1rem; border-radius:6px; margin-top:.8rem; cursor:pointer; }
+button.link { background:none; color:var(--accent); padding:.2rem .4rem; margin:0; text-decoration:underline; }
+table { width:100%; border-collapse:collapse; margin-top:.8rem; }
+th, td { text-align:left; padding:.45rem .35rem; border-bottom:1px solid #e8edf5; font-size:.92rem; }
+.error { color:#a33; margin-top:.6rem; }
+.ok { color:#276; margin-top:.6rem; }
+.hidden { display:none; }
+h2 { margin-bottom:.4rem; }
+</style>
+</head>
+<body>
+<header><strong>KosherGuard Admin</strong><span id="who"></span></header>
+<main>
+  <section class="panel" id="login-panel">
+    <h2>Admin sign in</h2>
+    <form id="login-form">
+      <label>Email <input id="email" type="email" required></label>
+      <label>Password <input id="password" type="password" required></label>
+      <label>Authenticator code (if enabled) <input id="totp" inputmode="numeric"></label>
+      <button type="submit">Sign in</button>
+      <div class="error" id="login-error"></div>
+    </form>
+  </section>
+
+  <section class="panel hidden" id="policies-panel">
+    <h2>Policies</h2>
+    <table id="policies"><thead><tr><th>Name</th><th>Default</th><th>Blocklist</th><th>Versions</th><th></th></tr></thead><tbody></tbody></table>
+    <h3 style="margin-top:1.2rem">New policy</h3>
+    <form id="policy-form">
+      <label>Name <input id="p-name" required></label>
+      <label>Default action
+        <select id="p-default"><option value="allow">allow</option><option value="block">block</option></select></label>
+      <label>Blocked domains (comma separated) <input id="p-blocklist"></label>
+      <label>Blocked categories (comma separated) <input id="p-catblock"></label>
+      <button type="submit">Create policy</button>
+      <div class="error" id="policy-error"></div>
+      <div class="ok" id="policy-ok"></div>
+    </form>
+  </section>
+
+  <section class="panel hidden" id="devices-panel">
+    <h2>Devices</h2>
+    <table id="devices"><thead><tr><th>Name</th><th>State</th><th>Assign policy</th></tr></thead><tbody></tbody></table>
+    <form id="device-form">
+      <label>Register device <input id="d-name" required></label>
+      <button type="submit">Register</button>
+      <div class="error" id="device-error"></div>
+    </form>
+  </section>
+  <section class="panel hidden" id="signout-panel"><button id="signout">Sign out</button></section>
+</main>
+<script src="/web/app.js"></script>
+</body>
+</html>
