@@ -33,7 +33,8 @@ def client(engine):
         s.add(User(tenant_id=tenant.id, email="g@example.com",
                    password_hash=security.hash_password(PASSWORD),
                    role=Role.owner))
-    settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder"})
+    settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
+              "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"})
     c = TestClient(create_app(settings, engine=engine))
     r = c.post("/api/auth/login",
                json={"email": "g@example.com", "password": PASSWORD},
