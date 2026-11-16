@@ -239,3 +239,24 @@ class CategoryRule(Base):
         DateTime(timezone=True), default=utcnow, nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+
+
+class InviteToken(Base):
+    """Guardian invitation. Stores only the token hash; the raw token
+    is shown once to the inviting owner to deliver out of band."""
+    __tablename__ = "invite_tokens"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    role: Mapped[Role] = mapped_column(Enum(Role), nullable=False)
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True)
+    invited_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
