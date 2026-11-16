@@ -242,6 +242,11 @@ class TestMfaEnrollment:
 
 
 class TestAuditLogViewer:
+    @pytest.fixture(autouse=True)
+    def verified_session(self, client):
+        from mfa_support import mfa_login
+        assert mfa_login(client, json={"email":"o@example.com","password":PASSWORD}, headers=HDR).status_code == 200
+
     def test_events_visible_newest_first(self, client):
         client.post("/api/auth/password-change",
                     json={"current_password": PASSWORD,
@@ -270,7 +275,8 @@ class TestAuditLogViewer:
                        password_hash=security.hash_password(PASSWORD),
                        role=Role.owner))
         c2 = TestClient(client.app)
-        assert c2.post("/api/auth/login",
+        from mfa_support import mfa_login
+        assert mfa_login(c2,
                        json={"email": "p@example.com",
                              "password": PASSWORD},
                        headers=HDR).status_code == 200
@@ -288,7 +294,8 @@ class TestAuditLogViewer:
                        password_hash=security.hash_password(PASSWORD),
                        role=Role.viewer))
         c2 = TestClient(client.app)
-        assert c2.post("/api/auth/login",
+        from mfa_support import mfa_login
+        assert mfa_login(c2,
                        json={"email": "v@example.com",
                              "password": PASSWORD},
                        headers=HDR).status_code == 200
