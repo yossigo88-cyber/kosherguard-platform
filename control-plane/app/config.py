@@ -40,11 +40,23 @@ class Settings:
             raise ConfigError("KG_SESSION_LIFETIME_SECONDS must be positive")
         self.publications_root = env.get(
             "KG_PUBLICATIONS_ROOT", "").strip()
-        self.device_token_key = env.get("KG_DEVICE_TOKEN_KEY", "").strip() or None
         if not self.publications_root:
             raise ConfigError("KG_PUBLICATIONS_ROOT is required")
+        # Optional: path to the category-pipeline's built categories.json.
+        self.categories_file = env.get("KG_CATEGORIES_FILE", "").strip() or None
+        self.device_token_key = env.get("KG_DEVICE_TOKEN_KEY", "").strip() or None
         # Optional: NanoMDM server base URL and API key. When unset the
         # control plane records commands as queued without delivery -
         # the honest state while no MDM server is configured.
         self.nanomdm_url = env.get("KG_NANOMDM_URL", "").strip() or None
         self.nanomdm_api_key = env.get("KG_NANOMDM_API_KEY", "").strip() or None
+        # Credential artifact storage root (Part 16). Secret bytes live
+        # here mode 0600, OUTSIDE Git (the default lands under the
+        # gitignored /data/). Metadata-only rows go in the database.
+        self.credentials_root = (
+            env.get("KG_CREDENTIALS_ROOT", "").strip()
+            or os.path.join(self.publications_root, "..", "credentials"))
+        # Deployment environment stamp. Anything but an explicit
+        # "production" marks uploaded credential artifacts (and the
+        # upload screen) as development/fixture-only.
+        self.environment = env.get("KG_ENVIRONMENT", "development").strip() or                         "development"
