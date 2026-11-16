@@ -513,6 +513,29 @@ class TestRevocation:
         assert c.post(f"/api/devices/{other_did}/credentials/revoke",
                       headers=HDR).status_code == 404
 
+    def test_feed_accepts_scoped_edge_token(self, engine):
+        """Edge distribution: a dataset/proxy/doh scoped device token
+        reads ITS tenant's revocation feed (tenant isolation from the
+        token payload, not the session)."""
+        c, did = self._app(engine)
+        token = c.post(f"/api/devices/{did}/dataset-credential",
+                       headers=HDR).json()["credential"]
+        c.post(f"/api/devices/{did}/credentials/revoke", headers=HDR)
+        r = c.get("/api/credential-revocations",
+                  headers={"Authorization": f"Bearer {token}"})
+        # Note: the token itself was just revoked - feed lookup is by
+        # tenant, not by the caller's token validity beyond
+        # cryptographic verification, matching edge distribution (a
+        # revoked edge token still sees the denylist it must enforce).
+        assert r.status_code == 200, r.json()
+        assert len(r.json()["revoked_jtis"]) == 1
+
+    def test_feed_rejects_bad_bearer(self, engine):
+        c, did = self._app(engine)
+        r = c.get("/api/credential-revocations",
+                  headers={"Authorization": "Bearer bogus.token.sig"})
+        assert r.status_code == 401
+
     def test_feed_excludes_expired_and_other_tenants(self, engine):
         c, did = self._app(engine)
         c.post(f"/api/devices/{did}/credentials/revoke", headers=HDR)
