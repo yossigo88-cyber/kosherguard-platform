@@ -36,9 +36,7 @@ def make_app(engine, is_admin):
 
 
 def login(client):
-    return client.post("/api/auth/login", json={
-        "email": "guardian@example.com", "password": PASSWORD},
-        headers=HDR)
+    return mfa_login(client, json={'email': 'guardian@example.com', 'password': PASSWORD}, headers=HDR)
 
 
 class TestCategoryAdmin:
@@ -126,3 +124,5 @@ class TestCategoryAdmin:
             actions = [a.action for a in s.execute(
                 select(AuditEvent)).scalars().all()]
         assert "admin.category.upsert" in actions
+
+from mfa_support import mfa_login
