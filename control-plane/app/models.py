@@ -239,6 +239,31 @@ class MDMCommand(Base):
         nullable=False)
 
 
+class FilterDecision(Base):
+    """One filtering decision reported by an edge service (proxy-edge
+    today). Written only through POST /api/filter-logs with a valid
+    scoped device credential; the tenant comes from the token, never
+    from the request body. This is the real decision trail the
+    Filtering panel shows - if no edge is connected, the table and the
+    panel are simply empty, and the panel says so.
+    """
+    __tablename__ = "filter_decisions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int | None] = mapped_column(
+        ForeignKey("devices.id"), nullable=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(10), nullable=False)
+    rule: Mapped[str] = mapped_column(String(120), nullable=False,
+                                      default="")
+    reason: Mapped[str] = mapped_column(String(300), nullable=False,
+                                        default="")
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class CategoryRule(Base):
     """Platform-wide domain -> category assignment (seed dataset).
 
