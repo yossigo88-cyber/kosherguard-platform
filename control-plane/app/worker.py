@@ -100,10 +100,17 @@ def run_once(engine, settings, now=None) -> bool:
                               "generation": manifest["generation"],
                               "recovered": True}
                 else:
-                    result = publish_selected(
-                        session, job.tenant_id, settings.publications_root,
-                        actor_email, settings.categories_file,
-                        publication_job_id=job.id)
+                    from .publication_ops import (
+                        publish_revocation_cleanup, publish_selected)
+                    if job.system_action == "exception-revoke":
+                        result = publish_revocation_cleanup(
+                            session, job.tenant_id, settings.publications_root,
+                            actor_email, publication_job_id=job.id)
+                    else:
+                        result = publish_selected(
+                            session, job.tenant_id, settings.publications_root,
+                            actor_email, settings.categories_file,
+                            publication_job_id=job.id)
                 job.result = json.dumps(result, sort_keys=True)
                 job.status = "completed"
                 job.finished_at = now
