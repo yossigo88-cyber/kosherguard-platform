@@ -137,7 +137,15 @@ class FilteringProxyHandler(socketserver.BaseRequestHandler):
         if isinstance(policy_id, bool) or not isinstance(policy_id, int):
             self._send(403, b"proxy token is not bound to a policy")
             return None
-        engine = srv.engine_set.per_policy.get(policy_id)
+        if getattr(srv, "policy_bundle", None) is not None:
+            # Resolve CURRENT assignment, not a stale token's old policy.
+            # The token proves device identity; the publication owns policy.
+            if str(payload.get("tenant_id")) != str(srv.policy_bundle.tenant_id):
+                self._send(403, b"credential belongs to a different tenant")
+                return None
+            engine = srv.policy_bundle.for_device(payload.get("device_id"))
+        else:
+            engine = srv.engine_set.per_policy.get(policy_id)
         if engine is None:
             self._send(403, b"proxy token is bound to an unknown policy")
             return None
@@ -350,3 +358,38 @@ def build_proxy(listen, engine_set, token_key: bytes | None = None,
         revoked_jtis=(feed.shared_set if feed is not None else None),
         **kwargs)
     return proxy, stop
+
+
+def build_published_proxy(listen, tenant_root, token_key, now=None, **kwargs):
+    """Construct one explicitly tenant-scoped proxy from a complete bundle.
+
+    Call reload_published_proxy after publication notifications or from a
+    deployment-managed refresh loop. The retained bundle is last-known-good.
+    This constructor performs no external requests and no polling.
+    """
+    import sys
+    import os
+    sys.path.insert(0, os.path.abspath(os.path.join(
+        os.path.dirname(__file__), '..', 'dns-edge')))
+    from policy_bundle import load_bundle
+    if not token_key:
+        raise ValueError('published proxy requires authentication')
+    bundle = load_bundle(tenant_root, now=now)
+    if not isinstance(bundle.tenant_id, int) or bundle.tenant_id < 1:
+        raise ValueError('published proxy requires tenant-scoped manifest')
+    proxy = FilteringProxy(listen, bundle.engines, token_key=token_key, **kwargs)
+    proxy.policy_bundle = bundle
+    return proxy
+
+
+def reload_published_proxy(proxy, tenant_root, now=None):
+    from policy_bundle import load_bundle
+    try:
+        bundle = load_bundle(tenant_root, now=now)
+    except Exception:
+        return False
+    if bundle.tenant_id != proxy.policy_bundle.tenant_id:
+        return False
+    proxy.policy_bundle = bundle
+    proxy.engine_set = bundle.engines
+    return True
