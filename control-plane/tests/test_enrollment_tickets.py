@@ -251,6 +251,51 @@ class TestTicketRedeem:
         assert r.status_code == 200
 
 
+class TestCheckinBinding:
+    def test_redeem_does_not_activate_or_verify(self, engine, client):
+        """A redeemed ticket binds a UDID to a PENDING record only -
+        a self-asserted UDID plus ticket is not device proof. The
+        enrollment stays pending until an authenticated MDM check-in,
+        and supervision verification is still refused on it."""
+        from app import mdm_ops
+        dev = mk_device(client)
+        body = issue(client, dev)
+        r = client.post("/api/mdm/enroll",
+                        json={"ticket": body["ticket"],
+                              "device_udid": UDID})
+        assert r.status_code == 200
+        assert r.json()["state"] == "pending"
+        with session_scope(engine) as s:
+            enr = s.query(MDMEnrollment).filter_by(device_udid=UDID).one()
+            assert enr.state == "pending"
+            with pytest.raises(mdm_ops.MDMError) as exc:
+                mdm_ops.mark_supervision_verified(
+                    s, enr.tenant_id, enr.id, True)
+            assert exc.value.status == 409
+
+    def test_cross_tenant_udid_collision_refused_at_checkin(self, engine,
+                                                            client):
+        """Two tenants redeeming tickets with the same UDID: the
+        authenticated check-in binding refuses the ambiguous match
+        rather than mis-binding a device to the wrong tenant."""
+        from app import ddm_ops
+        other = make_client(engine, "b2@example.com", "fam-b2")
+        d1 = mk_device(client)
+        d2 = mk_device(other, "b2-phone")
+        t1 = issue(client, d1)
+        t2 = issue(other, d2)
+        r = client.post("/api/mdm/enroll",
+                        json={"ticket": t1["ticket"], "device_udid": UDID})
+        assert r.status_code == 200
+        r = other.post("/api/mdm/enroll",
+                       json={"ticket": t2["ticket"], "device_udid": UDID})
+        assert r.status_code == 200
+        with session_scope(engine) as s:
+            with pytest.raises(ddm_ops.DDMError) as exc:
+                ddm_ops.resolve_or_bind(s, UDID)
+            assert exc.value.status == 409
+
+
 class TestIdentityCertificates:
     def test_ca_signed_cert_verified(self, engine, tmp_path):
         ca_key, ca_cert, ca_file = make_ca(tmp_path)
