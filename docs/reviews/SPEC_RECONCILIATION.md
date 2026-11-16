@@ -95,13 +95,11 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   (POST /api/devices/{id}/dataset-credential) accepts scopes "dataset"
   (unbound) and "proxy" (policy-bound) ONLY - TestCredentialIssuance
   (dataset) and TestProxyScopeMinting (5) pass on the published tree
-  at bda1279. A "doh" scope request is rejected 400 on the published
-  tree: minting doh-scoped tokens is part of the HELD set (7cbdbef)
-  pending the user's decision. dns-edge's doh_identity request/verify
-  code (scope "doh") IS published, but no published mint route issues
-  tokens it accepts, so app-mediated DoH identity cannot run end to
-  end until the held set lands. Revocation registry, revoke route and
-  revocation feed are also HELD (local only, 4 TestRevocation tests).
+  at bda1279. The "doh" mint scope, revocation registry, revoke route
+  and per-tenant revocation feed are now PUBLISHED (user-approved
+  2026-11-16 10:31; f3518f5, 05454e0; tests 6b09060). The remaining
+  DNS-reporting gap is the dns-edge forwarder + ingestion source -
+  a separate open item, not part of the held set.
 - iOS request-path clients (606bdf4, 4b83612): initially published as
   standalone source; since wired - real call site (CredentialController
   in KosherGuardApp.swift, deliberately no-op until native session
@@ -237,10 +235,9 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   that awaits the Part 17 device-testing phase; (c) supervision/iOS27+
   gates are device-side (Apple depd65c456fa).
 - DNS decision reporting: NOT connected. Two SEPARATE dependencies:
-  (1) doh minting scope lives in held unpublished commit 7cbdbef
-  (user decision pending) - blocked on the held set; (2) the dns-edge
-  directory-layout mismatch is its own issue, independent of the held
-  doh work, and stays listed as a separate open item.
+  (1) doh minting scope PUBLISHED 2026-11-16 (f3518f5); (2) the
+  dns-edge forwarder + ingestion source remains the open item, its
+  own issue, next in the build queue.
 
 ## Part 11 - Customer-facing website
 
@@ -260,9 +257,11 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   pending row per user, 10-minute expiry, single-use; client never
   supplies the secret) - hardening verified by tests (substitution,
   expiry, replay, cross-user binding, session invalidation). DONE.
-- Cross-tenant isolation: HELD - the per-tenant publication isolation
-  fix (2af092e + regression tests) awaits user approval to publish.
-  Until then isolation at the publication layer is NOT claimed.
+- Cross-tenant isolation: DONE at the publication layer (user-approved
+  2026-11-16 10:31): per-tenant publication roots + self-created-only
+  cleanup, byte-level isolation regression tests. Published af763a7,
+  f88fd8d, f141ebb; tests 0759c42. See
+  docs/reviews/SECURITY_FIXES_2026-11-16.md.
 
 ## Part 13 - Database and backend
 
@@ -275,8 +274,16 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 
 - M1 auth slice (hashing, rate limiting, lockout, CSRF, MFA),
   input validation, RBAC, audit. DONE + tests.
-- HELD: publication per-tenant isolation fix + negative tests
-  (published after approval only).
+- Security fixes (user-approved 2026-11-16 10:31): publication
+  isolation, scheduled-block/policy invariant (schedule coverage proof
+  + default-mutation reproof + disable guard), DDM trusted chain
+  (HMAC peer auth + enrollment-state authorization + enrollment-only
+  check-in sync; supervision never caller-claimed) and credential
+  revocation registry - all published af763a7..c8e09bf with
+  regression tests. Full report: docs/reviews/SECURITY_FIXES_2026-11-16.md.
+  INCOMPLETE (explicit): edge consumption of the revocation feed
+  (distribution design pending); check-in sync deployment wiring;
+  device-side behavior BUILT-UNVERIFIED.
 - Secrets: none in repo; credentials redacted from logs by design
   (device_auth never logs token values, tested).
 
@@ -347,7 +354,9 @@ No credentials invented or hardcoded.
 14 Database and migrations: DONE.
 15 Hosting/deployment configuration: DONE as code + executable backup
    evidence (see Part 15); live hosting not purchased/authorized.
-16 Security implementation: DONE except HELD isolation fix.
+16 Security implementation: DONE incl. the three user-approved
+   2026-11-16 fixes (see docs/reviews/SECURITY_FIXES_2026-11-16.md);
+   edge revocation consumption + check-in sync wiring INCOMPLETE.
 17 Monitoring and logging: DONE as config/docs (not running).
 18 Backup and recovery: DONE (PG roundtrip 2026-11-16 + 16 dashboard
    backup/restore tests).
@@ -374,7 +383,7 @@ No credentials invented or hardcoded.
   policy resolution DONE as code. The approval's hard rule "no
   long-lived bearer credentials in DoH URLs or query strings" is
   honored: only short-lived scoped tokens are minted, returned once;
-  the DoH wiring itself sits in HELD 7cbdbef (user decision pending).
+  the doh mint scope is published (f3518f5, user-approved 2026-11-16).
   iOS native-transport constraint
   documented with Apple sources (DOH_IOS_TRANSPORT.md); app-mediated
   path requires the iOS app (BUILT-UNVERIFIED); mTLS hardware-unknown
@@ -383,6 +392,6 @@ No credentials invented or hardcoded.
   DONE as labeled-unverified code.
 - Q5 seed dataset + admin tools + provenance: DONE (M6, UI evidence).
 - Multiple guardians per tenant: DONE (M6).
-- Security audit before reuse: DONE (M1 + erratum held).
+- Security audit before reuse: DONE (M1 + erratum published 8e2db42).
 - External integrations marked awaiting approvals: DONE (labels).
 - No purchases/deployment/credential/device operations: HELD (none done).
