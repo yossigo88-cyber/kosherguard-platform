@@ -74,3 +74,58 @@ def test_upgrade_from_prior_schema_preserves_rows(tmp_path):
         enr = session.scalar(select(MDMEnrollment).where(
             MDMEnrollment.enrollment_id == "pending-x"))
         assert enr.device_udid == "UDID-123"
+
+
+ALL_TABLES = {
+    "tenants", "users", "auth_sessions", "audit_events",
+    "login_attempts", "policies", "policy_versions", "devices",
+    "device_assignments", "publication_states", "mdm_enrollments",
+    "device_app_policies", "ddm_status_reports", "mdm_commands",
+    "filter_decisions", "category_rules", "pending_mfa_enrollments",
+    "invite_tokens", "credential_artifacts", "issued_credentials",
+}
+
+
+def test_clean_alembic_only_install(tmp_path):
+    """A fresh database built by alembic ALONE (no metadata.create_all)
+    contains every model table and accepts ORM writes."""
+    import sqlite3 as _sq
+    db = tmp_path / "clean.db"
+    cfg = _cfg(str(db))
+    command.upgrade(cfg, "head")
+    con = _sq.connect(str(db))
+    tables = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    tables.discard("alembic_version")
+    assert tables == ALL_TABLES, (
+        f"missing: {ALL_TABLES - tables}; extra: {tables - ALL_TABLES}")
+    # Columns match the model for the security-round tables.
+    enr_cols = {r[1] for r in con.execute(
+        "PRAGMA table_info(mdm_enrollments)").fetchall()}
+    assert {"device_udid", "supervision_requested",
+            "supervision_verified", "state"} <= enr_cols
+    ic_cols = {r[1] for r in con.execute(
+        "PRAGMA table_info(issued_credentials)").fetchall()}
+    assert {"jti", "scope", "tenant_id", "device_id",
+            "revoked_at"} <= ic_cols
+    con.close()
+    # ORM write path works against the alembic-built schema.
+    from app.db import make_engine, session_scope
+    from app.models import (FilterDecision, IssuedCredential, Tenant,
+                            utcnow)
+    from sqlalchemy import select
+    engine = make_engine(f"sqlite:///{db}")
+    with session_scope(engine) as session:
+        session.add(Tenant(name="t1"))
+        session.flush()
+        t = session.scalar(select(Tenant))
+        session.add(FilterDecision(
+            tenant_id=t.id, device_id=None, source="proxy",
+            domain="x.example", action="block", rule="r",
+            reason="test", received_at=utcnow()))
+        session.add(IssuedCredential(
+            tenant_id=t.id, device_id=1, jti="j1", scope="proxy",
+            expires_at=utcnow(), created_at=utcnow()))
+    with session_scope(engine) as session:
+        assert session.scalar(select(FilterDecision)).domain == "x.example"
+        assert session.scalar(select(IssuedCredential)).jti == "j1"
