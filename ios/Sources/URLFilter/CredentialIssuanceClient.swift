@@ -73,7 +73,7 @@ struct CredentialIssuanceClient {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("1", forHTTPHeaderField: "X-KosherGuard-Request")
-        req.setValue("session=\(sessionCookie)",
+        req.setValue("kg_session=\(sessionCookie)",
                      forHTTPHeaderField: "Cookie")
         req.httpBody = try JSONEncoder().encode(["scope": scope.rawValue])
 
