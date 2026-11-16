@@ -108,15 +108,18 @@ implemented and documented in ddm_ops:
   request for a pending placeholder IS the device check-in evidence -
   the control plane activates it (pending -> enrolled) with an audit
   event, then serves. Enrollment ID alone, without the peer's HMAC,
-  authorizes nothing (401). Identifier mapping (verified: the
-  operations guide's enrollment-ID table - NanoMDM normalizes the
-  device-channel UDID / User-Enrollment EnrollmentID into its own
-  enrollment ID): the explicit sync route POST
-  /api/mdm/enrollment-checkin BINDS the local 'pending-*' placeholder
-  record to NanoMDM's actual ID (nanomdm_id), refusing binds that
-  collide with another enrollment; afterwards DDM traffic resolves by
-  the real ID. Regression tests cover the bind, the conflict refusal,
-  and that the placeholder no longer resolves after binding. Supervision is never
+  authorizes nothing (401 - verified before any lookup, so no
+  existence oracle). Identifier mapping, shipped code (verified: the
+  operations guide's enrollment-ID table - NanoMDM's device-channel
+  enrollment ID IS the device UDID): the pending record carries the
+  device UDID recorded at enrollment creation (never accepted from a
+  later caller), and the first authenticated DDM contact binds the
+  pending record to the real ID and activates it - unique match only,
+  ambiguity refused 409. The explicit sync route POST
+  /api/mdm/enrollment-checkin binds by nanomdm_id equivalently
+  (collision refused). Regression tests cover UDID-binding on first
+  contact, ambiguity refusal, sync binding, conflict refusal, and
+  that the placeholder no longer resolves after binding. Supervision is never
   caller-claimed on any route: supervision_verified can only be set
   from device-reported check-in data (mdm_ops.mark_supervision_verified)
   and stays false until such a report exists. (An earlier draft
@@ -151,10 +154,18 @@ further user decision gate.
 
 ## Residual limitations (explicit)
 
-- Edge verifiers do not yet consume the revocation feed (distribution
-  design pending); revocation at the edge is INCOMPLETE until that is
-  implemented and exercised. Natural short token expiry bounds
-  exposure.
+- Edge revocation distribution and consumption are implemented and
+  exercised (update, this head): edges pull GET
+  /api/credential-revocations with a dataset/proxy/doh scoped device
+  token (tenant from the token payload, so no cross-tenant read is
+  possible; revoked-not-expired jtis only); url-filter-server's
+  RevocationFeed refreshes an in-place set the verifier refuses
+  against, and proxy-edge's FilteringProxy takes the same set. Tests:
+  feed bearer/tenant/expiry semantics (control-plane
+  test_guardians.py) and refresh-replace, failed-refresh-keeps-set,
+  and end-to-end consumption (url-filter-server test_revocations.py;
+  proxy-edge test_server.py revoked-token 407). Between refreshes a
+  revoked unlisted token is bounded by its short expiry.
 - No unbuilt bridge remains for activation: the DDM serving path
   itself activates on first authenticated contact. Fail-closed
   unchanged: without KG_DDM_HMAC_KEY nothing is served (503); without
