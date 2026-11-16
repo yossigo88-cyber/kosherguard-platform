@@ -167,6 +167,16 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   an explicit data-loss confirmation on removal (WWDC21 session 10136:
   managed-app removal erases the app's data container; Apple command
   list dep789n2k1qp). RemoveApplication stays device-unverified.
+  Managed-app configuration emission (built 2026-11-16, 34bdb6c):
+  InstallApplication now carries the Apple-documented Configuration
+  dictionary (apple/device-management release @ 9e7fdbe,
+  mdm/commands/application.install.yaml: optional dict, iOS 7.0+/
+  macOS 11.0+) so the KosherGuard app's managed configuration
+  (com.apple.configuration.managed: controlPlaneBaseURL + deviceID,
+  read by ios/Sources/URLFilter/AppConfiguration.swift) is actually
+  delivered at install. deviceID is filled from the server-side device
+  record; controlPlaneBaseURL is operator-supplied, never invented.
+  mdm 64 + control-plane 160 green at 34bdb6c.
 - Filtering activity + edge status (built 2026-11-16, ebd1e2e..d2b8d1a):
   - Ingestion POST/GET /api/filter-logs, proxy-scope bearer auth,
     tenant/device binding from the verified token; proxy-edge
