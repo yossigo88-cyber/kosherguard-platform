@@ -77,6 +77,21 @@ class TestPasswordChange:
                         headers=HDR)
         assert r.status_code == 400
 
+    def test_other_sessions_invalidated_on_change(self, client):
+        c2 = TestClient(client.app)
+        assert c2.post("/api/auth/login",
+                       json={"email": "o@example.com", "password": PASSWORD},
+                       headers=HDR).status_code == 200
+        r = client.post("/api/auth/password-change",
+                        json={"current_password": PASSWORD,
+                              "new_password": NEW_PASSWORD},
+                        headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["other_sessions_invalidated"] == 1
+        # the other session is dead; the changing session survives
+        assert c2.get("/api/auth/me").status_code == 401
+        assert client.get("/api/auth/me").status_code == 200
+
     def test_audit_written(self, client, engine):
         client.post("/api/auth/password-change",
                     json={"current_password": PASSWORD,
@@ -88,6 +103,7 @@ class TestPasswordChange:
             rows = s.execute(select(AuditEvent).where(
                 AuditEvent.action == "auth.password_change")).scalars().all()
             assert len(rows) == 1
+            assert "other_sessions_invalidated=" in rows[0].detail
 
 
 class TestMfaEnrollment:
@@ -106,25 +122,96 @@ class TestMfaEnrollment:
         secret = self._start(client)["secret"]
         code = pyotp.TOTP(secret).now()
         r = client.post("/api/auth/mfa/enroll-confirm",
-                        json={"secret": secret, "code": code,
-                              "password": "wrong wrong wrong"},
+                        json={"code": code, "password": "wrong wrong wrong"},
                         headers=HDR)
         assert r.status_code == 403
 
     def test_confirm_rejects_bad_code(self, client):
-        secret = self._start(client)["secret"]
+        self._start(client)
         r = client.post("/api/auth/mfa/enroll-confirm",
-                        json={"secret": secret, "code": "000000",
-                              "password": PASSWORD},
+                        json={"code": "000000", "password": PASSWORD},
                         headers=HDR)
         assert r.status_code in (400, 403)  # 000000 may rarely be valid
+
+    def test_confirm_without_start_400(self, client):
+        r = client.post("/api/auth/mfa/enroll-confirm",
+                        json={"code": "123456", "password": PASSWORD},
+                        headers=HDR)
+        assert r.status_code == 400
+
+    def test_client_cannot_substitute_secret(self, client, engine):
+        """The confirm route takes no secret: the server-stored pending
+        secret is used. A code valid for an attacker-chosen secret but
+        not for the pending one is rejected."""
+        self._start(client)  # real pending secret stored server-side
+        attacker_secret = pyotp.random_base32()
+        attacker_code = pyotp.TOTP(attacker_secret).now()
+        r = client.post("/api/auth/mfa/enroll-confirm",
+                        json={"code": attacker_code, "password": PASSWORD},
+                        headers=HDR)
+        assert r.status_code == 400
+
+    def test_expired_pending_rejected_and_cleared(self, client, engine):
+        from datetime import timedelta
+        from app.models import PendingMfaEnrollment, utcnow
+        self._start(client)
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            row = s.execute(select(PendingMfaEnrollment)).scalar_one()
+            row.expires_at = utcnow() - timedelta(minutes=1)
+        r = client.post("/api/auth/mfa/enroll-confirm",
+                        json={"code": "123456", "password": PASSWORD},
+                        headers=HDR)
+        assert r.status_code == 400
+        assert "expired" in r.json()["error"]
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            assert s.execute(
+                select(PendingMfaEnrollment)).scalar_one_or_none() is None
+
+    def test_restart_replaces_pending(self, client):
+        first = self._start(client)["secret"]
+        second = self._start(client)["secret"]
+        assert first != second
+        # old code no longer works; new one does
+        assert client.post("/api/auth/mfa/enroll-confirm",
+                           json={"code": pyotp.TOTP(first).now(),
+                                 "password": PASSWORD},
+                           headers=HDR).status_code == 400
+        assert client.post("/api/auth/mfa/enroll-confirm",
+                           json={"code": pyotp.TOTP(second).now(),
+                                 "password": PASSWORD},
+                           headers=HDR).status_code == 200
+
+    def test_pending_bound_to_user(self, client, engine):
+        """Another user's pending row cannot satisfy this user's
+        confirm: confirm consumes only the caller's own pending row."""
+        from app.models import PendingMfaEnrollment
+        other_secret = pyotp.random_base32()
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            tenant = s.execute(select(Tenant)).scalar_one()
+            other = User(tenant_id=tenant.id, email="x@example.com",
+                         password_hash=security.hash_password(PASSWORD),
+                         role=Role.viewer)
+            s.add(other)
+            s.flush()
+            from app.models import utcnow
+            from datetime import timedelta
+            s.add(PendingMfaEnrollment(
+                user_id=other.id, secret=other_secret,
+                expires_at=utcnow() + timedelta(minutes=10)))
+        r = client.post("/api/auth/mfa/enroll-confirm",
+                        json={"code": pyotp.TOTP(other_secret).now(),
+                              "password": PASSWORD},
+                        headers=HDR)
+        assert r.status_code == 400  # caller has no pending row
 
     def test_full_enrollment_then_login_requires_totp(self, client):
         secret = self._start(client)["secret"]
         code = pyotp.TOTP(secret).now()
         r = client.post("/api/auth/mfa/enroll-confirm",
-                        json={"secret": secret, "code": code,
-                              "password": PASSWORD},
+                        json={"code": code, "password": PASSWORD},
                         headers=HDR)
         assert r.status_code == 200
         assert r.json()["mfa_enabled"] is True
@@ -144,11 +231,11 @@ class TestMfaEnrollment:
         assert client.post("/api/auth/mfa/enroll-start",
                            headers=HDR).status_code == 409
 
-    def test_pending_secret_not_persisted_before_confirm(self, client,
-                                                         engine):
+    def test_pending_secret_not_promoted_before_confirm(self, client,
+                                                        engine):
         self._start(client)
         with session_scope(engine) as s:
             from sqlalchemy import select
             u = s.execute(select(User).where(
                 User.email == "o@example.com")).scalar_one()
-            assert u.totp_secret is None
+            assert u.totp_secret is None  # pending row only, not promoted
