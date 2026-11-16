@@ -22,14 +22,22 @@ import json
 import os
 import re
 import tempfile
+import threading
 
 from fastapi import Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from .models import (CategoryRule, CategorySource, CategorySourceUpdate,
                      StaffRole, utcnow)
 from .publication_ops import build_categories_doc, canonical_json
+
+# The categories file is SHARED across sources, so per-source row locks
+# cannot serialize syncs. This process-wide lock (plus a PostgreSQL
+# advisory lock across workers) serializes render+write, so the last
+# writer always materializes the latest committed rules.
+_SYNC_LOCK = threading.Lock()
+_SYNC_ADVISORY_KEY = 727401
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UPDATE_STATUSES = ("pending_review", "active", "rejected",
@@ -281,29 +289,36 @@ def register_category_source_routes(app, *, error, current_user,
             return None
         from .db import ScopedSession
         try:
-            doc = build_categories_doc(session)
-            payload = canonical_json(doc)
-            path = settings.categories_file
-            directory = os.path.dirname(os.path.abspath(path)) or "."
-            fd, tmp = tempfile.mkstemp(dir=directory,
-                                       prefix=".categories-",
-                                       suffix=".tmp")
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(payload)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp, path)
-            except BaseException:
+            with _SYNC_LOCK:
+                if session.bind.dialect.name == "postgresql":
+                    # Cross-process serialization: held until the
+                    # audit commit below ends the transaction.
+                    session.execute(text(
+                        "SELECT pg_advisory_xact_lock(:k)"),
+                        {"k": _SYNC_ADVISORY_KEY})
+                doc = build_categories_doc(session)
+                payload = canonical_json(doc)
+                path = settings.categories_file
+                directory = os.path.dirname(os.path.abspath(path)) or "."
+                fd, tmp = tempfile.mkstemp(dir=directory,
+                                           prefix=".categories-",
+                                           suffix=".tmp")
                 try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-            with open(path, "rb") as fh:
-                if hashlib.sha256(fh.read()).hexdigest() != \
-                        hashlib.sha256(payload).hexdigest():
-                    raise OSError("post-write digest mismatch")
+                    with os.fdopen(fd, "wb") as fh:
+                        fh.write(payload)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    os.replace(tmp, path)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+                with open(path, "rb") as fh:
+                    if hashlib.sha256(fh.read()).hexdigest() != \
+                            hashlib.sha256(payload).hexdigest():
+                        raise OSError("post-write digest mismatch")
         except Exception as exc:
             ScopedSession(session, user.tenant_id).audit(
                 "category_source.file_sync_failed",
