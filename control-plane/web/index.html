@@ -76,6 +76,7 @@ h2 { margin-bottom:.4rem; }
 
   <section class="panel hidden" id="policies-panel">
     <h2>Policies</h2>
+    <p class="muted">The selected tenant baseline is protected and owner-controlled. Guardian changes require explicit delegation and cannot weaken it. Category administration and app/profile changes are not parent bypasses.</p>
     <table id="policies"><thead><tr><th>Name</th><th>Default</th><th>Blocklist</th><th>Versions</th><th></th></tr></thead><tbody></tbody></table>
     <h3 style="margin-top:1.2rem">New policy</h3>
     <form id="policy-form">
@@ -91,6 +92,24 @@ h2 { margin-bottom:.4rem; }
       <div class="error" id="policy-error"></div>
       <div class="ok" id="policy-ok"></div>
     </form>
+  </section>
+
+  <section class="panel hidden" id="groups-panel">
+    <h2>Device groups</h2>
+    <p class="muted">One group per device. An explicit device assignment wins over its group policy; otherwise the group policy wins over the protected baseline. Group policies must stay at least as strict as that baseline. Publish after changes.</p>
+    <table id="groups-table"><thead><tr><th>Group</th><th>Policy</th><th>Devices</th></tr></thead><tbody></tbody></table>
+    <form id="group-form">
+      <label>Group name <input id="group-name" required maxlength="120"></label>
+      <label>Group policy <select id="group-policy"></select></label>
+      <button type="submit">Create group</button>
+    </form>
+    <form id="group-member-form">
+      <label>Group <select id="group-select"></select></label>
+      <label>Device <select id="group-device"></select></label>
+      <button type="submit">Move device to group</button>
+      <button type="button" id="group-remove-member">Remove from this group</button>
+    </form>
+    <p id="group-result"></p>
   </section>
 
   <section class="panel hidden" id="schedules-panel">
