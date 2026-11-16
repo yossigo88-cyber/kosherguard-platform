@@ -40,6 +40,7 @@ class Settings:
             raise ConfigError("KG_SESSION_LIFETIME_SECONDS must be positive")
         self.publications_root = env.get(
             "KG_PUBLICATIONS_ROOT", "").strip()
+        self.device_token_key = env.get("KG_DEVICE_TOKEN_KEY", "").strip() or None
         if not self.publications_root:
             raise ConfigError("KG_PUBLICATIONS_ROOT is required")
         # Optional: NanoMDM server base URL and API key. When unset the
