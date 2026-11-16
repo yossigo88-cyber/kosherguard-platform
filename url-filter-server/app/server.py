@@ -17,21 +17,49 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi import FastAPI
+import os
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from .device_auth import TokenError, verify_token
 from fastapi.responses import JSONResponse, Response
 
 from .dataset import Dataset
 
 
-def create_app(dataset: Dataset) -> FastAPI:
+def create_app(dataset: Dataset,
+               device_token_key: bytes | None = None) -> FastAPI:
+    if device_token_key is None:
+        raw = os.environ.get("KG_DEVICE_TOKEN_KEY", "")
+        device_token_key = raw.encode() if raw else None
+
+    def require_device(request: Request):
+        """Per-device credential check. When no key is configured the
+        service runs in local-development mode and lets requests
+        through; production must set KG_DEVICE_TOKEN_KEY."""
+        if device_token_key is None:
+            return {"device_id": "dev-mode", "tenant_id": "dev-mode"}
+        header = request.headers.get("authorization", "")
+        token = (header[7:] if header.lower().startswith("bearer ")
+                 else "")
+        try:
+            return verify_token(device_token_key, token, "dataset")
+        except TokenError as exc:
+            # Deliberately generic: no oracle about which check failed.
+            raise HTTPException(status_code=401,
+                                detail=f"unauthorized: {exc}")
+
     app = FastAPI(title="KosherGuard URL Filter Server", docs_url=None,
                   redoc_url=None)
 
-    @app.get("/v1/dataset/manifest")
+    @app.get("/v1/dataset/manifest",
+             dependencies=[Depends(require_device)])
     def manifest():
         return dataset.manifest
 
-    @app.get("/v1/dataset/prefilter")
+    @app.get("/v1/dataset/prefilter",
+             dependencies=[Depends(require_device)])
     def prefilter():
         data = dataset.prefilter.to_bytes()
         return Response(
@@ -40,7 +68,8 @@ def create_app(dataset: Dataset) -> FastAPI:
                      "X-Bloom-Bits": str(dataset.prefilter.m),
                      "X-Bloom-Hashes": str(dataset.prefilter.k)})
 
-    @app.get("/v1/dataset/shards/{index}")
+    @app.get("/v1/dataset/shards/{index}",
+             dependencies=[Depends(require_device)])
     def shard(index: int):
         if index < 0 or index >= len(dataset.shards):
             return JSONResponse(status_code=404,
