@@ -15,7 +15,8 @@ import os
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Device, DeviceAssignment, Policy, PolicyVersion, PublicationState
+from .models import (CategoryRule, Device, DeviceAssignment, Policy,
+                     PolicyVersion, PublicationState)
 from .policy_ops import PolicyError
 from .publisher import Publisher, PublicationError, canonical_json
 
@@ -23,18 +24,69 @@ import os as _os, sys as _sys
 _ENG = _os.path.join(_os.path.dirname(__file__), "..", "..", "filtering-engine", "src")
 if _os.path.abspath(_ENG) not in _sys.path:
     _sys.path.insert(0, _os.path.abspath(_ENG))
+import category_db  # noqa: E402
 import policy_engine  # noqa: E402
 
 
+def build_categories_doc(session: Session) -> dict:
+    """Render the categories document from the active category_rules
+    (the source of truth) and prove it loads with the filtering
+    engine's own CategoryDB. Shared by the registry's file sync and
+    the publish-time divergence check so both mean the same bytes."""
+    rows = session.scalars(select(CategoryRule).where(
+        CategoryRule.active.is_(True))).all()
+    doc = {"_meta": {"source": "kosherguard-control-plane",
+                     "note": "registry-managed dataset"},
+           "domains": {}}
+    for row in rows:
+        doc["domains"].setdefault(row.domain, [])
+        if row.category not in doc["domains"][row.domain]:
+            doc["domains"][row.domain].append(row.category)
+    for domain in doc["domains"]:
+        doc["domains"][domain] = sorted(doc["domains"][domain])
+    category_db.CategoryDB(doc["domains"], meta=doc["_meta"])
+    return doc
+
+
+def _assert_categories_file_matches_db(session: Session,
+                                       categories_path: str) -> None:
+    """Publication must never ship a categories document that diverged
+    from the committed registry-managed rules (e.g. after a failed file
+    sync or a manual edit). Refuse with a repair hint instead. When no
+    registry-managed rules are active the file is operator-provided
+    (category-pipeline build) and there is nothing committed to diverge
+    from, so the check does not apply."""
+    managed = session.scalars(select(CategoryRule).where(
+        CategoryRule.active.is_(True),
+        CategoryRule.source_update_id.is_not(None)).limit(1)).first()
+    if managed is None:
+        return
+    expected = canonical_json(build_categories_doc(session))
+    with open(categories_path, "rb") as fh:
+        on_disk = fh.read()
+    try:
+        parsed = json.loads(on_disk.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise PolicyError(
+            "categories file is unreadable; resync the category "
+            "sources dataset before publishing", 500)
+    if canonical_json(parsed) != expected:
+        raise PolicyError(
+            "categories file diverged from the committed category "
+            "rules; resync the category sources dataset before "
+            "publishing", 500)
+
+
 def export_policy_documents(version: PolicyVersion,
-                            categories_path: str | None = None) -> tuple[bytes, bytes]:
+                            categories_path: str | None = None,
+                            session: Session | None = None) -> tuple[bytes, bytes]:
     """Render one policy version as engine policy.json + categories.json.
 
     categories_path points at the category-pipeline's built
     categories.json; when unset (or missing) the published document is
     structurally valid with no domains, so category rules resolve to no
-    matches rather than failing to load.
-    """
+    matches rather than failing to load. When a session is supplied the
+    file is verified against the committed active rules first."""
     # The stored engine_doc is already normalized (nested category_rules);
     # re-running the API-shaped normalize_engine_doc would drop them.
     # Validate with the engine's own validator instead.
@@ -45,6 +97,8 @@ def export_policy_documents(version: PolicyVersion,
         raise PolicyError(f"stored policy failed engine validation: {exc}", 500)
     policy_json = canonical_json(stored)
     if categories_path and os.path.isfile(categories_path):
+        if session is not None:
+            _assert_categories_file_matches_db(session, categories_path)
         with open(categories_path, "rb") as fh:
             categories_json = fh.read()
         # Prove it is a real pipeline product before shipping it.
@@ -94,7 +148,7 @@ def publish_selected(session: Session, tenant_id: int, root: str,
         raise PolicyError("selected policy has no versions", 409)
 
     policy_json, categories_json = export_policy_documents(
-        version, categories_path)
+        version, categories_path, session=session)
 
     # Emit assigned policies and the authenticated device map in the SAME
     # immutable generation. No IP/device identity inference is made.
