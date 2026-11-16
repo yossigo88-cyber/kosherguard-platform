@@ -412,3 +412,25 @@ class IssuedCredential(Base):
         DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class PublicationJob(Base):
+    """Durable tenant-scoped request to publish the then-current policy.
+
+    Workers select only queued, due rows. Idempotency keys are scoped to
+    the tenant so a different customer cannot collide with a request.
+    """
+    __tablename__ = "publication_jobs"
+    __table_args__ = (UniqueConstraint("tenant_id", "request_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    actor_email: Mapped[str] = mapped_column(String(320))
+    request_key: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
