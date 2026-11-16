@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["policy-preview-panel", "publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -38,6 +38,8 @@ async function refresh() {
   refreshAuditLogs();
   const policies = await api("/api/policies");
   policyList = policies.body.policies || [];
+  $("preview-policy").innerHTML = policyList.map(p =>
+    `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   refreshSchedules();
   document.querySelector("#policies tbody").innerHTML = policyList.map(p =>
     `<tr><td>${esc(p.name)}</td><td>${esc(p.default_policy)}</td><td>${esc(p.blocklist.join(", "))}</td>` +
@@ -592,7 +594,7 @@ function renderSchedules() {
     `<tr><td>${esc(sc.name)}</td>` +
     `<td>${sc.days.map(d => DAY_NAMES[d]).join(" ")}</td>` +
     `<td>${fmtMin(sc.start)}-${fmtMin(sc.end)}</td>` +
-    `<td>${esc(sc.timezone)} ${esc(sc.start_date || "")} ${esc(sc.end_date || "")}</td>` +
+    `<td>${esc(sc.timezone)}<br><small>${sc.start_date || sc.end_date ? `${esc(sc.start_date || "any start")} to ${esc(sc.end_date || "no end")}` : "weekly"}</small></td>` +
     `<td>${esc([...sc.block_categories, ...sc.block_domains].join(", "))}</td>` +
     `<td>${sc.enabled ? "yes" : "no"}</td>` +
     `<td><button class="link" data-rmsched="${esc(sc.name)}">remove</button></td></tr>`
@@ -743,4 +745,26 @@ $("publication-queue").addEventListener("click", async () => {
 });
 $("publication-check").addEventListener("click", async () => {
   if (publicationJobId) await showPublicationJob(await api(`/api/publications/jobs/${publicationJobId}`));
+});
+
+$("policy-preview-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = Number($("preview-policy").value);
+  if (!id) { $("preview-result").textContent = "Choose a policy first"; return; }
+  const body = {domain: $("preview-domain").value.trim()};
+  if ($("preview-at").value.trim()) body.at = $("preview-at").value.trim();
+  const r = await api(`/api/policies/${id}/preview`, {
+    method: "POST", headers: HDR, body: JSON.stringify(body)});
+  $("preview-result").textContent = r.status === 200 ?
+    `${r.body.action}: ${r.body.rule}. ${r.body.reason}. ${r.body.scope}` :
+    (r.body.error || "Preview unavailable");
+});
+
+$("p-template").addEventListener("change", async () => {
+  const r = await api("/api/policy-templates");
+  const template = r.status === 200 && r.body.templates[$("p-template").value];
+  if (!template) { $("policy-error").textContent = "Template unavailable; form unchanged"; return; }
+  $("p-default").value = template.rules.default_policy;
+  $("p-blocklist").value = template.rules.blocklist.join(", ");
+  $("p-catblock").value = template.rules.category_block.join(", ");
 });
