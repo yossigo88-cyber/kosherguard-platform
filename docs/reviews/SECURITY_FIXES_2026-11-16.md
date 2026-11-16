@@ -34,14 +34,20 @@ Fix (af763a7, f88fd8d, f141ebb):
   nested category_rules); an optional categories_file (seed dataset)
   is validated before publication.
 
-Regression tests (0759c42): one tenant's publish never touches another
-tenant's generations - verified at the byte level: both tenants'
-generation-1 policy.json files exist AND the first tenant's current
-generation still loads in the engine and decides correctly after the
-second tenant publishes (not merely directories present); a replayed
-revision is refused and the original generation's manifest bytes and
-the current pointer are unchanged (failed-publish cleanup only removes
-self-created data); categories file publication path covered.
+Regression tests (0759c42 + byte-level additions): (a) successful
+second-tenant publish - both tenants' generation files exist AND the
+first tenant's current generation still loads in the engine and
+decides correctly (not merely directories present); (b) replay/
+collision refused BEFORE writes - the original generation's manifest
+bytes and current pointer unchanged; (c) failed MID-publication
+write - a write failure after the generation directory was created
+and policy.json had landed: cleanup removes only the partial
+generation it created, the other tenant's tree is byte-for-byte
+unchanged (full SHA-256 snapshot before/after), and the failing
+tenant's prior current pointer is intact; (d) tenant B's failed
+replay leaves tenant A's bytes unchanged (distinct from (c), which
+exercises same-tenant cleanup after writes began); categories file
+publication path covered.
 
 ## Fix 2 - scheduled-block policy bypass
 
@@ -102,10 +108,15 @@ implemented and documented in ddm_ops:
   request for a pending placeholder IS the device check-in evidence -
   the control plane activates it (pending -> enrolled) with an audit
   event, then serves. Enrollment ID alone, without the peer's HMAC,
-  authorizes nothing (401). The explicit sync route POST
-  /api/mdm/enrollment-checkin (same HMAC peer auth) is the equivalent
-  out-of-band activation path (e.g. a sync of NanoMDM's stored
-  Authenticate data); it records ENROLLMENT ONLY. Supervision is never
+  authorizes nothing (401). Identifier mapping (verified: the
+  operations guide's enrollment-ID table - NanoMDM normalizes the
+  device-channel UDID / User-Enrollment EnrollmentID into its own
+  enrollment ID): the explicit sync route POST
+  /api/mdm/enrollment-checkin BINDS the local 'pending-*' placeholder
+  record to NanoMDM's actual ID (nanomdm_id), refusing binds that
+  collide with another enrollment; afterwards DDM traffic resolves by
+  the real ID. Regression tests cover the bind, the conflict refusal,
+  and that the placeholder no longer resolves after binding. Supervision is never
   caller-claimed on any route: supervision_verified can only be set
   from device-reported check-in data (mdm_ops.mark_supervision_verified)
   and stays false until such a report exists. (An earlier draft
