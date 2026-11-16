@@ -38,3 +38,7 @@ class Settings:
         )
         if self.session_lifetime_seconds <= 0:
             raise ConfigError("KG_SESSION_LIFETIME_SECONDS must be positive")
+        self.publications_root = env.get(
+            "KG_PUBLICATIONS_ROOT", "").strip()
+        if not self.publications_root:
+            raise ConfigError("KG_PUBLICATIONS_ROOT is required")
