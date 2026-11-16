@@ -21,16 +21,20 @@ from .publisher import Publisher
 
 
 def enqueue(session: Session, tenant_id: int, actor_id: int,
-            actor_email: str, request_key: str) -> PublicationJob:
+            actor_email: str, request_key: str,
+            system_action: str | None = None) -> PublicationJob:
     if not request_key or len(request_key) > 100:
         raise ValueError("request_key must contain 1-100 characters")
+    if system_action not in (None, "exception-revoke"):
+        raise ValueError("unknown system action")
     old = session.scalar(select(PublicationJob).where(
         PublicationJob.tenant_id == tenant_id,
         PublicationJob.request_key == request_key))
     if old is not None:
         return old
     row = PublicationJob(tenant_id=tenant_id, actor_user_id=actor_id,
-                         actor_email=actor_email, request_key=request_key)
+                         actor_email=actor_email, request_key=request_key,
+                         system_action=system_action)
     session.add(row)
     session.flush()
     session.add(AuditEvent(tenant_id=tenant_id, actor_user_id=actor_id,
@@ -61,12 +65,24 @@ def run_once(engine, settings, now=None) -> bool:
         try:
             with session.begin_nested():
                 actor = session.get(User, job.actor_user_id)
-                if (actor is None or actor.tenant_id != job.tenant_id or
-                        actor.role not in (Role.owner, Role.guardian) or
-                        not actor.totp_secret):
-                    raise PermissionError("publication actor no longer authorized")
-                if actor.role == Role.guardian and "publish" not in json.loads(actor.delegated_settings):
-                    raise PermissionError("publication delegation revoked")
+                if job.system_action == "exception-revoke":
+                    # Narrow server-initiated cleanup: a revocation must
+                    # reach the edge even when the revoking guardian has
+                    # no publish delegation or the owner is unavailable,
+                    # demoted or MFA-unverified. The marker is server-set
+                    # (the jobs API cannot create it), the actor stays
+                    # the real revoker, and the publication ships the
+                    # tenant's current saved state under the ordinary
+                    # publication invariants (tighten-only vs baseline).
+                    actor_email = f"system:exception-revoke job {job.id}"
+                else:
+                    if (actor is None or actor.tenant_id != job.tenant_id or
+                            actor.role not in (Role.owner, Role.guardian) or
+                            not actor.totp_secret):
+                        raise PermissionError("publication actor no longer authorized")
+                    if actor.role == Role.guardian and "publish" not in json.loads(actor.delegated_settings):
+                        raise PermissionError("publication delegation revoked")
+                    actor_email = job.actor_email
                 state = session.scalar(select(PublicationState).where(
                     PublicationState.tenant_id == job.tenant_id
                 ).with_for_update())
@@ -86,15 +102,19 @@ def run_once(engine, settings, now=None) -> bool:
                 else:
                     result = publish_selected(
                         session, job.tenant_id, settings.publications_root,
-                        job.actor_email, settings.categories_file,
+                        actor_email, settings.categories_file,
                         publication_job_id=job.id)
                 job.result = json.dumps(result, sort_keys=True)
                 job.status = "completed"
                 job.finished_at = now
                 job.last_error = None
+                detail = f"job {job.id}"
+                if job.system_action:
+                    detail += (f" (system cleanup {job.system_action} "
+                               f"initiated by user {job.actor_user_id})")
                 session.add(AuditEvent(
                     tenant_id=job.tenant_id, actor_user_id=job.actor_user_id,
-                    action="publication.completed", detail=f"job {job.id}"))
+                    action="publication.completed", detail=detail))
         except Exception:
             # Errors may contain paths or private payloads. Only a fixed
             # classification is retained, not arbitrary exception text.
