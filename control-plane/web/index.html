@@ -309,6 +309,13 @@ h2 { margin-bottom:.4rem; }
   </section>
   <section class="panel hidden" id="filtering-panel">
     <h2>Filtering activity</h2>
+    <p class="muted">Allowed-site browsing history is not stored. Blocked domains only, deleted after 7 days by default. No full URL paths are collected. The maintenance worker must run for automatic deletion, including when nobody opens this page.</p>
+    <form id="retention-form"><label>Blocked activity retention, days (owner only, 1-30)
+      <input id="retention-days" type="number" min="1" max="30" value="7" required></label>
+      <button type="submit">Save retention and delete expired activity</button>
+      <span id="retention-result"></span>
+    </form>
+
     <p class="muted">Decisions the filtering proxy actually made and
     reported for this family, newest first. If nothing appears, no
     proxy is connected and reporting yet - an empty table here means no
@@ -373,4 +380,4 @@ h2 { margin-bottom:.4rem; }
 </main>
 <script src="/web/app.js"></script>
 </body>
-          </html>
+</html>
