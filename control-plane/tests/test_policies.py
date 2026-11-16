@@ -298,3 +298,80 @@ class TestScheduleTightenOnly:
         r2 = client.post(f"/api/devices/{did}/assignment",
                          json={"policy_id": pid}, headers=HDR)
         assert r2.status_code == 409, r2.json()
+
+
+class TestDefaultMutationReproof:
+    """Mutating the SELECTED DEFAULT must re-prove every active
+    assignment against the proposed new baseline: after a strengthening
+    mutation, an assignment that no longer covers the default would
+    filter weaker than the baseline - the invariant the whole
+    tighten-only design exists to keep."""
+
+    def _setup(self, client):
+        did_default = mkpolicy(client, "default", **BASE).json()["id"]
+        client.post(f"/api/policies/{did_default}/select",
+                    headers=HDR, json={})
+        pid = mkpolicy(client, "kid", **BASE).json()["id"]
+        did = client.post("/api/devices", json={"name": "kid-phone"},
+                          headers=HDR).json()["id"]
+        r = client.post(f"/api/devices/{did}/assignment",
+                        json={"policy_id": pid}, headers=HDR)
+        assert r.status_code == 200
+        return did_default, pid
+
+    def test_strengthen_default_base_rules_refused(self, client):
+        dpid, _ = self._setup(client)
+        stronger = dict(BASE, category_block=["games"])
+        r = client.put(f"/api/policies/{dpid}",
+                       json={"name": "default", **stronger}, headers=HDR)
+        assert r.status_code == 409, r.json()
+        assert "kid" in r.json()["error"]
+        # Unchanged: default still has the old document.
+        doc = client.get("/api/policies").json()["policies"][0]
+        assert doc["category_block"] == []
+
+    def test_strengthen_default_schedules_refused(self, client):
+        dpid, _ = self._setup(client)
+        r = client.put(f"/api/policies/{dpid}/schedules",
+                       json={"schedules": [SCHED]}, headers=HDR)
+        assert r.status_code == 409, r.json()
+
+    def test_strengthen_default_covered_assignment_accepted(self, client):
+        dpid, pid = self._setup(client)
+        # Tighten the assigned policy first so it covers the new baseline.
+        tighter = dict(BASE, category_block=["games"])
+        r = client.put(f"/api/policies/{pid}",
+                       json={"name": "kid", **tighter}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        r = client.put(f"/api/policies/{dpid}",
+                       json={"name": "default", **tighter}, headers=HDR)
+        assert r.status_code == 200, r.json()
+
+    def test_weaken_default_allowed(self, client):
+        dpid, _ = self._setup(client)
+        weaker = dict(BASE, blocklist=[])
+        r = client.put(f"/api/policies/{dpid}",
+                       json={"name": "default", **weaker}, headers=HDR)
+        assert r.status_code == 200, r.json()
+
+    def test_disable_selected_default_refused(self, client):
+        dpid, _ = self._setup(client)
+        r = client.put(f"/api/policies/{dpid}",
+                       json={"name": "default", "enabled": False, **BASE},
+                       headers=HDR)
+        assert r.status_code == 409, r.json()
+
+    def test_mutate_assigned_default_policy_itself_ok(self, client):
+        """A device assigned to the default policy itself must not
+        deadlock default mutations (its assignment is the baseline)."""
+        dpid, _ = self._setup(client)
+        did = client.post("/api/devices", json={"name": "parent-phone"},
+                          headers=HDR).json()["id"]
+        r = client.post(f"/api/devices/{did}/assignment",
+                        json={"policy_id": dpid}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        stronger = dict(BASE, category_block=["games"])
+        # kid-phone's assignment (plain BASE) no longer covers: refused.
+        r = client.put(f"/api/policies/{dpid}",
+                       json={"name": "default", **stronger}, headers=HDR)
+        assert r.status_code == 409, r.json()
