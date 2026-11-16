@@ -51,7 +51,7 @@ def normalize_engine_doc(payload: dict) -> dict:
         normalized = policy_engine.validate_policy(raw)
     except policy_engine.PolicyConfigError as exc:
         raise PolicyError(f"invalid policy rules: {exc}")
-    return {
+    doc = {
         "default_policy": normalized["default_policy"],
         "allowlist": sorted(set(normalized["allowlist"])),
         "blocklist": sorted(set(normalized["blocklist"])),
@@ -60,6 +60,16 @@ def normalize_engine_doc(payload: dict) -> dict:
             "block": sorted(set(normalized["category_block"])),
         },
     }
+    # Filtering schedules travel as engine-tolerated _schedules
+    # metadata. Validation errors surface as PolicyError 400s.
+    if payload.get("schedules") is not None:
+        from . import schedule_ops
+        try:
+            doc = schedule_ops.with_schedules(
+                doc, schedule_ops.validate_schedules(payload["schedules"]))
+        except schedule_ops.ScheduleError as exc:
+            raise PolicyError(f"invalid schedules: {exc}")
+    return doc
 
 
 def selected_default(session: Session, tenant_id: int) -> Policy | None:
