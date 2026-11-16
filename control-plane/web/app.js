@@ -113,9 +113,18 @@ $("app-install").addEventListener("click", async () => {
 });
 $("app-remove").addEventListener("click", async () => {
   const id = $("app-device").value;
+  const bid = $("app-remove-id").value.trim();
+  if (!window.confirm(
+      "Remove managed app " + (bid || "(no bundle ID entered)") + "?\n\n" +
+      "This erases the app's data on the device. Only managed apps " +
+      "(installed through KosherGuard) can be removed. Continue?")) {
+    $("app-cmd-result").innerHTML =
+      '<p class="muted">Removal cancelled; nothing was queued.</p>';
+    return;
+  }
   showAppCmd(await api(`/api/devices/${id}/app-commands`,
     {method: "POST", headers: HDR, body: JSON.stringify({
-      action: "remove", bundle_id: $("app-remove-id").value.trim()})}));
+      action: "remove", bundle_id: bid})}));
 });
 $("app-list").addEventListener("click", async () => {
   const id = $("app-device").value;
