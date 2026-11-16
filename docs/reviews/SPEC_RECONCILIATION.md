@@ -106,9 +106,14 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   SwiftPM URLFilter target (Package.swift dependency declared). STILL
   no execution evidence (uncompiled/unsigned/untested), so dataset/
   proxy minting is tested server-side only and is NOT working iOS
-  functionality. Open gaps: session acquisition (guardian cookie +
-  CSRF, no native token exchange server-side) and credential storage
-  (in-memory only, no Keychain integration).
+  functionality. Session acquisition: AuthSessionClient + controller flow written
+  against the published login contract (no separate native token
+  exchange exists server-side - the JSON login + static CSRF marker IS
+  the native path; a dedicated device-auth exchange remains a possible
+  future server addition). Storage: KeychainCredentialStore
+  (ThisDeviceOnly). Both UNCOMPILED with no execution evidence - real
+  code, not working functionality. A no-op controller is NOT counted
+  as implemented integration.
 - NE content filter + iOS 26 NEURLFilter: iOS Swift sources +
   Xcode project structure, UNCOMPILED/UNSIGNED/UNTESTED.
   BUILT-UNVERIFIED.
@@ -190,9 +195,15 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 ## Part 15 - Hosting and infrastructure
 
 - deploy/: Caddyfile.example, systemd units, backup.sh, restore.sh,
-  monitoring.md, prometheus.yml.example, COSTS.md, pir/. PARTIAL:
-  backup/restore scripts exist but are NOT yet exercised end to end
-  (executable recovery evidence OUTSTANDING). No hosting purchased.
+  monitoring.md, prometheus.yml.example, COSTS.md, pir/. Backup/
+  restore: dashboard SQLite scripts exercised end to end by 16
+  dashboard tests (M7, bda1279); PostgreSQL pg_backup.sh/pg_restore.sh
+  verified by a REAL roundtrip 2026-11-16 ~05:20 EST (pg_dump 16.2
+  custom format, pg_restore --list verification, restore into a fresh
+  target database, post-restore row counts matched:
+  tenants=1 users=1, "BACKUP/RESTORE ROUNDTRIP VERIFIED"). DONE as
+  executable evidence. Production scheduling/retention wiring is
+  deployment work, not code. No hosting purchased.
 
 ## Part 16 - Apple credentials and setup
 
@@ -233,10 +244,12 @@ No credentials invented or hardcoded.
 12 Customer management: DONE as code (guardian lifecycle M6).
 13 Customer-facing website: DONE as code (not live).
 14 Database and migrations: DONE.
-15 Hosting/deployment configuration: PARTIAL (backup exercise owed).
+15 Hosting/deployment configuration: DONE as code + executable backup
+   evidence (see Part 15); live hosting not purchased/authorized.
 16 Security implementation: DONE except HELD isolation fix.
 17 Monitoring and logging: DONE as config/docs (not running).
-18 Backup and recovery: PARTIAL (scripts, unexercised).
+18 Backup and recovery: DONE (PG roundtrip 2026-11-16 + 16 dashboard
+   backup/restore tests).
 19 Apple integration instructions: DONE (docs/setup).
 20 Testing results: published-tree M7 verification DONE at bda1279
    (counts in Part 17); hardware/Apple-gated validation remains
