@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,7 +28,7 @@ from . import mdm_ops, schedule_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
 from .models import (AuthSession, LoginAttempt,
-                     PendingMfaEnrollment, Role, User)
+                     PendingMfaEnrollment, Role, User, Tenant)
 
 
 class PolicyPreviewBody(BaseModel):
@@ -107,6 +107,10 @@ class EnrollmentBody(BaseModel):
 class MDMCommandBody(BaseModel):
     command: str
     payload: dict = {}
+class RetentionBody(BaseModel):
+    days: int = Field(strict=True, ge=1, le=30)
+
+
 class FilterLogBody(BaseModel):
     decisions: list[dict]
 
@@ -245,7 +249,28 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         if user is None:
             from fastapi import HTTPException
             raise HTTPException(status_code=401, detail="invalid session")
+        request.state.mfa_verified = bool(row.mfa_verified)
+        # A password-only login is a restricted enrollment session, not
+        # permission to operate the tenant. Read checks also cover existing
+        # sessions, role promotion and accounts whose MFA was reset.
+        if (user.role in (Role.owner, Role.guardian) or user.is_platform_admin):
+            enrollment_paths = {"/api/auth/me", "/api/auth/logout",
+                "/api/auth/mfa/enroll-start", "/api/auth/mfa/enroll-confirm",
+                "/api/auth/password-change"}
+            if request.url.path not in enrollment_paths and (
+                    not user.totp_secret or not row.mfa_verified):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=403,
+                    detail="verified MFA required; enroll then sign in with a code")
         return user
+
+    @app.middleware("http")
+    async def private_responses(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, private"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     @app.get("/health")
     def health():
@@ -282,12 +307,14 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         session.add(AuthSession(
             user_id=user.id,
             token_hash=security.hash_session_token(token),
-            expires_at=utcnow() + lifetime))
+            expires_at=utcnow() + lifetime,
+            mfa_verified=bool(user.totp_secret)))
         session.commit()
         response.set_cookie(
             SESSION_COOKIE, token, httponly=True, samesite="strict",
             secure=settings.secure_cookies, max_age=int(lifetime.total_seconds()))
-        return {"status": "signed_in", "role": user.role.value}
+        return {"status": "signed_in", "role": user.role.value,
+                "mfa_required": bool((user.role != Role.viewer or user.is_platform_admin) and not user.totp_secret)}
 
     @app.post("/api/auth/logout", dependencies=[Depends(require_csrf_header)])
     def logout(request: Request, response: Response,
@@ -305,10 +332,12 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"status": "signed_out"}
 
     @app.get("/api/auth/me")
-    def me(user: User = Depends(current_user)):
+    def me(request: Request, user: User = Depends(current_user)):
         return {"email": user.email, "role": user.role.value,
                 "tenant_id": user.tenant_id,
-                "mfa_enabled": user.totp_secret is not None}
+                "mfa_enabled": user.totp_secret is not None,
+                "privileged": user.role != Role.viewer or user.is_platform_admin,
+                "mfa_verified": request.state.mfa_verified}
 
     # -- Tenant audit log viewer (spec Part 10: Settings > logs) --------
     # Append-only audit events, tenant-scoped, newest first. Any
@@ -398,8 +427,12 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                            session: Session = Depends(db_session)):
         if user.totp_secret:
             return error(409, "MFA already enrolled")
+        confirm_key = f"mfa-confirm:{user.id}"
+        if is_locked(session, confirm_key):
+            return error(429, "too many confirmation attempts; try again later")
         if not security.verify_password(body.password,
                                         user.password_hash):
+            record_failure(session, confirm_key)
             return error(403, "fresh authentication failed")
         pending = session.execute(select(PendingMfaEnrollment).where(
             PendingMfaEnrollment.user_id == user.id)).scalar_one_or_none()
@@ -413,6 +446,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             session.commit()
             return error(400, "enrollment expired; start again")
         if not security.verify_totp(pending.secret, body.code):
+            record_failure(session, confirm_key)
             return error(400, "invalid code")
         user.totp_secret = pending.secret
         session.delete(pending)
@@ -458,6 +492,9 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def create_policy(body: PolicyBody,
                       user: User = Depends(current_user),
                       session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
         import json as _json
         try:
             doc = policy_ops.normalize_engine_doc(body.model_dump())
@@ -491,6 +528,9 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def update_policy(policy_id: int, body: PolicyBody,
                       user: User = Depends(current_user),
                       session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
         import json as _json
         policy = get_tenant_policy(session, user.tenant_id, policy_id)
         if policy is None:
@@ -539,6 +579,9 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         change goes through the exact same versioned, audited,
         tighten-only-checked mutation path as every other policy
         content change."""
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
         import json as _json
         policy = get_tenant_policy(session, user.tenant_id, policy_id)
         if policy is None:
@@ -568,6 +611,9 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def select_default_policy(policy_id: int,
                               user: User = Depends(current_user),
                               session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
         policy = get_tenant_policy(session, user.tenant_id, policy_id)
         if policy is None:
             return error(404, "policy not found")
@@ -593,6 +639,9 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def create_device(body: DeviceBody,
                       user: User = Depends(current_user),
                       session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
         existing = session.scalar(select(Device).where(
             Device.tenant_id == user.tenant_id, Device.name == body.name))
         if existing is not None:
@@ -620,6 +669,9 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def assign_policy(device_id: int, body: AssignmentBody,
                       user: User = Depends(current_user),
                       session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
         device = session.get(Device, device_id)
         if device is None or device.tenant_id != user.tenant_id:
             return error(404, "device not found")
@@ -869,12 +921,33 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         try:
             claims = filter_log_ops.verify_edge_token(
                 settings, request.headers.get("authorization"))
-            accepted = filter_log_ops.record_decisions(
-                session, claims, body.decisions)
+            with session.begin_nested():
+                accepted = filter_log_ops.record_decisions(
+                    session, claims, body.decisions)
         except filter_log_ops.FilterLogError as exc:
             return error(exc.status, str(exc))
         session.commit()
         return {"accepted": accepted}
+
+    @app.get("/api/privacy/retention")
+    def get_retention(user: User = Depends(current_user),
+                      session: Session = Depends(db_session)):
+        return {"blocked_days": session.get(Tenant, user.tenant_id).blocked_log_retention_days,
+                "allowed_history": False, "min_days": 1, "max_days": 30}
+
+    @app.put("/api/privacy/retention", dependencies=[Depends(require_csrf_header)])
+    def set_retention(body: RetentionBody, user: User = Depends(current_user),
+                      session: Session = Depends(db_session)):
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        if not 1 <= body.days <= 30:
+            return error(400, "retention must be 1-30 days")
+        tenant = session.get(Tenant, user.tenant_id)
+        tenant.blocked_log_retention_days = body.days
+        session.flush()
+        deleted = filter_log_ops.purge_expired(session, tenant_id=user.tenant_id)
+        return {"blocked_days": body.days, "deleted": deleted, "allowed_history": False}
 
     @app.get("/api/filter-logs")
     def get_filter_logs(user: User = Depends(current_user),
@@ -1402,7 +1475,14 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         target = session.get(User, user_id)
         if target is None or target.tenant_id != user.tenant_id:
             return error(404, "guardian not found")
+        if target.id == user.id:
+            return error(400, "cannot remove your own MFA; use another verified owner")
         target.totp_secret = None
+        for old in session.scalars(select(AuthSession).where(AuthSession.user_id == target.id)):
+            session.delete(old)
+        pending = session.scalar(select(PendingMfaEnrollment).where(PendingMfaEnrollment.user_id == target.id))
+        if pending is not None:
+            session.delete(pending)
         ScopedSession(session, user.tenant_id).audit(
             "guardian.mfa_reset", target.email, actor_user_id=user.id)
         session.commit()
