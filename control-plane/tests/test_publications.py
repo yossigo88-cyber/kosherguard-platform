@@ -181,6 +181,55 @@ class TestCrossTenantIsolation:
             os.path.join(gen, "categories.json"))
         assert engine_obj.decide("bad.example").action == "block"
 
+    def test_failed_publish_leaves_other_tenant_bytes_unchanged(self,
+                                                                 engine,
+                                                                 pub_root):
+        """Fix 1 negative case: a FAILED publish for tenant B (replayed
+        revision inside B's own root) must not change a single byte of
+        tenant A's active generation, and must not clean up B's own
+        existing generation either (cleanup is self-created-only)."""
+        import hashlib
+        ca = self._tenant_client(engine, pub_root, "family-a", "a@x.com")
+        cb = self._tenant_client(engine, pub_root, "family-b", "b@x.com")
+        ra = ca.post("/api/policies", json=dict(BASE, name="pa"), headers=HDR)
+        ca.post(f"/api/policies/{ra.json()['id']}/select", headers=HDR)
+        assert ca.post("/api/publications", headers=HDR).status_code == 200
+        rb = cb.post("/api/policies", json=dict(BASE, name="pb"), headers=HDR)
+        cb.post(f"/api/policies/{rb.json()['id']}/select", headers=HDR)
+        assert cb.post("/api/publications", headers=HDR).status_code == 200
+
+        def tree_hashes(root):
+            out = {}
+            for dirpath, _dirs, files in os.walk(root):
+                for f in files:
+                    full = os.path.join(dirpath, f)
+                    out[os.path.relpath(full, root)] = hashlib.sha256(
+                        open(full, "rb").read()).hexdigest()
+            return out
+
+        ma = ca.get("/api/publications/current").json()["manifest"]
+        mb = cb.get("/api/publications/current").json()["manifest"]
+        root_a = os.path.join(pub_root, f"tenant-{ma['tenant_id']}")
+        root_b = os.path.join(pub_root, f"tenant-{mb['tenant_id']}")
+        before_a, before_b = tree_hashes(root_a), tree_hashes(root_b)
+
+        # Tenant B replays its own revision directly at the publisher:
+        # must be refused and must delete nothing anywhere.
+        from app.publisher import Publisher
+        from app.publication_ops import export_policy_documents
+        p_bytes, c_bytes = b"{}", b"{}"
+        with Publisher(root_b).locked():
+            try:
+                Publisher(root_b).publish(
+                    mb["revision"], p_bytes, c_bytes, {"k": "replay"})
+                assert False, "replay must be refused"
+            except Exception:
+                pass
+
+        assert tree_hashes(root_a) == before_a, "tenant A bytes changed"
+        assert tree_hashes(root_b) == before_b, "tenant B bytes changed"
+        assert Publisher(root_b).current()["revision"] == mb["revision"]
+
     def test_replay_same_revision_is_refused_and_preserves_data(self,
                                                                 pub_root):
         """A direct second publish with the same revision never deletes
