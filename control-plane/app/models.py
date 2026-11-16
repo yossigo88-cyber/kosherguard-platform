@@ -241,6 +241,22 @@ class CategoryRule(Base):
         DateTime(timezone=True), nullable=True)
 
 
+class PendingMfaEnrollment(Base):
+    """Server-bound pending TOTP enrollment: the secret is generated
+    and stored server-side, bound to exactly one user, single-use, and
+    expires. Replaces the earlier stateless design in which the client
+    supplied the secret at confirm time."""
+    __tablename__ = "pending_mfa_enrollments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    secret: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class InviteToken(Base):
     """Guardian invitation. Stores only the token hash; the raw token
     is shown once to the inviting owner to deliver out of band."""
