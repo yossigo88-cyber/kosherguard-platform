@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .device_auth import TokenError, verify_token
+from .revocations import RevocationFeed
 from fastapi.responses import JSONResponse, Response
 
 from .dataset import Dataset
@@ -87,3 +88,29 @@ def create_app(dataset: Dataset,
             headers={"X-SHA256": hashlib.sha256(data).hexdigest()})
 
     return app
+
+
+def build_runtime(dataset: Dataset,
+                  device_token_key: bytes | None = None,
+                  control_plane_url: str | None = None,
+                  token_provider=None,
+                  refresh_interval: float = 60.0):
+    """Service entrypoint wiring: build the app WITH its revocation
+    feed and refresh loop running. Returns (app, stop_event); set the
+    event to stop the loop (the ASGI server's own lifecycle owns
+    serving). When control_plane_url and token_provider are absent the
+    app runs without revocation distribution (local development only -
+    production configures both). The provider is the renewal source:
+    it is consulted on every refresh and must return a current scoped
+    credential (minted via POST /api/devices/{id}/dataset-credential
+    with a guardian session); after the last successful pull, staleness
+    is bounded by the credential's lifetime (at most 86400s) because
+    expired tokens fail verification anyway."""
+    feed = None
+    stop = None
+    if control_plane_url and token_provider is not None:
+        feed = RevocationFeed(control_plane_url, token_provider)
+        stop = feed.start_refresh_loop(interval=refresh_interval)
+    app = create_app(dataset, device_token_key=device_token_key,
+                     revocation_feed=feed)
+    return app, stop
