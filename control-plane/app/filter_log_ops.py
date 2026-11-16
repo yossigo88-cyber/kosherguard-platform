@@ -154,5 +154,9 @@ def edge_status(session: Session, tenant_id: int) -> dict:
             "are separate facts; neither proves the edge is currently "
             "serving, and credential issuance is not shown as status "
             "because issuance proves nothing about operation."),
-        "dns_reporting": "not connected",
+        "dns_reporting": (
+            "connected - dns decisions received"
+            if "dns" in sources else
+            "connected - ingestion route live, no dns decisions "
+            "reported yet"),
     }
