@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from . import app_ops
+from . import filter_log_ops
 from . import mdm_ops, schedule_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
@@ -95,6 +96,10 @@ class EnrollmentBody(BaseModel):
 class MDMCommandBody(BaseModel):
     command: str
     payload: dict = {}
+class FilterLogBody(BaseModel):
+    decisions: list[dict]
+
+
 class AppPolicyBody(BaseModel):
     mode: str
     bundle_ids: list[str] = []
@@ -816,6 +821,37 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return error(exc.status, str(exc))
         session.commit()
         return command_json(row)
+
+    # -- Filtering decision logs (spec Part 10: Filtering logs) --------
+    # Ingestion is edge-to-control-plane: bearer-authenticated with the
+    # device's scoped credential (scope "proxy"), so the browser CSRF
+    # header does not apply (no cookies involved). Tenant/device binding
+    # comes from the verified token, never the body.
+    @app.post("/api/filter-logs")
+    def post_filter_logs(request: Request, body: FilterLogBody,
+                         session: Session = Depends(db_session)):
+        try:
+            claims = filter_log_ops.verify_edge_token(
+                settings, request.headers.get("authorization"))
+            accepted = filter_log_ops.record_decisions(
+                session, claims, body.decisions)
+        except filter_log_ops.FilterLogError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return {"accepted": accepted}
+
+    @app.get("/api/filter-logs")
+    def get_filter_logs(user: User = Depends(current_user),
+                        session: Session = Depends(db_session)):
+        rows = filter_log_ops.recent_decisions(session, user.tenant_id)
+        devices = {d.id: d.name for d in session.execute(
+            select(Device).where(Device.tenant_id == user.tenant_id))
+            .scalars().all()}
+        return {"decisions": [
+            {"id": r.id, "device": devices.get(r.device_id),
+             "source": r.source, "domain": r.domain, "action": r.action,
+             "rule": r.rule, "reason": r.reason,
+             "received_at": r.received_at.isoformat()} for r in rows]}
 
     # -- Device scoped-credential issuance (M6, extended for 8B) -------
 
