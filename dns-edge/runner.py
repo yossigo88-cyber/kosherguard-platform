@@ -27,6 +27,9 @@ sys.path.insert(0, os.path.abspath(_ENGINE_SRC))
 
 import dns_service  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import schedules as _schedules  # noqa: E402
+
 
 class RunnerError(RuntimeError):
     pass
@@ -69,6 +72,13 @@ class DNSEdgeRunner:
             config.upstreams = list(upstreams)
         engine, _info = dns_service.load_validated_engine_set(
             policy_path, categories_path)
+        # Filtering schedules (spec 8F): when the policy document
+        # carries _schedules, the default engine becomes a
+        # ScheduledPolicyEngine. Without schedules this returns the
+        # reviewed set unchanged. A malformed schedule raises here,
+        # which is the engine's fail-clearly startup behavior.
+        engine = _schedules.wrap_default_engine(
+            engine, policy_path, categories_path)
         self.service = dns_service.DNSFilteringService(engine, config)
         self._policy_path = policy_path
         self._categories_path = categories_path
@@ -85,9 +95,27 @@ class DNSEdgeRunner:
             return False
         if revision == self._revision:
             return False
+        # Pre-validate the incoming generation's schedules BEFORE the
+        # service swaps engines: a bad schedule rejects the reload while
+        # the previous (scheduled) engine is still active. Without this,
+        # a schedule error discovered after the swap would leave the
+        # fresh engine running unscheduled - silently looser filtering.
+        try:
+            with open(self._policy_path, encoding="utf-8") as fh:
+                incoming = json.load(fh)
+            _schedules.validate_schedules(incoming.get("_schedules"))
+        except (OSError, ValueError) as exc:
+            return False
         ok = self.service.reload_from_paths(
             self._policy_path, self._categories_path, trigger="watch")
         if ok:
+            # reload_from_paths rebuilt the set from files; re-apply the
+            # schedule wrapper to the fresh set. Our generations are
+            # single-policy, and the schedule list was just validated,
+            # so this wrap cannot fail for our publication pipeline.
+            self.service.engine = _schedules.wrap_default_engine(
+                self.service.engine, self._policy_path,
+                self._categories_path)
             self._revision = revision
         return ok
 
