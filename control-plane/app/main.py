@@ -26,6 +26,7 @@ from . import app_ops
 from . import ddm_ops, filter_log_ops
 from . import mdm_ops
 from .ddm_routes import register_ddm_routes
+from .enrollment_routes import register_enrollment_routes
 from .guardian_routes import register_guardian_routes
 from .staff_routes import (ALL_STAFF, fresh_check,
                            register_staff_routes, require_staff)
@@ -1132,6 +1133,10 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     register_ddm_routes(app, error=error, db_session=db_session,
                         settings=settings)
+
+    register_enrollment_routes(app, error=error, current_user=current_user,
+        db_session=db_session, require_csrf_header=require_csrf_header,
+        require_guardian=require_guardian, settings=settings)
 
     # -- Device scoped-credential issuance (M6, extended for 8B) -------
 
