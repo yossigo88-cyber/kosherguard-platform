@@ -153,3 +153,77 @@ class TestPIRExport:
         rows = parse_textpb(export_textpb(ds.rules))
         assert len(rows) == 3
         assert dict(rows)["bet365.com"] == "block:gambling"
+
+
+class TestDeviceAuth:
+    """Per-device scoped credentials (approved design: no long-lived
+    bearer tokens in URLs; Authorization header; short expiry)."""
+
+    KEY = b"test-signing-key-32-bytes-padded!!!"
+
+    def test_issue_verify_roundtrip(self):
+        from app.device_auth import issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "tenant-1", "dataset")
+        payload = verify_token(self.KEY, tok, "dataset")
+        assert payload["device_id"] == "dev-1"
+        assert payload["tenant_id"] == "tenant-1"
+
+    def test_tampered_rejected(self):
+        from app.device_auth import TokenError, issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset")
+        body, _ = tok.split(".")
+        import base64, json as j
+        payload = j.loads(base64.urlsafe_b64decode(body + "=="))
+        payload["device_id"] = "dev-evil"
+        evil_body = base64.urlsafe_b64encode(
+            j.dumps(payload).encode()).rstrip(b"=").decode()
+        with pytest.raises(TokenError):
+            verify_token(self.KEY, f"{evil_body}.{tok.split('.')[1]}",
+                         "dataset")
+
+    def test_expired_rejected(self):
+        from app.device_auth import TokenError, issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset",
+                          lifetime_seconds=60, now=1000)
+        with pytest.raises(TokenError):
+            verify_token(self.KEY, tok, "dataset", now=2000)
+
+    def test_wrong_scope_rejected(self):
+        from app.device_auth import TokenError, issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "doh")
+        with pytest.raises(TokenError):
+            verify_token(self.KEY, tok, "dataset")
+
+    def test_wrong_key_rejected(self):
+        from app.device_auth import TokenError, issue_token, verify_token
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset")
+        with pytest.raises(TokenError):
+            verify_token(b"other-key", tok, "dataset")
+
+    def test_lifetime_cap(self):
+        from app.device_auth import issue_token
+        with pytest.raises(ValueError):
+            issue_token(self.KEY, "d", "t", "dataset",
+                        lifetime_seconds=90000)
+
+    def test_endpoints_require_credential_when_key_set(self):
+        from app.server import create_app
+        from app.device_auth import issue_token
+        ds = build_dataset(sample_rules(), version=1)
+        c = TestClient(create_app(ds, device_token_key=self.KEY))
+        assert c.get("/v1/dataset/manifest").status_code == 401
+        assert c.get("/v1/dataset/prefilter").status_code == 401
+        assert c.get("/v1/dataset/shards/0").status_code == 401
+        # Token in the URL query must NOT authenticate.
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset")
+        assert c.get(f"/v1/dataset/manifest?token={tok}"
+                     ).status_code == 401
+        ok = c.get("/v1/dataset/manifest",
+                   headers={"Authorization": f"Bearer {tok}"})
+        assert ok.status_code == 200
+
+    def test_dev_mode_open_without_key(self):
+        from app.server import create_app
+        ds = build_dataset(sample_rules(), version=1)
+        c = TestClient(create_app(ds, device_token_key=None))
+        assert c.get("/v1/dataset/manifest").status_code == 200
