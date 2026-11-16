@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -48,6 +48,7 @@ async function refresh() {
     policyList.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("") +
     `</select><button class="link" data-assign="${d.id}">assign</button></td></tr>`).join("");
   deviceList = devices.body.devices || [];
+  refreshFiltering();
   await refreshAppsPanel();
   await refreshMdm();
 }
@@ -136,6 +137,31 @@ $("app-managed-list").addEventListener("click", async () => {
   showAppCmd(await api(`/api/devices/${id}/app-commands`,
     {method: "POST", headers: HDR, body: JSON.stringify({action: "managed-list"})}));
 });
+
+async function refreshFiltering() {
+  const status = $("filtering-status");
+  const table = $("filtering-table");
+  const r = await api("/api/filter-logs");
+  if (r.status !== 200) {
+    status.textContent = "Could not load filtering activity.";
+    table.classList.add("hidden");
+    return;
+  }
+  const rows = r.body.decisions || [];
+  if (!rows.length) {
+    status.textContent = "No filtering decisions reported yet.";
+    table.classList.add("hidden");
+    return;
+  }
+  status.textContent = "";
+  table.classList.remove("hidden");
+  table.querySelector("tbody").innerHTML = rows.map(d => {
+    const when = d.received_at ? new Date(d.received_at).toLocaleString() : "";
+    return `<tr><td>${esc(when)}</td><td>${esc(d.device || "")}</td>` +
+      `<td>${esc(d.domain)}</td><td>${esc(d.action)}</td>` +
+      `<td>${esc(d.rule || d.reason || "")}</td></tr>`;
+  }).join("");
+}
 
 async function refreshAuditLogs() {
   const status = $("audit-logs-status");
