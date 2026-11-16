@@ -450,6 +450,25 @@ class DeviceGroup(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PolicyException(Base):
+    """Time-limited scoped exception: reason, approver, scope, window, audit."""
+    __tablename__ = 'policy_exceptions'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey('tenants.id'), index=True)
+    kind: Mapped[str] = mapped_column(String(30))
+    scope_type: Mapped[str] = mapped_column(String(10))
+    device_id: Mapped[int | None] = mapped_column(ForeignKey('devices.id'), nullable=True)
+    group_id: Mapped[int | None] = mapped_column(ForeignKey('device_groups.id'), nullable=True)
+    domains: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    reason: Mapped[str] = mapped_column(Text)
+    approver_user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[int | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class GroupMembership(Base):
     __tablename__ = 'group_memberships'
     __table_args__ = (UniqueConstraint('device_id'),)
