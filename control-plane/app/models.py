@@ -196,6 +196,14 @@ class MDMEnrollment(Base):
     # to the real NanoMDM ID.
     device_udid: Mapped[str | None] = mapped_column(
         String(120), nullable=True)
+    enrollment_ticket_id: Mapped[int | None] = mapped_column(
+        ForeignKey("enrollment_tickets.id"), nullable=True)
+    # Device identity certificate fingerprint presented at ticket
+    # redemption, plus how far it could be verified (Answer 28).
+    identity_cert_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True)
+    identity_cert_status: Mapped[str | None] = mapped_column(
+        String(30), nullable=True)
     state: Mapped[str] = mapped_column(String(20), nullable=False,
                                        default="pending")
     # Requested vs verified supervision are different facts. A guardian
@@ -523,6 +531,33 @@ class SensitiveCommandApproval(Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class EnrollmentTicket(Base):
+    """Short-lived, single-use enrollment ticket (Answer 28). The raw
+    token is shown once at issue and only its hash is stored. A ticket
+    binds one tenant + one device record: redeeming it is the
+    authenticated assignment proof - a serial number alone never is.
+    used_at + a FOR UPDATE redemption make it single-use under
+    concurrent redeems; expires_at + revoked_at bound its life."""
+    __tablename__ = "enrollment_tickets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int] = mapped_column(
+        ForeignKey("devices.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
