@@ -62,6 +62,38 @@ h2 { margin-bottom:.4rem; }
       <div class="error" id="device-error"></div>
     </form>
   </section>
+  <section class="panel hidden" id="mdm-panel">
+    <h2>MDM enrollments</h2>
+    <p style="font-size:.88rem;color:#556">Development slice. Enrollments stay
+    <em>pending</em> until Apple prerequisites (MDM vendor approval, APNs push
+    certificate, Apple Business organization) exist - no device has ever been
+    enrolled or contacted. Command statuses are the device's own answers;
+    "applied" is set only on an Acknowledged status.</p>
+    <table id="enrollments"><thead><tr><th>Device</th><th>Enrollment</th><th>State</th><th>Supervised</th><th>Last seen</th><th></th></tr></thead><tbody></tbody></table>
+    <form id="enroll-form">
+      <label>Enroll device <select id="e-device"></select></label>
+      <label><input id="e-supervised" type="checkbox" style="width:auto"> Supervised (via ADE)</label>
+      <button type="submit">Create enrollment</button>
+      <div class="error" id="enroll-error"></div>
+    </form>
+    <h3 style="margin-top:1.2rem">Issue command</h3>
+    <form id="command-form">
+      <label>Enrollment <select id="c-enrollment"></select></label>
+      <label>Command
+        <select id="c-command">
+          <option>DeviceInformation</option><option>InstalledApplicationList</option>
+          <option>ProfileList</option><option>InstallProfile</option><option>RemoveProfile</option>
+          <option>InstallApplication</option><option>RemoveApplication</option>
+          <option>DeviceLock</option><option>RestartDevice</option>
+        </select></label>
+      <button type="submit">Queue command</button>
+      <div class="error" id="command-error"></div>
+      <div class="ok" id="command-ok"></div>
+    </form>
+    <h3 style="margin-top:1.2rem">Command history</h3>
+    <table id="commands"><thead><tr><th>#</th><th>Command</th><th>Status</th><th>Applied</th><th>Detail</th></tr></thead><tbody></tbody></table>
+  </section>
+
   <section class="panel hidden" id="signout-panel"><button id="signout">Sign out</button></section>
 </main>
 <script src="/web/app.js"></script>
