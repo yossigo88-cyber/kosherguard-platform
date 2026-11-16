@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -32,6 +32,7 @@ async function refresh() {
   refreshOverview();
   refreshCategories();
   refreshCustomers();
+  refreshCredentials();
   const policies = await api("/api/policies");
   policyList = policies.body.policies || [];
   refreshSchedules();
@@ -306,5 +307,80 @@ document.addEventListener("click", async (e) => {
   const name = e.target.dataset && e.target.dataset.rmsched;
   if (name) {
     await putSchedules(scheduleList.filter(sc => sc.name !== name));
+  }
+});
+
+async function refreshCredentials() {
+  const r = await api("/api/credentials");
+  const banner = $("cred-env-banner");
+  if (r.status !== 200) {
+    banner.textContent = "";
+    return;
+  }
+  banner.textContent = r.body.fixture_only
+    ? "DEVELOPMENT BUILD - fixture credentials only. Never upload production secrets here."
+    : "";
+  const tbody = $("cred-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const c of r.body.credentials || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(c.kind)}</td><td>${esc(c.label)}</td>` +
+      `<td>${esc(c.sha256.slice(0, 12))}...</td><td>${c.byte_size}</td>` +
+      `<td>${esc(c.environment)}</td><td>${c.version}</td><td>${esc(c.status)}</td>`;
+    const td = document.createElement("td");
+    if (c.status === "active") {
+      const rot = document.createElement("button");
+      rot.className = "link";
+      rot.textContent = "rotate";
+      rot.onclick = async () => {
+        const content = prompt("New content (base64) for " + c.label + ":");
+        if (!content) return;
+        await api(`/api/credentials/${c.id}/rotate`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json",
+                    "X-KosherGuard-Request": "1"},
+          body: JSON.stringify({kind: c.kind, label: c.label,
+                                content_base64: content}),
+        });
+        refreshCredentials();
+      };
+      const rev = document.createElement("button");
+      rev.className = "link";
+      rev.textContent = "revoke";
+      rev.onclick = async () => {
+        await api(`/api/credentials/${c.id}`,
+                  {method: "DELETE", headers: {"X-KosherGuard-Request": "1"}});
+        refreshCredentials();
+      };
+      td.appendChild(rot);
+      td.appendChild(document.createTextNode(" "));
+      td.appendChild(rev);
+    }
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+}
+
+$("cred-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("cred-error"), ok = $("cred-ok");
+  err.textContent = ""; ok.textContent = "";
+  const r = await api("/api/credentials", {
+    method: "POST",
+    headers: {"Content-Type": "application/json",
+              "X-KosherGuard-Request": "1"},
+    body: JSON.stringify({
+      kind: $("cred-kind").value,
+      label: $("cred-label").value,
+      content_base64: $("cred-content").value,
+    }),
+  });
+  if (r.status === 200) {
+    ok.textContent = "Credential stored (metadata only is shown).";
+    $("cred-label").value = "";
+    $("cred-content").value = "";
+    refreshCredentials();
+  } else {
+    err.textContent = (r.body && r.body.error) || "Upload failed.";
   }
 });
