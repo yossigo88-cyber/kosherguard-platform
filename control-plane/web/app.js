@@ -249,20 +249,18 @@ $("mfa-confirm-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const err = $("mfa-error"), ok = $("mfa-ok");
   err.textContent = ""; ok.textContent = "";
-  const uri = $("mfa-uri").value;
-  const secret = new URLSearchParams(uri.split("?")[1] || "")
-    .get("secret") || "";
   const r = await api("/api/auth/mfa/enroll-confirm", {
     method: "POST",
     headers: {"Content-Type": "application/json",
               "X-KosherGuard-Request": "1"},
-    body: JSON.stringify({secret, code: $("mfa-code").value,
+    body: JSON.stringify({code: $("mfa-code").value,
                           password: $("mfa-password").value}),
   });
   if (r.status === 200) {
     ok.textContent = "Two-factor authentication enabled.";
     $("mfa-enroll-box").classList.add("hidden");
     refreshMfaState();
+    refreshGuardians();
   } else {
     err.textContent = (r.body && r.body.error) || "Confirmation failed.";
   }
