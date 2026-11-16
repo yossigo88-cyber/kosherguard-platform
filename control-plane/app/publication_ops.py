@@ -120,7 +120,10 @@ def publish_selected(session: Session, tenant_id: int, root: str,
         name = f"assigned-policy-{assigned.id}.json"
         extras[name] = canonical_json(json.loads(assigned.engine_doc))
         mapping[str(device.id)] = {"policy": name, "policy_id": assigned.id}
-    if mapping:
+    if mapping or overlay:
+        # The publisher cross-checks supplemental documents against the
+        # authenticated device map; exceptions alone still need the map
+        # (possibly empty) to ship.
         extras["device-map.json"] = canonical_json({
             "default_policy_id": policy.id, "devices": mapping})
     state.revision = (state.revision or 0) + 1
@@ -143,4 +146,4 @@ def publish_selected(session: Session, tenant_id: int, root: str,
         "generation": generation,
         "policy": policy.name,
         "policy_version": version.version,
-    }
+                         }
