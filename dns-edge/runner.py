@@ -58,7 +58,10 @@ class DNSEdgeRunner:
 
     def __init__(self, root: str, listen: str = "127.0.0.1:5353",
                  upstreams=None, watch_interval: float = 5.0,
-                 block_mode: str = "sinkhole"):
+                 block_mode: str = "sinkhole",
+                 decision_reporter=None,
+                 revocation_feed=None,
+                 refresh_interval: float = 60.0):
         self.root = root
         self.watch_interval = watch_interval
         policy_path, categories_path, revision = generation_paths(root)
@@ -79,12 +82,21 @@ class DNSEdgeRunner:
         # which is the engine's fail-clearly startup behavior.
         engine = _schedules.wrap_default_engine(
             engine, policy_path, categories_path)
-        self.service = dns_service.DNSFilteringService(engine, config)
+        self.service = dns_service.DNSFilteringService(
+            engine, config,
+            decision_logger=decision_reporter)
         self._policy_path = policy_path
         self._categories_path = categories_path
         self._revision = revision
         self._stop = threading.Event()
         self._watch_thread = None
+        # Revocation distribution for the DoH front: the feed's shared
+        # set is handed to doh_identity.authenticate_doh_request so a
+        # revoked device credential is refused without a restart. The
+        # loop starts with the service and stops with it.
+        self._revocation_feed = revocation_feed
+        self._refresh_interval = refresh_interval
+        self._revocation_stop = None
 
     def check_for_update(self) -> bool:
         """Poll the manifest; reload if the revision advanced.
@@ -121,6 +133,9 @@ class DNSEdgeRunner:
 
     def start(self) -> None:
         self.service.start()
+        if self._revocation_feed is not None:
+            self._revocation_stop = self._revocation_feed\
+                .start_refresh_loop(interval=self._refresh_interval)
         self._watch_thread = threading.Thread(
             target=self._watch_loop, name="dns-edge-watch", daemon=True)
         self._watch_thread.start()
@@ -131,6 +146,8 @@ class DNSEdgeRunner:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._revocation_stop is not None:
+            self._revocation_stop.set()
         if self._watch_thread is not None:
             self._watch_thread.join(timeout=5)
         self.service.stop()
