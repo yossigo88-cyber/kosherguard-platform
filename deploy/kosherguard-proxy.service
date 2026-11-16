@@ -1,0 +1,20 @@
+# Configuration only, not installed/deployed by this code build.
+[Unit]
+Description=KosherGuard tenant filtering proxy
+After=network-online.target
+[Service]
+Type=simple
+User=kosherguard
+Group=kosherguard
+WorkingDirectory=/opt/kosherguard/proxy-edge
+EnvironmentFile=/etc/kosherguard/proxy.env
+ExecStart=/opt/kosherguard/venv/bin/python runtime.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+[Install]
+WantedBy=multi-user.target
