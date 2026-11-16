@@ -49,6 +49,29 @@ class RevocationFeed:
         with self._lock:
             return set(self._jtis)
 
+    def start_refresh_loop(self, interval: float = 60.0,
+                           stop_event: threading.Event | None = None
+                           ) -> threading.Event:
+        """Refresh now and then every interval seconds on a daemon
+        thread; returns the stop event (set it to stop). A failed
+        refresh keeps the prior set, so a control-plane outage degrades
+        to bounded staleness (unlisted tokens still expire on their
+        short lifetime). The token provider is called on EVERY refresh,
+        so a renewed credential is picked up without rewiring."""
+        stop = stop_event or threading.Event()
+
+        def loop():
+            while not stop.is_set():
+                try:
+                    self.refresh()
+                except Exception:
+                    pass
+                stop.wait(interval)
+
+        threading.Thread(target=loop, name="revocation-feed",
+                         daemon=True).start()
+        return stop
+
     @property
     def shared_set(self) -> set[str]:
         """The live set reference for in-place consumption: pass this
