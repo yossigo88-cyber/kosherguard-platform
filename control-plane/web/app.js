@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -48,8 +48,85 @@ async function refresh() {
     policyList.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("") +
     `</select><button class="link" data-assign="${d.id}">assign</button></td></tr>`).join("");
   deviceList = devices.body.devices || [];
+  await refreshAppsPanel();
   await refreshMdm();
 }
+
+function escIds(text) {
+  return text.split("\n").map(s => s.trim()).filter(Boolean);
+}
+
+async function refreshAppsPanel() {
+  const sel = $("app-device");
+  sel.innerHTML = deviceList.map(d =>
+    `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+  if (!deviceList.length) return;
+  await loadAppPolicy();
+}
+
+async function loadAppPolicy() {
+  $("app-error").textContent = ""; $("app-ok").textContent = "";
+  const id = $("app-device").value;
+  if (!id) return;
+  const r = await api(`/api/devices/${id}/app-policy`);
+  if (r.status !== 200) {
+    $("app-error").textContent = r.body.error || "Could not load policy";
+    return;
+  }
+  $("app-mode").value = r.body.mode || "blocklist";
+  $("app-bundle-ids").value = (r.body.bundle_ids || []).join("\n");
+}
+
+function showAppCmd(r) {
+  const box = $("app-cmd-result");
+  if (r.status === 200) {
+    box.innerHTML = `<p class="ok">Queued ${esc(r.body.command)} ` +
+      `(command #${r.body.id}, status ${esc(r.body.status)}). ` +
+      `Delivery needs the device to check in.</p>`;
+  } else {
+    box.innerHTML = `<p class="error">${esc(r.body.error || "Failed")}</p>`;
+  }
+}
+
+$("app-device").addEventListener("change", loadAppPolicy);
+$("app-save").addEventListener("click", async () => {
+  $("app-error").textContent = ""; $("app-ok").textContent = "";
+  const id = $("app-device").value;
+  const r = await api(`/api/devices/${id}/app-policy`,
+    {method: "PUT", headers: HDR, body: JSON.stringify({
+      mode: $("app-mode").value,
+      bundle_ids: escIds($("app-bundle-ids").value)})});
+  if (r.status === 200) $("app-ok").textContent = "Saved.";
+  else $("app-error").textContent = r.body.error || "Save failed";
+});
+$("app-apply").addEventListener("click", async () => {
+  const id = $("app-device").value;
+  showAppCmd(await api(`/api/devices/${id}/app-policy/apply`,
+    {method: "POST", headers: HDR, body: "{}"}));
+});
+$("app-install").addEventListener("click", async () => {
+  const id = $("app-device").value;
+  const storeId = parseInt($("app-store-id").value, 10);
+  showAppCmd(await api(`/api/devices/${id}/app-commands`,
+    {method: "POST", headers: HDR, body: JSON.stringify({
+      action: "install", itunes_store_id: isNaN(storeId) ? null : storeId})}));
+});
+$("app-remove").addEventListener("click", async () => {
+  const id = $("app-device").value;
+  showAppCmd(await api(`/api/devices/${id}/app-commands`,
+    {method: "POST", headers: HDR, body: JSON.stringify({
+      action: "remove", bundle_id: $("app-remove-id").value.trim()})}));
+});
+$("app-list").addEventListener("click", async () => {
+  const id = $("app-device").value;
+  showAppCmd(await api(`/api/devices/${id}/app-commands`,
+    {method: "POST", headers: HDR, body: JSON.stringify({action: "list"})}));
+});
+$("app-managed-list").addEventListener("click", async () => {
+  const id = $("app-device").value;
+  showAppCmd(await api(`/api/devices/${id}/app-commands`,
+    {method: "POST", headers: HDR, body: JSON.stringify({action: "managed-list"})}));
+});
 
 async function refreshAuditLogs() {
   const status = $("audit-logs-status");
