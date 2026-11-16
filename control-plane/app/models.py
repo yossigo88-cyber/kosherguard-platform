@@ -536,6 +536,57 @@ class SensitiveCommandApproval(Base):
         DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class CategorySource(Base):
+    """A registered category-data source (Answer 22): name, license
+    and attribution on record - an open-source repository license is
+    NOT assumed to make the dataset commercially usable, so both
+    fields are required. Imports arrive as reviewed updates."""
+    __tablename__ = "category_sources"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False,
+                                      unique=True, index=True)
+    license_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    attribution: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False,
+                                        default="active")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class CategorySourceUpdate(Base):
+    """One imported dataset version for a source: version + SHA-256,
+    category mapping, validation results, and its review state.
+    Updates start pending_review and become active only through
+    explicit staff review with fresh MFA; rollback reactivates a
+    superseded update (one active per source at a time)."""
+    __tablename__ = "category_source_updates"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("category_sources.id"), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(120), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    category_mapping: Mapped[str] = mapped_column(Text, nullable=False,
+                                                  default="{}")
+    validation_results: Mapped[str] = mapped_column(Text, nullable=False,
+                                                    default="{}")
+    # pending_review | active | rejected | superseded | rolled_back
+    status: Mapped[str] = mapped_column(String(20), nullable=False,
+                                        default="pending_review")
+    imported_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+    reviewed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[str] = mapped_column(Text, nullable=False,
+                                              default="")
+
+
 class OffboardingCase(Base):
     """Documented, verified offboarding (Answer 24). A case records the
     manual, verified process: initiator, ownership verification,
