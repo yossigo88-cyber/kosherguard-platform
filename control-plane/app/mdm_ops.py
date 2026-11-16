@@ -41,7 +41,7 @@ def get_enrollment(session: Session, tenant_id: int,
 
 
 def create_enrollment(session: Session, tenant_id: int, device_id: int,
-                      supervised: bool = False) -> MDMEnrollment:
+                      supervision_requested: bool = False) -> MDMEnrollment:
     device = session.get(Device, device_id)
     if device is None or device.tenant_id != tenant_id:
         raise MDMError("device not found", 404)
@@ -50,7 +50,8 @@ def create_enrollment(session: Session, tenant_id: int, device_id: int,
         device_id=device_id,
         enrollment_id=f"pending-{uuid.uuid4().hex[:16]}",
         state="pending",
-        supervised=supervised,
+        supervision_requested=supervision_requested,
+        supervision_verified=False,
     )
     session.add(row)
     session.flush()
@@ -124,4 +125,21 @@ def get_command(session: Session, tenant_id: int,
     row = session.get(MDMCommand, command_id)
     if row is None or row.tenant_id != tenant_id:
         raise MDMError("command not found", 404)
+    return row
+
+def mark_supervision_verified(session: Session, tenant_id: int,
+                              enrollment_pk: int,
+                              supervised: bool) -> MDMEnrollment:
+    """Set device-REPORTED supervision. This is the only path that may
+    set supervision_verified, and it is for device check-in data (via a
+    NanoMDM enrollment-info sync), never for API input. A pending
+    enrollment has never reported anything, so verifying one is an
+    error."""
+    row = get_enrollment(session, tenant_id, enrollment_pk)
+    if row.state == "pending":
+        raise MDMError(
+            "cannot verify supervision on a pending enrollment: "
+            "the device has never checked in", 409)
+    row.supervision_verified = supervised
+    session.flush()
     return row
