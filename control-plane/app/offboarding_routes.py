@@ -20,7 +20,8 @@ from sqlalchemy import select
 
 from .db import ScopedSession
 from .models import (Device, DeviceAssignment, FilterDecision,
-                     MDMEnrollment, OffboardingCase, Tenant, utcnow)
+                     IssuedCredential, MDMEnrollment, OffboardingCase,
+                     Tenant, utcnow)
 
 KINDS = ("cancellation", "transfer", "loss_of_authority", "dispute")
 DEVICE_KINDS = ("transfer", "loss_of_authority")
@@ -180,13 +181,21 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
               dependencies=[Depends(require_csrf_header)])
     def complete_case(case_id: int, body: CompleteBody,
                       user=Depends(current_user), session=Depends(db_session)):
-        """Complete a verified case. Performs the environment-feasible
-        orchestration here: deactivate the device's policy assignments,
-        mark its enrollment records offboarded, delete the departing
-        device's filter-decision rows, and stamp the data-retention
-        date from tenant policy. It NEVER issues MDM commands, erases
-        or locks anything, or releases Apple Business - nonpayment
-        cancellation in particular changes nothing on the device."""
+        """Complete a verified case with the environment-feasible
+        orchestration done HERE (not just attestations), for device
+        kinds (transfer / loss_of_authority): deactivate the device's
+        policy assignments, mark its enrollment records offboarded
+        (the authenticated DDM path refuses offboarded state - no
+        silent reactivation), revoke its outstanding issued
+        credentials (edge verifiers refuse revoked jtis via the
+        revocation feed), and delete the departing device's
+        filter-decision rows. `data_retention_until` is stamped from
+        tenant policy. CANCELLATION touches no device: nonpayment must
+        never revoke protection, lock, erase or release anything, and
+        the case flow NEVER issues MDM commands. Protection changes
+        propagate only through the existing separately gated publish
+        flow, which ships published policy state plus the current
+        device map - never unrelated drafts."""
         denied = require_owner(user)
         if denied is not None:
             return denied
@@ -216,7 +225,8 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
         case.data_retention_until = utcnow() + timedelta(
             days=tenant.blocked_log_retention_days)
         deleted_logs = 0
-        if case.device_id is not None:
+        revoked_creds = 0
+        if case.device_id is not None and case.kind in DEVICE_KINDS:
             for assignment in session.scalars(select(DeviceAssignment).where(
                     DeviceAssignment.device_id == case.device_id,
                     DeviceAssignment.tenant_id == case.tenant_id,
@@ -227,18 +237,24 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
                     MDMEnrollment.tenant_id == case.tenant_id,
                     MDMEnrollment.state.in_(["pending", "enrolled"]))).all():
                 enrollment.state = "offboarded"
+            for cred in session.scalars(select(IssuedCredential).where(
+                    IssuedCredential.device_id == case.device_id,
+                    IssuedCredential.tenant_id == case.tenant_id,
+                    IssuedCredential.revoked_at.is_(None))).all():
+                cred.revoked_at = utcnow()
+                revoked_creds += 1
             deleted_logs = session.query(FilterDecision).filter(
                 FilterDecision.device_id == case.device_id,
                 FilterDecision.tenant_id == case.tenant_id).delete()
             device = session.get(Device, case.device_id)
-            if device is not None and case.kind in DEVICE_KINDS:
+            if device is not None:
                 device.state = "offboarded"
         case.status = "completed"
         case.completed_at = utcnow()
         ScopedSession(session, user.tenant_id).audit(
             "offboarding.case.complete",
             f"case {case.id} kind={case.kind} device={case.device_id} "
-            f"purged_logs={deleted_logs} "
+            f"purged_logs={deleted_logs} revoked_creds={revoked_creds} "
             f"retention_until={case.data_retention_until.isoformat()}",
             actor_user_id=user.id)
         session.commit()
