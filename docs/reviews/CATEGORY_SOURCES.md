@@ -17,20 +17,24 @@ category dataset admin.
 - **Source registry** - `POST/GET /api/admin/category-sources`:
   name (unique), license name and attribution are REQUIRED fields
   (a blank license is refused), status and notes.
-- **Versioned imports** - `POST .../imports`: version string and
-  SHA-256 of the imported dataset (format validated), the source's
-  category mapping and the import validation results (row counts,
-  rejects) are stored on the update. Imports land as
-  `pending_review`.
-- **Manual review** - `POST .../activate` requires a fresh staff MFA
-  code plus explicit confirmation (`activate-category-update`); only
-  then does an update become `active`. One active update per source:
-  the previous one is marked `superseded`. Content correctness stays
-  a human decision - the validation results are the record the
-  reviewer approves against.
-- **Rollback** - `POST .../rollback` reactivates a superseded update
-  with fresh MFA; the current active is marked `rolled_back`. Full
-  history is kept (`GET .../history`), never rewritten.
+- **Versioned imports with the actual rows** - `POST .../imports`
+  takes the version string, the dataset SHA-256 (format validated),
+  the source's category mapping AND the dataset rows themselves
+  (domain/category/verdict, each validated; any malformed row rejects
+  the whole import). Imports land as `pending_review` and their rows
+  are NOT effective.
+- **Manual review with real activation** - `POST .../activate`
+  requires a fresh staff MFA code plus explicit confirmation; only
+  then do the update's rows REPLACE the previously active update's
+  rows in category_rules (each bound to its source@version and update
+  id), and the categories document the publish flow ships
+  (KG_CATEGORIES_FILE) is rebuilt from the active rules and validated
+  with the engine's own loader. One active update per source.
+- **Real rollback** - `POST .../rollback` reactivates a superseded
+  update with fresh MFA: the current update's rules are deactivated,
+  the rollback target's rules are re-applied, and the categories
+  document is rebuilt again. Full history is kept
+  (`GET .../history`), never rewritten.
 - **Overrides** - per-domain manual review and overrides remain the
   existing category-rules admin (`source='manual-review'`, never
   hard-deleted), which sits alongside the source registry.
@@ -38,17 +42,18 @@ category dataset admin.
 
 ## Honest limits
 
-- The registry records and gates dataset provenance and review; the
-  actual dataset rows still enter the filter dataset through the
-  existing category-rules admin (bulk import of a registered update
-  into rules is future work, noted in REQUIREMENTS_COVERAGE).
+- Activation updates the dataset the publish flow ships; tenants pick
+  it up on their next (separately gated) publish, matching how all
+  protection changes propagate. Nothing auto-publishes.
 - No paid classification feed is introduced or integrated; per the
   answer that needs separate approval first.
 
 ## Tests
 
-`control-plane/tests/test_category_sources.py` (9 tests): create/list,
-staff gate (non-staff 403 on read and write), required license +
-attribution, duplicate name, import starts pending_review with hash
-validation, activation requires fresh MFA, one-active supersede
-semantics, rollback restores the superseded update, history ordering.
+`control-plane/tests/test_category_sources.py` (13 tests):
+create/list, staff gate (non-staff 403), required license +
+attribution, duplicate name, import validation (hash, malformed rows
+rejected), pending rows never effective, activation requires fresh
+MFA and applies rows with source@version provenance, supersede
+replaces active rules, rollback restores the previous rules for real,
+rules-less updates cannot activate, history.
