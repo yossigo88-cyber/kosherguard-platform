@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import security
+from . import mdm_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
 from .models import AuthSession, LoginAttempt, User
@@ -53,6 +53,16 @@ class DeviceBody(BaseModel):
 
 class AssignmentBody(BaseModel):
     policy_id: int
+
+
+class EnrollmentBody(BaseModel):
+    device_id: int
+    supervised: bool = False
+
+
+class MDMCommandBody(BaseModel):
+    command: str
+    payload: dict = {}
 
 
 class LoginBody(BaseModel):
@@ -379,6 +389,95 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"status": "assigned", "device_id": device.id,
                 "policy_id": policy.id}
 
+    # -- MDM (Milestone 4) ---------------------------------------------------
+    def make_adapter():
+        if settings.nanomdm_url:
+            import sys as _sys
+            import os as _os
+            repo = _os.path.dirname(_os.path.dirname(
+                _os.path.dirname(_os.path.abspath(__file__))))
+            if repo not in _sys.path:
+                _sys.path.insert(0, repo)
+            from mdm.adapter import NanoMDMAdapter
+            return NanoMDMAdapter(settings.nanomdm_url,
+                                  settings.nanomdm_api_key or "")
+        return None
+
+    def enrollment_json(row):
+        return {"id": row.id, "device_id": row.device_id,
+                "enrollment_id": row.enrollment_id, "state": row.state,
+                "supervised": row.supervised,
+                "last_seen_at": (row.last_seen_at.isoformat()
+                                 if row.last_seen_at else None),
+                "created_at": row.created_at.isoformat()}
+
+    def command_json(row):
+        return {"id": row.id, "enrollment_pk": row.enrollment_pk,
+                "command": row.command, "status": row.status,
+                "applied": row.applied,
+                "result_detail": row.result_detail,
+                "created_at": row.created_at.isoformat()}
+
+    @app.post("/api/mdm/enrollments",
+              dependencies=[Depends(require_csrf_header)])
+    def mdm_create_enrollment(body: EnrollmentBody,
+                              user: User = Depends(current_user),
+                              session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        try:
+            row = mdm_ops.create_enrollment(
+                session, user.tenant_id, body.device_id, body.supervised)
+        except mdm_ops.MDMError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return enrollment_json(row)
+
+    @app.get("/api/mdm/enrollments")
+    def mdm_list_enrollments(user: User = Depends(current_user),
+                             session: Session = Depends(db_session)):
+        rows = mdm_ops.list_enrollments(session, user.tenant_id)
+        return {"enrollments": [enrollment_json(r) for r in rows]}
+
+    @app.post("/api/mdm/enrollments/{enrollment_pk}/commands",
+              dependencies=[Depends(require_csrf_header)])
+    def mdm_issue_command(enrollment_pk: int, body: MDMCommandBody,
+                          user: User = Depends(current_user),
+                          session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        try:
+            row = mdm_ops.issue_command(
+                session, user.tenant_id, enrollment_pk, body.command,
+                body.payload, user.id, adapter=make_adapter())
+        except mdm_ops.MDMError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return command_json(row)
+
+    @app.get("/api/mdm/enrollments/{enrollment_pk}/commands")
+    def mdm_list_commands(enrollment_pk: int,
+                          user: User = Depends(current_user),
+                          session: Session = Depends(db_session)):
+        try:
+            rows = mdm_ops.list_commands(session, user.tenant_id,
+                                         enrollment_pk)
+        except mdm_ops.MDMError as exc:
+            return error(exc.status, str(exc))
+        return {"commands": [command_json(r) for r in rows]}
+
+    @app.get("/api/mdm/commands/{command_id}")
+    def mdm_get_command(command_id: int,
+                        user: User = Depends(current_user),
+                        session: Session = Depends(db_session)):
+        try:
+            row = mdm_ops.get_command(session, user.tenant_id, command_id)
+        except mdm_ops.MDMError as exc:
+            return error(exc.status, str(exc))
+        return command_json(row)
+
     # -- Front ends (Milestone 2) --------------------------------------
     from fastapi.staticfiles import StaticFiles
     control_plane_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -392,7 +491,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         try:
             result = publication_ops.publish_selected(
                 session, user.tenant_id, settings.publications_root,
-                user.email)
+                user.email, categories_path=settings.categories_file)
         except publication_ops.PolicyError as exc:
             session.rollback()
             return error(exc.status, str(exc))
@@ -407,7 +506,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def publication_current(user: User = Depends(current_user)):
         from .publisher import Publisher
         try:
-            manifest = Publisher(settings.publications_root).current()
+            manifest = Publisher(publication_ops.tenant_root(
+                settings.publications_root, user.tenant_id)).current()
         except Exception as exc:
             return error(500, f"could not read current generation: {exc}")
         if manifest is None:
