@@ -31,6 +31,17 @@ class Role(str, enum.Enum):
     viewer = "viewer"      # read-only
 
 
+class StaffRole(str, enum.Enum):
+    """Platform staff roles (Answer 29). A user with staff_role set is a
+    staff account and must enroll MFA; the tenant Role still governs
+    their home tenant. Customer/parent administrator is the tenant-side
+    Role.owner/guardian - it is not a staff role."""
+    owner = "owner"                          # full platform control; manages staff
+    security_admin = "security_admin"        # security policy, categories, sensitive-op approvals
+    support_admin = "support_admin"          # limited troubleshooting only
+    read_only = "read_only"                  # viewing authorized information only
+
+
 class Tenant(Base):
     __tablename__ = "tenants"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -53,6 +64,10 @@ class User(Base):
     delegated_settings: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
     is_platform_admin: Mapped[bool] = mapped_column(
         nullable=False, default=False)
+    # Platform staff role (Answer 29). NULL for ordinary tenant users.
+    # Legacy is_platform_admin rows are migrated to staff_role='owner'
+    # by alembic 0017; new code reads staff_role only.
+    staff_role: Mapped[str | None] = mapped_column(String(30), nullable=True)
     tenant: Mapped[Tenant] = relationship()
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
@@ -479,3 +494,35 @@ class GroupMembership(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey('tenants.id'), index=True)
     group_id: Mapped[int] = mapped_column(ForeignKey('device_groups.id'))
     device_id: Mapped[int] = mapped_column(ForeignKey('devices.id'))
+
+
+class SensitiveCommandApproval(Base):
+    """Two-person approval for especially destructive operations
+    (Answer 25): remote erase, ABM release, removal of protection,
+    sensitive certificate operations. The requester and the approver
+    must be two DIFFERENT privileged users, each passing fresh TOTP
+    verification and an explicit confirmation. Nothing executes at
+    request time; expiry is short so a stale pending request cannot be
+    approved later."""
+    __tablename__ = "sensitive_command_approvals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    enrollment_pk: Mapped[int | None] = mapped_column(
+        ForeignKey("mdm_enrollments.id"), nullable=True)
+    operation: Mapped[str] = mapped_column(String(60), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending")
+    requested_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False)
+    decided_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    decision_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
