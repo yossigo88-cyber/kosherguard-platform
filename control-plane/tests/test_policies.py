@@ -204,3 +204,97 @@ class TestSchedules:
             from sqlalchemy import select
             actions = [a.action for a in s.scalars(select(AuditEvent))]
         assert "policy.schedules" in actions
+
+
+class TestScheduleTightenOnly:
+    """The reviewed comparator drops _schedules as metadata, so base-rule
+    comparison alone cannot prove a candidate is at least as restrictive
+    when the baseline blocks things on a schedule. Schedule-aware
+    coverage must close that gap."""
+
+    def _default_with_schedule(self, client):
+        mkpolicy(client, "default", **BASE)
+        pid = client.get("/api/policies").json()["policies"][0]["id"]
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [SCHED]}, headers=HDR)
+        client.post(f"/api/policies/{pid}/select", headers=HDR, json={})
+        return pid
+
+    def _assign(self, client, policy_name, **doc):
+        pid = mkpolicy(client, policy_name, **doc).json()["id"]
+        did = client.post("/api/devices", json={"name": "kid-phone"},
+                          headers=HDR).json()["id"]
+        return client.post(f"/api/devices/{did}/assignment",
+                           json={"policy_id": pid}, headers=HDR), pid, did
+
+    def test_assignment_without_default_schedule_refused(self, client):
+        """REPRODUCED GAP (fixed): base rules identical, but the
+        candidate lacks the default's bedtime schedule - during the
+        window that device would filter weaker than the baseline."""
+        self._default_with_schedule(client)
+        r, _, _ = self._assign(client, "no-schedule", **BASE)
+        assert r.status_code == 409, r.json()
+        assert "schedule" in r.json()["error"].lower()
+
+    def test_assignment_with_covering_schedule_accepted(self, client):
+        self._default_with_schedule(client)
+        r, pid, _ = self._assign(client, "with-schedule", **BASE)
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [SCHED]}, headers=HDR)
+        r2 = client.post(
+            f"/api/devices/{client.get('/api/devices').json()['devices'][0]['id']}/assignment",
+            json={"policy_id": pid}, headers=HDR)
+        assert r2.status_code == 200, r2.json()
+
+    def test_wider_window_covers(self, client):
+        self._default_with_schedule(client)
+        wider = dict(SCHED, start="20:00", end="07:00")
+        r, pid, _ = self._assign(client, "wider", **BASE)
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [wider]}, headers=HDR)
+        did = client.get("/api/devices").json()["devices"][0]["id"]
+        r2 = client.post(f"/api/devices/{did}/assignment",
+                         json={"policy_id": pid}, headers=HDR)
+        assert r2.status_code == 200, r2.json()
+
+    def test_narrower_window_refused(self, client):
+        self._default_with_schedule(client)
+        narrower = dict(SCHED, start="22:00")
+        r, pid, _ = self._assign(client, "narrower", **BASE)
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [narrower]}, headers=HDR)
+        did = client.get("/api/devices").json()["devices"][0]["id"]
+        r2 = client.post(f"/api/devices/{did}/assignment",
+                         json={"policy_id": pid}, headers=HDR)
+        assert r2.status_code == 409, r2.json()
+
+    def test_missing_schedule_blocks_refused(self, client):
+        self._default_with_schedule(client)
+        weaker = dict(SCHED, block_categories=[], block_domains=[])
+        r, pid, _ = self._assign(client, "weaker", **BASE)
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [weaker]}, headers=HDR)
+        did = client.get("/api/devices").json()["devices"][0]["id"]
+        r2 = client.post(f"/api/devices/{did}/assignment",
+                         json={"policy_id": pid}, headers=HDR)
+        assert r2.status_code == 409, r2.json()
+
+    def test_base_rules_covering_blocks_accepted(self, client):
+        """A candidate that ALWAYS blocks what the default blocks on a
+        schedule needs no schedule at all (always >= sometimes)."""
+        self._default_with_schedule(client)
+        always = dict(BASE, category_block=["games"],
+                      blocklist=["bad.example", "fun.example"])
+        r, _, _ = self._assign(client, "always-block", **always)
+        assert r.status_code == 200, r.json()
+
+    def test_timezone_mismatch_refused(self, client):
+        self._default_with_schedule(client)
+        other_tz = dict(SCHED, timezone="Europe/London")
+        r, pid, _ = self._assign(client, "other-tz", **BASE)
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [other_tz]}, headers=HDR)
+        did = client.get("/api/devices").json()["devices"][0]["id"]
+        r2 = client.post(f"/api/devices/{did}/assignment",
+                         json={"policy_id": pid}, headers=HDR)
+        assert r2.status_code == 409, r2.json()
