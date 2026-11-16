@@ -37,15 +37,17 @@ Trust model - the actual trusted chain, link by link:
    PEER on every request. It proves the request came through the
    trusted NanoMDM, nothing more.
 3. Authorization: X-Enrollment-ID is an IDENTIFIER, never an
-   authenticator. A request is only authorized when the named
-   enrollment is in state 'enrolled' or 'active'. Activation evidence
-   comes only through the HMAC-authenticated peer, which under the
-   operations guide forwards device traffic only for enrollments it
-   authenticated via the MDM protocol: the deployment syncs that
-   confirmation to POST /api/mdm/enrollment-checkin (same HMAC peer
-   auth). A 'pending' placeholder row (created by a guardian before
-   any device checked in) authorizes NOTHING: no declarations, no
-   status reports. Enrollment ID alone must never authorize.
+   authenticator. A request is only authorized when it comes through
+   the HMAC-authenticated peer: under the operations guide NanoMDM
+   forwards device check-in traffic only for enrollments it
+   authenticated via the MDM protocol, so an authenticated DDM
+   request is itself the device check-in evidence. A 'pending'
+   placeholder (created by a guardian before any device checked in)
+   is ACTIVATED by that first authenticated contact (audited) -
+   enrollment ID alone, without the peer's HMAC, authorizes NOTHING.
+   The explicit sync route POST /api/mdm/enrollment-checkin (same
+   HMAC peer auth) is the equivalent out-of-band activation path
+   (e.g. a deployment sync of NanoMDM's stored Authenticate data).
    NOTE on supervision: the check-in sync records enrollment only.
    Supervision is device-reported state (Apple: the Authenticate /
    DeviceInformation data NanoMDM stores); no caller-claimed flag on
@@ -115,19 +117,27 @@ def resolve_enrollment(session: Session, enrollment_id: str | None,
 DDM_AUTHORIZED_STATES = ("enrolled", "active")
 
 
-def authorize_active(enrollment: MDMEnrollment) -> None:
-    """Refuse DDM serving to an enrollment NanoMDM has not confirmed.
+def ensure_active(session: Session, enrollment: MDMEnrollment) -> bool:
+    """Authorize DDM serving for this enrollment.
 
-    The HMAC check authenticates the forwarding peer; this check is the
-    authorization step: the named enrollment must correspond to a real
-    device check-in (state 'enrolled'/'active' via the enrollment-info
-    sync route). A pending placeholder enrollment ID alone authorizes
-    nothing."""
+    The HMAC check (callers run verify_hmac first) authenticates the
+    forwarding peer; NanoMDM only forwards check-in traffic for
+    enrollments it authenticated via the MDM protocol, so this first
+    authenticated contact IS the check-in evidence: a 'pending'
+    placeholder is activated here (returns True when it was). Any
+    other non-active state (e.g. revoked) is refused. Enrollment ID
+    alone, without the peer's HMAC, never reaches this point."""
+    if enrollment.state == "pending":
+        enrollment.state = "enrolled"
+        enrollment.last_seen_at = utcnow()
+        session.flush()
+        return True
     if enrollment.state not in DDM_AUTHORIZED_STATES:
         raise DDMError(
             f"enrollment is not active (state {enrollment.state!r}); "
             "only a device NanoMDM has confirmed via check-in may "
             "sync declarations or report status", 403)
+    return False
 
 
 def confirm_checkin(session: Session, enrollment_id: str | None,
