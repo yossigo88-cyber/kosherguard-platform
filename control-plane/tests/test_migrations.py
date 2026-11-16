@@ -83,7 +83,7 @@ ALL_TABLES = {
     "device_app_policies", "ddm_status_reports", "mdm_commands",
     "filter_decisions", "category_rules", "pending_mfa_enrollments",
     "invite_tokens", "credential_artifacts", "issued_credentials", "publication_jobs", "device_groups", "group_memberships", "policy_exceptions", "sensitive_command_approvals",
-    "enrollment_tickets",
+    "enrollment_tickets", "offboarding_cases",
 }
 
 
