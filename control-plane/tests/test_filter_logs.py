@@ -169,3 +169,36 @@ class TestIngestion:
                "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"}
         c = TestClient(create_app(Settings(env), engine=engine))
         assert c.get("/api/filter-logs").status_code == 401
+
+
+class TestEdgeStatus:
+    def test_status_reports_evidenced_state_only(self, client):
+        r = client.get("/api/filter-status")
+        assert r.status_code == 200
+        s = r.json()
+        # configured: the tenant has a selected default policy
+        assert s["configured"]["policy_selected"] is True
+        # nothing reported yet
+        assert s["reported"]["decision_count"] == 0
+        assert s["reported"]["latest_received_at"] is None
+        # health is never inferred from configuration or issuance
+        assert s["health"] == "unknown"
+        assert "issuance" in s["health_note"]
+        assert s["dns_reporting"] == "not connected"
+
+        dev = mk_device(client)
+        token = mint(client, dev)
+        client.post("/api/filter-logs",
+                    json={"decisions": [{"domain": "a.example.com",
+                                         "action": "allow"}]},
+                    headers=bearer(token))
+        s = client.get("/api/filter-status").json()
+        assert s["reported"]["decision_count"] == 1
+        assert s["reported"]["sources"] == ["proxy"]
+        assert s["reported"]["latest_received_at"] is not None
+        # a reported decision still does not create a health signal
+        assert s["health"] == "unknown"
+
+    def test_status_requires_sign_in(self, client):
+        c2 = TestClient(client.app)
+        assert c2.get("/api/filter-status").status_code == 401
