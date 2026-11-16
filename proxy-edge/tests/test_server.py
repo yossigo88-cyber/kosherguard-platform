@@ -409,3 +409,48 @@ def test_revocation_feed_runtime_refresh():
         srv.server_close()
         feed_srv.shutdown()
         feed_srv.server_close()
+
+
+def test_entrypoint_build_proxy():
+    """The service entrypoint (build_proxy) constructs the feed,
+    starts the refresh loop, and the proxy refuses a revoked token."""
+    import json as _json
+    sys.path.insert(0, os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "..",
+        "url-filter-server", "app")))
+    import revocations  # noqa: E402
+    feed_srv = http.server.HTTPServer(("127.0.0.1", 0), _FeedHandler)
+    threading.Thread(target=feed_srv.serve_forever, daemon=True).start()
+    _FeedHandler.body = b'{"revoked_jtis": []}'
+    tok = make_token()
+    srv, stop = server.build_proxy(
+        ("127.0.0.1", 0), make_authed_engine_set(),
+        token_key=KEY,
+        control_plane_url=f"http://127.0.0.1:{feed_srv.server_address[1]}",
+        token_provider=lambda: tok, refresh_interval=0.1,
+        read_timeout=5, connect_timeout=2,
+        decision_log=lambda r: None)
+    assert stop is not None
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    req = b"GET http://example.com/ HTTP/1.1\r\n\r\n"
+    try:
+        out = authed_request(srv.server_address[1], req, token=tok)
+        assert b"407" not in status_of(out)
+        jti = device_auth.verify_token(KEY, tok, "proxy")["jti"]
+        _FeedHandler.body = _json.dumps({"revoked_jtis": [jti]}).encode()
+        end = time.time() + 5
+        ok = False
+        while time.time() < end:
+            out = authed_request(srv.server_address[1], req, token=tok)
+            if b"407" in status_of(out):
+                ok = True
+                break
+            time.sleep(0.05)
+        assert ok
+    finally:
+        stop.set()
+        srv.shutdown()
+        srv.server_close()
+        feed_srv.shutdown()
+        feed_srv.server_close()
