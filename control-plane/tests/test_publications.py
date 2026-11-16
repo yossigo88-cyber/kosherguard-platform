@@ -230,6 +230,79 @@ class TestCrossTenantIsolation:
         assert tree_hashes(root_b) == before_b, "tenant B bytes changed"
         assert Publisher(root_b).current()["revision"] == mb["revision"]
 
+    def test_mid_publish_failure_cleans_only_own_generation(self, engine,
+                                                            pub_root):
+        """Fix 1 negative case, DISTINCT from replay-before-writes: the
+        generation directory is CREATED and a write fails mid-publish.
+        Cleanup must remove only the partial generation it created -
+        tenant A's active generation bytes and tenant B's pre-existing
+        current pointer stay exactly as they were."""
+        import hashlib
+        ca = self._tenant_client(engine, pub_root, "family-a", "a@x.com")
+        cb = self._tenant_client(engine, pub_root, "family-b", "b@x.com")
+        ra = ca.post("/api/policies", json=dict(BASE, name="pa"), headers=HDR)
+        ca.post(f"/api/policies/{ra.json()['id']}/select", headers=HDR)
+        assert ca.post("/api/publications", headers=HDR).status_code == 200
+        rb = cb.post("/api/policies", json=dict(BASE, name="pb"), headers=HDR)
+        cb.post(f"/api/policies/{rb.json()['id']}/select", headers=HDR)
+        assert cb.post("/api/publications", headers=HDR).status_code == 200
+
+        def tree_hashes(root):
+            out = {}
+            for dirpath, _dirs, files in os.walk(root):
+                for f in files:
+                    full = os.path.join(dirpath, f)
+                    out[os.path.relpath(full, root)] = hashlib.sha256(
+                        open(full, "rb").read()).hexdigest()
+            return out
+
+        ma = ca.get("/api/publications/current").json()["manifest"]
+        mb = cb.get("/api/publications/current").json()["manifest"]
+        root_a = os.path.join(pub_root, f"tenant-{ma['tenant_id']}")
+        root_b = os.path.join(pub_root, f"tenant-{mb['tenant_id']}")
+        before_a, before_b = tree_hashes(root_a), tree_hashes(root_b)
+
+        # Fail tenant B's NEXT publish mid-write: valid documents, but
+        # the categories write raises after policy.json has landed.
+        from app.publication_ops import export_policy_documents
+        from app.models import PolicyVersion as _PV
+        from sqlalchemy import select as _select
+        import json as _json
+        with session_scope(engine) as s2:
+            ver = s2.scalar(_select(_PV).where(
+                _PV.policy_id == rb.json()["id"]).order_by(
+                    _PV.version.desc()).limit(1))
+            pol_bytes, cat_bytes = export_policy_documents(ver)
+        import app.publisher as pub_mod
+        real_write = pub_mod._write_file_atomic
+        calls = {"n": 0}
+
+        def failing_write(path, content, token):
+            calls["n"] += 1
+            if calls["n"] == 2:  # categories.json: policy.json landed
+                raise OSError("simulated mid-publish write failure")
+            return real_write(path, content, token)
+
+        pub_mod._write_file_atomic = failing_write
+        try:
+            with Publisher(root_b).locked():
+                try:
+                    Publisher(root_b).publish(
+                        mb["revision"] + 1, pol_bytes, cat_bytes,
+                        {"k": "bad"})
+                    assert False, "publish must fail"
+                except OSError:
+                    pass
+        finally:
+            pub_mod._write_file_atomic = real_write
+
+        # Tenant A untouched, byte for byte; tenant B's partial
+        # generation was cleaned up, its prior current intact.
+        assert tree_hashes(root_a) == before_a, "tenant A bytes changed"
+        assert tree_hashes(root_b) == before_b, \
+            "tenant B partial generation not cleaned or bytes changed"
+        assert Publisher(root_b).current()["revision"] == mb["revision"]
+
     def test_replay_same_revision_is_refused_and_preserves_data(self,
                                                                 pub_root):
         """A direct second publish with the same revision never deletes
