@@ -36,9 +36,7 @@ def client(engine):
     settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
               "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"})
     c = TestClient(create_app(settings, engine=engine))
-    r = c.post("/api/auth/login",
-               json={"email": "g@example.com", "password": PASSWORD},
-               headers=HDR)
+    r = mfa_login(c, json={'email': 'g@example.com', 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
     return c
 
@@ -113,9 +111,7 @@ class TestPolicies:
                        password_hash=security.hash_password(PASSWORD),
                        role=Role.owner))
         c2 = TestClient(client.app)
-        c2.post("/api/auth/login",
-                json={"email": "o@example.com", "password": PASSWORD},
-                headers=HDR)
+        mfa_login(c2, json={'email': 'o@example.com', 'password': PASSWORD}, headers=HDR)
         assert c2.get("/api/policies").json()["policies"] == []
         r = c2.put(f"/api/policies/{pid}",
                    json={"name": "stolen", **BASE}, headers=HDR)
@@ -188,9 +184,7 @@ class TestSchedules:
                        password_hash=security.hash_password(PASSWORD),
                        role=Role.owner))
         c2 = TestClient(client.app)
-        c2.post("/api/auth/login",
-                json={"email": "o@example.com", "password": PASSWORD},
-                headers=HDR)
+        mfa_login(c2, json={'email': 'o@example.com', 'password': PASSWORD}, headers=HDR)
         r = c2.put(f"/api/policies/{pid}/schedules",
                    json={"schedules": [SCHED]}, headers=HDR)
         assert r.status_code == 404
@@ -375,3 +369,5 @@ class TestDefaultMutationReproof:
         r = client.put(f"/api/policies/{dpid}",
                        json={"name": "default", **stronger}, headers=HDR)
         assert r.status_code == 409, r.json()
+
+from mfa_support import mfa_login
