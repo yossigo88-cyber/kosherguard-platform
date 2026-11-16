@@ -150,30 +150,58 @@ def prove_schedule_coverage(candidate_doc: dict, baseline_doc: dict) -> None:
                 "unconditionally)", 409)
 
 
-def prove_tighten_only(candidate_doc: dict, baseline: Policy) -> None:
-    baseline_doc = json.loads(baseline.engine_doc)
+def prove_against_doc(candidate_doc: dict, baseline_doc: dict,
+                      baseline_name: str) -> None:
     verdict = policy_comparison.at_least_as_restrictive(
         candidate_doc, baseline_doc)
     if not verdict.allowed:
         raise PolicyError(
             f"policy must be at least as restrictive as the default "
-            f"policy {baseline.name!r}: {verdict.reason}", 409)
+            f"policy {baseline_name!r}: {verdict.reason}", 409)
     prove_schedule_coverage(candidate_doc, baseline_doc)
+
+
+def prove_tighten_only(candidate_doc: dict, baseline: Policy) -> None:
+    prove_against_doc(candidate_doc, json.loads(baseline.engine_doc),
+                      baseline.name)
 
 
 def enforce_on_content_mutation(session: Session, tenant_id: int,
                                 policy: Policy, proposed_doc: dict) -> None:
     """A policy-content change with active assignments must keep every
-    one of them at least as restrictive as the selected default."""
+    one of them at least as restrictive as the selected default.
+
+    Mutating the selected default itself re-proves every other active
+    assignment against the PROPOSED baseline: strengthening the default
+    must refuse while any assignment would end up weaker, not silently
+    break the invariant after the fact. (Weakening the default always
+    passes - assignments stay at least as restrictive.)"""
     default = selected_default(session, tenant_id)
     if default is None:
         return
-    if not active_assignments(session, tenant_id,
-                              exclude_policy_id=None):
+    assignments = active_assignments(session, tenant_id,
+                                     exclude_policy_id=None)
+    if not assignments:
         return
-    if any(a.policy_id == policy.id
-           for a in active_assignments(session, tenant_id)):
+    if any(a.policy_id == policy.id for a in assignments):
         prove_tighten_only(proposed_doc, default)
+    if policy.id == default.id:
+        violations = []
+        for assignment in assignments:
+            if assignment.policy_id == default.id:
+                continue  # assigned to the default itself: it IS the baseline
+            assigned = session.get(Policy, assignment.policy_id)
+            try:
+                prove_against_doc(json.loads(assigned.engine_doc),
+                                  proposed_doc, default.name)
+            except PolicyError as exc:
+                violations.append(f"policy {assigned.name!r}: {exc}")
+        if violations:
+            raise PolicyError(
+                f"cannot strengthen the default policy {default.name!r} "
+                "while assignments are weaker than the proposed "
+                "baseline (tighten-only rule). " + " | ".join(violations),
+                409)
 
 
 def enforce_on_new_assignment(session: Session, tenant_id: int,
