@@ -75,7 +75,8 @@ def test_category_blocked_http_gets_403(proxy):
     port = srv.server_address[1]
     out = http_request(port, b"GET http://bet365.com/ HTTP/1.1\r\nHost: bet365.com\r\n\r\n")
     assert b"403" in out.split(b"\r\n", 1)[0]
-    assert decisions[-1]["rule"] == "category_block"
+    assert decisions[-1]["rule"] == "blocked"
+    assert "host" not in decisions[-1] and "client" not in decisions[-1]
 
 
 def test_blocked_connect_refused(proxy):
@@ -117,7 +118,7 @@ def test_allowed_http_is_relayed(proxy):
         out = http_request(proxy_port, req)
         assert b"200" in out.split(b"\r\n", 1)[0]
         assert b"upstream-body-ok" in out
-        assert decisions[-1]["action"] == "allow"
+        assert decisions == []  # no allowed browsing history
     finally:
         upstream.shutdown()
         upstream.server_close()
@@ -285,7 +286,7 @@ def test_strict_policy_blocks_via_token(authed_proxy):
     assert b"403" in status_of(out)
     assert b"Blocked by KosherGuard" in out
     assert decisions[-1]["action"] == "block"
-    assert decisions[-1]["device"] == "dev-1"
+    assert "device" not in decisions[-1] and "host" not in decisions[-1]
 
 
 def test_permissive_policy_allows_same_host(authed_proxy):
@@ -296,7 +297,7 @@ def test_permissive_policy_allows_same_host(authed_proxy):
                          b"CONNECT bad.example:443 HTTP/1.1\r\n\r\n",
                          token=make_token(policy_id=1))
     assert b"502" in status_of(out)
-    assert decisions[-1]["action"] == "allow"
+    assert decisions == []  # no allowed browsing history
 
 
 def test_strict_policy_blocks_connect(authed_proxy):
