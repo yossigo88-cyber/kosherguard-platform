@@ -1856,27 +1856,32 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             row.revoked_at = utcnow()
             row.revoked_by = user.id
             ScopedSession(session, user.tenant_id).audit(
-                "exception.revoke", f"exception {row.id}",
+                "exception.revoke",
+                f"exception {row.id} ({row.kind} for {row.scope_type} "
+                f"{row.device_id or row.group_id}): {row.reason}",
                 actor_user_id=user.id)
             session.flush()
             # A revoked exception keeps filtering-open at the edge until a
             # new generation ships, so revocation enqueues its own
             # publication instead of waiting for a manual publish. The job
-            # runs as the tenant owner: the worker re-checks publish
-            # delegation at execution, and a guardian revoker usually
-            # lacks it - the republication must not die on that check and
-            # leave the revoked bypass effective.
+            # keeps the real revoker as its actor and carries the
+            # server-set "exception-revoke" system marker: a narrow
+            # cleanup authority that lets the worker run it without
+            # re-checking the revoker's publish delegation or the owner's
+            # availability. It fabricates no owner/MFA approval - the
+            # manifest records actor "system:exception-revoke job <id>"
+            # and the audit keeps the initiating user - and it grants no
+            # general publish capability (the jobs API cannot set the
+            # marker; ordinary jobs keep the full actor re-check). Like
+            # any publish it ships the tenant's current saved state under
+            # the usual invariants (assigned policies proven tighten-only
+            # against the owner-controlled baseline at publish time).
             from .worker import enqueue
-            from .models import Role
             from sqlalchemy.exc import IntegrityError
-            owner = session.scalar(select(User).where(
-                User.tenant_id == user.tenant_id, User.role == Role.owner))
-            if owner is None:
-                session.rollback()
-                return error(500, "revoked, but no owner can republish")
             try:
-                enqueue(session, user.tenant_id, owner.id, owner.email,
-                        f"exception-revoke-{row.id}-{int(utcnow().timestamp())}")
+                enqueue(session, user.tenant_id, user.id, user.email,
+                        f"exception-revoke-{row.id}-{int(utcnow().timestamp())}",
+                        system_action="exception-revoke")
                 session.commit()
             except (ValueError, IntegrityError):
                 session.rollback()
