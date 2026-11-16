@@ -95,18 +95,22 @@ implemented and documented in ddm_ops:
    (tokens, declaration-items, declaration, status) requires the
    enrollment to be in state enrolled/active; a pending placeholder
    authorizes NOTHING (ddm_ops.authorize_active).
-- New POST /api/mdm/enrollment-checkin (same HMAC peer auth) records a
-  NanoMDM-confirmed device check-in: pending -> enrolled, idempotent.
-  It records ENROLLMENT ONLY. Verified mechanism (NanoMDM operations
-  guide, main branch): NanoMDM forwards device check-in traffic only
-  for enrollments it authenticated via the MDM protocol; the deployment
-  syncs that confirmation to this route. Supervision is explicitly NOT
-  accepted from this caller: supervision_verified can only be set from
-  device-reported check-in data (mdm_ops.mark_supervision_verified),
-  and no verified sync for it is wired yet, so it stays false. (An
-  earlier draft of this route accepted a caller-claimed 'supervised'
-  flag - removed after review: a claimed value is not verified
-  supervision.)
+- Enrollment activation is peer-evidenced and shipped, not deferred to
+  deployment wiring: NanoMDM forwards DeclarativeManagement check-ins
+  only for enrollments it authenticated via the MDM protocol (verified:
+  operations guide, main branch), so the first HMAC-authenticated DDM
+  request for a pending placeholder IS the device check-in evidence -
+  the control plane activates it (pending -> enrolled) with an audit
+  event, then serves. Enrollment ID alone, without the peer's HMAC,
+  authorizes nothing (401). The explicit sync route POST
+  /api/mdm/enrollment-checkin (same HMAC peer auth) is the equivalent
+  out-of-band activation path (e.g. a sync of NanoMDM's stored
+  Authenticate data); it records ENROLLMENT ONLY. Supervision is never
+  caller-claimed on any route: supervision_verified can only be set
+  from device-reported check-in data (mdm_ops.mark_supervision_verified)
+  and stays false until such a report exists. (An earlier draft
+  accepted a caller-claimed 'supervised' flag - removed after review:
+  a claimed value is not verified supervision.)
 - Credential revocation (approved companion hardening): IssuedCredential
   issuance registry (jti only, never the token), per-device revoke
   route, per-tenant revocation feed for edge verifiers; doh mint scope
@@ -140,9 +144,10 @@ further user decision gate.
   design pending); revocation at the edge is INCOMPLETE until that is
   implemented and exercised. Natural short token expiry bounds
   exposure.
-- The enrollment-checkin sync wiring to NanoMDM is deployment work,
-  not shipped code; until wired, enrollments stay pending and DDM
-  serving stays closed to them (fail-closed).
+- No unbuilt bridge remains for activation: the DDM serving path
+  itself activates on first authenticated contact. Fail-closed
+  unchanged: without KG_DDM_HMAC_KEY nothing is served (503); without
+  a valid signature nothing activates (401).
 - Device-side DDM behavior is BUILT-UNVERIFIED until the Part 17
   device-testing phase: a served declaration is not an applied one, and
   a received status report is receipt, not proof of application.
