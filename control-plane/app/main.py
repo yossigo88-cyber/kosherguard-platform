@@ -915,7 +915,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                                 body)
             payload = json.loads(body.decode() or "{}")
             enrollment = ddm_ops.confirm_checkin(
-                session, payload.get("enrollment_id"))
+                session, payload.get("enrollment_id"),
+                nanomdm_id=payload.get("nanomdm_id"))
         except ddm_ops.DDMError as exc:
             return error(exc.status, str(exc))
         except (ValueError, UnicodeDecodeError):
