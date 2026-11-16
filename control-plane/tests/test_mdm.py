@@ -183,3 +183,77 @@ class TestCommands:
             f"/api/mdm/enrollments/{enr['id']}/commands").json()["commands"]
         assert [c["command"] for c in listing] == [
             "DeviceInformation", "ProfileList"]
+
+
+class TestReconciler:
+    """mdm.reconciler: NanoMDM device statuses advance our ledger;
+    cross-tenant rows and terminal-status re-opening are refused."""
+
+    def _seed_command(self, engine, tenant_id=1, status="delivered"):
+        with session_scope(engine) as s:
+            from app.models import Device, MDMCommand, MDMEnrollment, Tenant
+            t = s.get(Tenant, tenant_id) or Tenant(name=f"t{tenant_id}")
+            if t.id is None:
+                s.add(t)
+                s.flush()
+            d = Device(tenant_id=t.id, name=f"dev-{tenant_id}")
+            s.add(d)
+            s.flush()
+            e = MDMEnrollment(tenant_id=t.id, device_id=d.id,
+                              enrollment_id=f"enr-{tenant_id}",
+                              state="active")
+            s.add(e)
+            s.flush()
+            c = MDMCommand(tenant_id=t.id, enrollment_pk=e.id,
+                           command="DeviceLock", status=status)
+            s.add(c)
+            s.flush()
+            return t.id, c.id
+
+    def test_acknowledged_advances_and_applies(self, engine):
+        from mdm.reconciler import reconcile
+        tid, cid = self._seed_command(engine)
+        with session_scope(engine) as s:
+            from app.models import MDMCommand
+            r = reconcile(s, tid, [{"command_id": cid,
+                                    "status": "Acknowledged"}])
+            assert (r.advanced, r.applied) == (1, 1)
+            row = s.get(MDMCommand, cid)
+            assert row.status == "acknowledged" and row.applied is True
+
+    def test_error_advances_without_applied(self, engine):
+        from mdm.reconciler import reconcile
+        tid, cid = self._seed_command(engine)
+        with session_scope(engine) as s:
+            from app.models import MDMCommand
+            reconcile(s, tid, [{"command_id": cid, "status": "Error",
+                                "detail": "device refused"}])
+            row = s.get(MDMCommand, cid)
+            assert row.status == "error" and row.applied is False
+
+    def test_terminal_not_reopened_by_idle(self, engine):
+        from mdm.reconciler import reconcile
+        tid, cid = self._seed_command(engine, status="acknowledged")
+        with session_scope(engine) as s:
+            from app.models import MDMCommand
+            r = reconcile(s, tid, [{"command_id": cid, "status": "Idle"}])
+            assert r.advanced == 0 and r.skipped == 1
+            assert s.get(MDMCommand, cid).status == "acknowledged"
+
+    def test_cross_tenant_row_ignored(self, engine):
+        from mdm.reconciler import reconcile
+        tid, cid = self._seed_command(engine, tenant_id=1)
+        with session_scope(engine) as s:
+            from app.models import MDMCommand
+            r = reconcile(s, 999, [{"command_id": cid,
+                                    "status": "Acknowledged"}])
+            assert r.advanced == 0 and r.skipped == 1
+            assert s.get(MDMCommand, cid).status == "delivered"
+
+    def test_unknown_command_id_ignored(self, engine):
+        from mdm.reconciler import reconcile
+        tid, _ = self._seed_command(engine)
+        with session_scope(engine) as s:
+            r = reconcile(s, tid, [{"command_id": 424242,
+                                    "status": "Acknowledged"}])
+            assert r.advanced == 0 and r.skipped == 1
