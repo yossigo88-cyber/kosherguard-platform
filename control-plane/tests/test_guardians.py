@@ -152,6 +152,38 @@ class TestGuardianLifecycle:
             s.flush()
             second_id = second.id
         r = c.post(f"/api/guardians/{second_id}/mfa-reset",
-                   headers=HDR)
+                   json={"password": PASSWORD}, headers=HDR)
         assert r.status_code == 200
         assert r.json()["mfa_enrolled"] is False
+
+    def test_mfa_reset_requires_fresh_auth(self, engine):
+        c = TestClient(make_app(engine))
+        login(c)
+        invite_and_accept(c)
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            second = s.execute(select(User).where(
+                User.email == "second@example.com")).scalar_one()
+            second.totp_secret = security.new_totp_secret()
+            s.flush()
+            second_id = second.id
+        # No password at all.
+        assert c.post(f"/api/guardians/{second_id}/mfa-reset",
+                      json={}, headers=HDR).status_code == 422
+        # Wrong password.
+        assert c.post(f"/api/guardians/{second_id}/mfa-reset",
+                      json={"password": "not the password"},
+                      headers=HDR).status_code == 403
+        # MFA still enrolled after both failures.
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            second = s.execute(select(User).where(
+                User.id == second_id)).scalar_one()
+            assert second.totp_secret is not None
+
+    def test_mfa_reset_requires_owner_role(self, engine):
+        c = TestClient(make_app(engine, role=Role.guardian))
+        login(c)
+        assert c.post("/api/guardians/1/mfa-reset",
+                      json={"password": PASSWORD},
+                      headers=HDR).status_code == 403
