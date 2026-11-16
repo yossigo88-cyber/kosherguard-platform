@@ -3,14 +3,11 @@
 
 Wire-up: pass DNSDecisionReporter(...) as the runner's
 decision_reporter; it is installed as the DNS service's decision
-logger. Decisions the service actually made are buffered and POSTed in
-batches to POST /api/filter-logs with the device's scoped credential
-(scope "doh"; the control plane binds source "dns" to that scope).
-Forwarding is strictly best-effort: the service's job is filtering, so
-a control-plane outage must never delay or break a decision - failures
-are counted and the batch is dropped, never retried into a queue that
-could grow without bound. The local JSON decision log remains the
-complete record; this is the reporting replica.
+logger. Only blocked domains are sent immediately to POST /api/filter-logs
+with a doh-scoped credential. Allowed decisions are ignored. No history queue
+or on-disk spool exists; failures are counted and dropped. The configured
+request timeout bounds synchronous reporting delay. Detailed blocked activity
+is retained only by the central retention-controlled ingestion route.
 """
 
 from __future__ import annotations
@@ -44,22 +41,13 @@ class DNSDecisionReporter:
         return cls(url, token)
 
     def log_decision(self, record: dict) -> None:
-        batch = None
-        with self._lock:
-            self._pending.append({
-                "domain": record.get("domain"),
-                "action": ("block" if record.get("action") == "block"
-                           or str(record.get("outcome", "")).startswith(
-                               "answered_blocked") else "allow"),
-                "source": "dns",
-                "rule": record.get("rule") or "",
-                "reason": record.get("reason") or "",
-            })
-            if len(self._pending) >= self._batch_size:
-                batch = self._pending
-                self._pending = []
-        if batch is not None:
-            self._post(batch)
+        if not (record.get("action") == "block" or str(record.get("outcome", "")).startswith("answered_blocked")):
+            return
+        # No history cache. Submit only a blocked domain, immediately; failure
+        # drops it rather than spooling sensitive records to disk/memory.
+        self._post([{"domain": record.get("domain"), "action": "block",
+                     "source": "dns", "rule": "blocked",
+                     "reason": "policy blocked domain"}])
 
     def flush(self) -> None:
         with self._lock:
