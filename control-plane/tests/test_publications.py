@@ -81,18 +81,21 @@ class TestPublications:
         r2 = client.post("/api/publications", headers=HDR)
         assert r2.json()["revision"] == 2
 
-        manifest = Publisher(pub_root).current()
+        import glob
+        roots = glob.glob(os.path.join(pub_root, "tenant-*"))
+        assert len(roots) == 1
+        manifest = Publisher(roots[0]).current()
         assert manifest["revision"] == 2
         assert manifest["generation"] == "2"
         assert manifest["tenant_id"] is not None
 
         policy = json.loads((open(os.path.join(
-            pub_root, "generations", "2", "policy.json")).read()))
+            roots[0], "generations", "2", "policy.json")).read()))
         assert policy["blocklist"] == ["bad.example"]
         # File permissions enforced by the publishing discipline.
         import stat as _stat
         mode = _stat.S_IMODE(os.stat(os.path.join(
-            pub_root, "generations", "2", "policy.json")).st_mode)
+            roots[0], "generations", "2", "policy.json")).st_mode)
         assert mode == 0o600
 
     def test_current_endpoint(self, client):
@@ -113,9 +116,132 @@ class TestPublications:
         make_default_policy(client)
         r = client.post("/api/publications", headers=HDR)
         assert r.status_code == 200, r.text
-        gen = os.path.join(pub_root, "current")
+        import glob
+        roots = glob.glob(os.path.join(pub_root, "tenant-*"))
+        assert len(roots) == 1
+        gen = os.path.join(roots[0], "current")
         engine, _info = engine_set.load_validated_engine(
             os.path.join(gen, "policy.json"),
             os.path.join(gen, "categories.json"))
         assert engine.decide("bad.example").action == "block"
         assert engine.decide("good.example").action == "allow"
+
+
+class TestCrossTenantIsolation:
+    """Negative tests: no cross-tenant read, overwrite, or deletion."""
+
+    def _tenant_client(self, engine, pub_root, name, email):
+        with session_scope(engine) as s:
+            tenant = Tenant(name=name)
+            s.add(tenant)
+            s.flush()
+            s.add(User(tenant_id=tenant.id, email=email,
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+        settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
+                             "KG_PUBLICATIONS_ROOT": pub_root})
+        c = TestClient(create_app(settings, engine=engine))
+        login(c, email)
+        return c
+
+    def test_second_tenant_publish_never_touches_first(self, engine, pub_root):
+        ca = self._tenant_client(engine, pub_root, "family-a", "a@x.com")
+        cb = self._tenant_client(engine, pub_root, "family-b", "b@x.com")
+
+        r = ca.post("/api/policies", json=dict(BASE, name="pa"), headers=HDR)
+        pid = r.json()["id"]
+        ca.post(f"/api/policies/{pid}/select", headers=HDR)
+        r = ca.post("/api/publications", headers=HDR)
+        assert r.status_code == 200, r.text
+
+        r = cb.post("/api/policies", json=dict(BASE, name="pb"), headers=HDR)
+        pid = r.json()["id"]
+        cb.post(f"/api/policies/{pid}/select", headers=HDR)
+        r = cb.post("/api/publications", headers=HDR)
+        assert r.status_code == 200, r.text  # no collision
+
+        # Both tenants have their own generation 1, intact.
+        import glob
+        gens = sorted(glob.glob(os.path.join(
+            pub_root, "tenant-*", "generations", "1", "policy.json")))
+        assert len(gens) == 2
+
+        # Each tenant's current shows only its own policy.
+        ma = ca.get("/api/publications/current").json()["manifest"]
+        mb = cb.get("/api/publications/current").json()["manifest"]
+        assert ma["policy"] == "pa"
+        assert mb["policy"] == "pb"
+        assert ma["tenant_id"] != mb["tenant_id"]
+
+        # Tenant A's published policy still decides correctly (not deleted).
+        import engine_set
+        gen = os.path.join(pub_root, f"tenant-{ma['tenant_id']}", "current")
+        engine_obj, _ = engine_set.load_validated_engine(
+            os.path.join(gen, "policy.json"),
+            os.path.join(gen, "categories.json"))
+        assert engine_obj.decide("bad.example").action == "block"
+
+    def test_replay_same_revision_is_refused_and_preserves_data(self,
+                                                                pub_root):
+        """A direct second publish with the same revision never deletes
+        the existing generation, even inside one tenant's root."""
+        from app.publisher import Publisher, PublicationError
+        from app.publication_ops import export_policy_documents
+        p, c = b'{"default_policy": "allow", "allowlist": [], "blocklist": [], "category_rules": {"allow": [], "block": []}}', b'{"domains": {}, "_meta": {}}'
+        pub = Publisher(pub_root)
+        with pub.locked():
+            pub.publish(1, p, c, {"k": "first"})
+        with pub.locked():
+            try:
+                pub.publish(1, p, c, {"k": "second"})
+                assert False, "replay must be refused"
+            except Exception:
+                pass
+        # Original generation untouched.
+        import json as _json
+        manifest = _json.loads(open(os.path.join(
+            pub_root, "generations", "1", "manifest.json")).read())
+        assert manifest["k"] == "first"
+        assert pub.current()["revision"] == 1
+
+    def test_publish_with_categories_file(self, engine, tmp_path):
+        """A built categories.json reaches the published generation."""
+        import subprocess
+        cat_out = str(tmp_path / "categories.json")
+        repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        subprocess.run(
+            [sys.executable, os.path.join(repo, "category-pipeline", "build.py"),
+             "--out", cat_out], check=True, capture_output=True)
+        pub_root = str(tmp_path / "pub")
+        with session_scope(engine) as s:
+            tenant = Tenant(name="family-cat")
+            s.add(tenant)
+            s.flush()
+            s.add(User(tenant_id=tenant.id, email="c@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+        settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
+                             "KG_PUBLICATIONS_ROOT": pub_root,
+                             "KG_CATEGORIES_FILE": cat_out})
+        c = TestClient(create_app(settings, engine=engine))
+        login(c, email="c@example.com")
+        r = c.post("/api/policies",
+                   json={"name": "pc", "default_policy": "allow",
+                         "blocklist": [], "allowlist": [],
+                         "category_allow": [], "category_block": ["gambling"]},
+                   headers=HDR)
+        assert r.status_code == 200, r.text
+        pid = r.json()["id"]
+        c.post(f"/api/policies/{pid}/select", headers=HDR)
+        r = c.post("/api/publications", headers=HDR)
+        assert r.status_code == 200, r.text
+
+        import engine_set
+        import glob
+        gen = os.path.join(glob.glob(os.path.join(
+            pub_root, "tenant-*", "current"))[0])
+        engine_obj, _ = engine_set.load_validated_engine(
+            os.path.join(gen, "policy.json"),
+            os.path.join(gen, "categories.json"))
+        assert engine_obj.decide("bet365.com").action == "block"
+        assert engine_obj.decide("wikipedia.org").action == "allow"
