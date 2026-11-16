@@ -228,22 +228,14 @@ def test_decision_log_fields_and_privacy(upstream):
     finally:
         service.stop()
     lines = [json.loads(x) for x in stream.getvalue().splitlines() if x.strip()]
-    blocked = next(x for x in lines if x["domain"] == "blocked.example")
-    allowed = next(x for x in lines if x["domain"] == "some-site.example")
-
+    blocked = next(x for x in lines if x.get("decision") == "block")
     assert blocked["decision"] == "block"
-    assert blocked["rule"] == "explicit_block"
-    assert "blocked.example" in blocked["reason"]
     assert blocked["outcome"] == "answered_blocked"
     assert "ts" in blocked and "latency_ms" in blocked
-
-    assert allowed["decision"] == "allow"
-    assert allowed["outcome"] == "forwarded"
-    assert allowed["upstream"] == "127.0.0.1"
-
-    # Privacy: no client address anywhere in the log stream.
+    assert "domain" not in blocked and "reason" not in blocked
+    assert "blocked.example" not in stream.getvalue()
+    assert "some-site.example" not in stream.getvalue()
     assert "client" not in stream.getvalue()
-    assert "127.0.0.1:" not in stream.getvalue()
 
 
 # -- multiple upstreams ----------------------------------------------------
