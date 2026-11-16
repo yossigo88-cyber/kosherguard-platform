@@ -228,7 +228,9 @@ class TestEdgeStatus:
         # health is never inferred from configuration or issuance
         assert s["health"] == "unknown"
         assert "issuance" in s["health_note"]
-        assert s["dns_reporting"] == "not connected"
+        assert (s["dns_reporting"] ==
+                "connected - ingestion route live, no dns decisions "
+                "reported yet")
 
         dev = mk_device(client)
         token = mint(client, dev)
@@ -242,6 +244,15 @@ class TestEdgeStatus:
         assert s["reported"]["latest_received_at"] is not None
         # a reported decision still does not create a health signal
         assert s["health"] == "unknown"
+        # dns reporting status is evidenced by received dns decisions
+        assert "no dns decisions" in s["dns_reporting"]
+        doh = mint(client, dev, scope="doh")
+        client.post("/api/filter-logs",
+                    json={"decisions": [{"domain": "b.example",
+                                         "action": "block"}]},
+                    headers=bearer(doh))
+        s = client.get("/api/filter-status").json()
+        assert s["dns_reporting"] == "connected - dns decisions received"
 
     def test_status_requires_sign_in(self, client):
         c2 = TestClient(client.app)
