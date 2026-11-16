@@ -112,6 +112,40 @@ def resolve_enrollment(session: Session, enrollment_id: str | None,
     return row
 
 
+def resolve_or_bind(session: Session, enrollment_id: str | None,
+                    ) -> tuple[MDMEnrollment, bool]:
+    """Resolve X-Enrollment-ID to an enrollment record.
+
+    NanoMDM's device-channel enrollment ID IS the device UDID
+    (operations guide), and local records start as 'pending-*'
+    placeholders, so a real first check-in never matches by ID. The
+    association path: when no record has this ID, look for a pending
+    enrollment whose device_udid (recorded at enrollment creation from
+    the device record, never from this caller) equals it. A unique
+    match is bound to the real ID and returned with bound=True;
+    ambiguity or no match is a refusal. Callers must have
+    authenticated the peer via verify_hmac first, so the UDID arrives
+    only from a device NanoMDM authenticated via the MDM protocol."""
+    if not enrollment_id:
+        raise DDMError("missing X-Enrollment-ID", 400)
+    enrollment = session.scalar(select(MDMEnrollment).where(
+        MDMEnrollment.enrollment_id == enrollment_id))
+    if enrollment is not None:
+        return enrollment, False
+    candidates = session.scalars(select(MDMEnrollment).where(
+        MDMEnrollment.device_udid == enrollment_id,
+        MDMEnrollment.state == "pending")).all()
+    if len(candidates) > 1:
+        raise DDMError(
+            "multiple pending enrollments match this device; "
+            "bind explicitly via the enrollment-checkin sync", 409)
+    if not candidates:
+        raise DDMError("unknown enrollment", 404)
+    enrollment = candidates[0]
+    enrollment.enrollment_id = enrollment_id
+    return enrollment, True
+
+
 # States that authorize DDM serving. 'pending' is a local placeholder
 # created before any device check-in; it must never authorize.
 DDM_AUTHORIZED_STATES = ("enrolled", "active")
