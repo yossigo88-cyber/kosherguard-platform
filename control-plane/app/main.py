@@ -893,15 +893,16 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     @app.post("/api/mdm/enrollment-checkin")
     async def mdm_enrollment_checkin(request: Request,
                                      session: Session = Depends(db_session)):
-        """NanoMDM enrollment-info sync hook (see ddm_ops docstring).
+        """NanoMDM enrollment-confirmation sync hook (see ddm_ops).
 
-        The deployment wires NanoMDM's enrollment-info retrieval to
-        POST here when a device checks in; the HMAC authenticates the
+        The deployment syncs NanoMDM's enrollment confirmation to POST
+        here when a device checks in; the HMAC authenticates the
         NanoMDM peer, and confirm_checkin records what NanoMDM
         authenticated through the MDM protocol: the device is enrolled
-        (state pending -> enrolled) and its reported supervision state.
-        No session cookie/CSRF: identity is the HMAC peer, the
-        enrollment ID in the body is a lookup key only."""
+        (state pending -> enrolled). It records ENROLLMENT ONLY -
+        supervision is device-reported state and is never accepted
+        from this route. No session cookie/CSRF: identity is the HMAC
+        peer, the enrollment ID in the body is a lookup key only."""
         body = await request.body()
         try:
             ddm_ops.verify_hmac(settings.ddm_hmac_key,
@@ -909,20 +910,17 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                                 body)
             payload = json.loads(body.decode() or "{}")
             enrollment = ddm_ops.confirm_checkin(
-                session, payload.get("enrollment_id"),
-                supervised=bool(payload.get("supervised")))
+                session, payload.get("enrollment_id"))
         except ddm_ops.DDMError as exc:
             return error(exc.status, str(exc))
         except (ValueError, UnicodeDecodeError):
             return error(400, "invalid JSON body")
         ScopedSession(session, enrollment.tenant_id).audit(
             "mdm.enrollment_checkin",
-            f"{enrollment.enrollment_id}: state={enrollment.state} "
-            f"supervised={enrollment.supervision_verified}")
+            f"{enrollment.enrollment_id}: state={enrollment.state}")
         session.commit()
         return {"enrollment_id": enrollment.enrollment_id,
-                "state": enrollment.state,
-                "supervision_verified": enrollment.supervision_verified}
+                "state": enrollment.state}
 
     @app.get("/api/ddm/tokens")
     def ddm_tokens(enrollment: MDMEnrollment = Depends(_ddm_enrollment),
