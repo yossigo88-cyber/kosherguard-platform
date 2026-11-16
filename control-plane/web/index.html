@@ -170,6 +170,32 @@ h2 { margin-bottom:.4rem; }
     </table>
   </section>
 
+  <section class="panel hidden" id="credentials-panel">
+    <h2>Apple credentials</h2>
+    <p id="cred-env-banner" class="error"></p>
+    <p>Uploaded artifacts (APNs auth key, MDM push certificate, ADE
+       server token, url-filter entitlement) are stored on the server
+       only; this screen shows metadata (fingerprint, size, version),
+       never the content. Owner role required.</p>
+    <form id="cred-form">
+      <label>Kind <select id="cred-kind">
+        <option value="apns_auth_key">APNs auth key</option>
+        <option value="mdm_push_cert">MDM push certificate</option>
+        <option value="ade_server_token">ADE server token</option>
+        <option value="urlfilter_entitlement">URL filter entitlement</option>
+        <option value="other">Other</option>
+      </select></label>
+      <label>Label <input id="cred-label" placeholder="fixture APNs key" required></label>
+      <label>Content (base64) <textarea id="cred-content" rows="4" required></textarea></label>
+      <button type="submit">Upload</button>
+      <div class="error" id="cred-error"></div>
+      <div class="ok" id="cred-ok"></div>
+    </form>
+    <table id="cred-table">
+      <thead><tr><th>Kind</th><th>Label</th><th>SHA-256</th><th>Bytes</th><th>Env</th><th>Version</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
   <section class="panel hidden" id="signout-panel"><button id="signout">Sign out</button></section>
 </main>
 <script src="/web/app.js"></script>
