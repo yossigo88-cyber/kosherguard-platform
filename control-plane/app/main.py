@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from . import app_ops
 from . import mdm_ops, schedule_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
@@ -94,6 +95,17 @@ class EnrollmentBody(BaseModel):
 class MDMCommandBody(BaseModel):
     command: str
     payload: dict = {}
+class AppPolicyBody(BaseModel):
+    mode: str
+    bundle_ids: list[str] = []
+
+
+class AppCommandBody(BaseModel):
+    action: str
+    itunes_store_id: int | None = None
+    bundle_id: str | None = None
+
+
 
 
 class CredentialBody(BaseModel):
@@ -621,9 +633,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "created_at": row.created_at.isoformat()}
 
     def command_json(row):
+        import json as _json
         return {"id": row.id, "enrollment_pk": row.enrollment_pk,
                 "command": row.command, "status": row.status,
                 "applied": row.applied,
+                "payload": _json.loads(row.payload or "{}"),
                 "result_detail": row.result_detail,
                 "created_at": row.created_at.isoformat()}
 
@@ -737,6 +751,71 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                         User.tenant_id == tenant.id)).scalar(),
             })
         return {"tenants": rows}
+
+    # -- Application management (spec Part 10: Applications) -----------
+    # Per-device allow/block policy plus install/remove/list actions,
+    # all delivered through the standard MDM command lifecycle. Payload
+    # structures follow Apple's documented formats but are
+    # BUILT-UNVERIFIED on device until the spec Part 17 device-testing
+    # phase (see mdm/app_management.py).
+    @app.get("/api/devices/{device_id}/app-policy")
+    def get_app_policy(device_id: int,
+                       user: User = Depends(current_user),
+                       session: Session = Depends(db_session)):
+        try:
+            return app_ops.get_policy(session, user.tenant_id, device_id)
+        except app_ops.AppOpsError as exc:
+            return error(exc.status, str(exc))
+
+    @app.put("/api/devices/{device_id}/app-policy",
+             dependencies=[Depends(require_csrf_header)])
+    def put_app_policy(device_id: int, body: AppPolicyBody,
+                       user: User = Depends(current_user),
+                       session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        try:
+            result = app_ops.put_policy(session, user.tenant_id, device_id,
+                                        body.mode, body.bundle_ids, user.id)
+        except app_ops.AppOpsError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return result
+
+    @app.post("/api/devices/{device_id}/app-policy/apply",
+              dependencies=[Depends(require_csrf_header)])
+    def apply_app_policy(device_id: int,
+                         user: User = Depends(current_user),
+                         session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        try:
+            row = app_ops.apply_policy(session, user.tenant_id, device_id,
+                                       user.id, adapter=make_adapter())
+        except app_ops.AppOpsError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return command_json(row)
+
+    @app.post("/api/devices/{device_id}/app-commands",
+              dependencies=[Depends(require_csrf_header)])
+    def queue_app_command(device_id: int, body: AppCommandBody,
+                          user: User = Depends(current_user),
+                          session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        try:
+            row = app_ops.queue_app_command(
+                session, user.tenant_id, device_id, body.action, user.id,
+                itunes_store_id=body.itunes_store_id,
+                bundle_id=body.bundle_id, adapter=make_adapter())
+        except app_ops.AppOpsError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return command_json(row)
 
     # -- Device scoped-credential issuance (M6, extended for 8B) -------
 
