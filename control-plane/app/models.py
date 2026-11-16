@@ -35,6 +35,7 @@ class Tenant(Base):
     __tablename__ = "tenants"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    blocked_log_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7, server_default="7")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -63,6 +64,7 @@ class AuthSession(Base):
         ForeignKey("users.id"), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(
         String(64), nullable=False, unique=True, index=True)
+    mfa_verified: Mapped[bool] = mapped_column(nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(
