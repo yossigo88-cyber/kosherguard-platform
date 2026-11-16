@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -592,7 +592,7 @@ function renderSchedules() {
     `<tr><td>${esc(sc.name)}</td>` +
     `<td>${sc.days.map(d => DAY_NAMES[d]).join(" ")}</td>` +
     `<td>${fmtMin(sc.start)}-${fmtMin(sc.end)}</td>` +
-    `<td>${esc(sc.timezone)}</td>` +
+    `<td>${esc(sc.timezone)} ${esc(sc.start_date || "")} ${esc(sc.end_date || "")}</td>` +
     `<td>${esc([...sc.block_categories, ...sc.block_domains].join(", "))}</td>` +
     `<td>${sc.enabled ? "yes" : "no"}</td>` +
     `<td><button class="link" data-rmsched="${esc(sc.name)}">remove</button></td></tr>`
@@ -632,6 +632,8 @@ $("schedule-form").addEventListener("submit", async (e) => {
     block_categories: split($("s-cats").value),
     block_domains: split($("s-doms").value),
     enabled: $("s-enabled").checked};
+  if ($("s-first-date").value) entry.start_date = $("s-first-date").value;
+  if ($("s-last-date").value) entry.end_date = $("s-last-date").value;
   const others = scheduleList.filter(sc => sc.name !== entry.name);
   if (await putSchedules([...others, entry])) {
     $("s-name").value = "";
@@ -718,4 +720,27 @@ $("cred-form").addEventListener("submit", async (e) => {
   } else {
     err.textContent = (r.body && r.body.error) || "Upload failed.";
   }
+});
+
+let publicationJobId = null;
+let publicationRequestKey = null;
+async function showPublicationJob(r) {
+  if (r.status !== 200) {
+    $("publication-job-status").textContent = r.body.error || "Job unavailable";
+    return;
+  }
+  publicationJobId = r.body.id;
+  $("publication-job-status").textContent = `Job ${r.body.id}: ${r.body.status}; attempts ${r.body.attempts}. ` +
+    (r.body.status === "completed" ? "Files published; device enforcement is not verified." :
+     "Requires the separately running publication worker.");
+  if (r.body.status === "completed" || r.body.status === "failed") publicationRequestKey = null;
+}
+$("publication-queue").addEventListener("click", async () => {
+  // Retain this key across transient client retries, not one job per click.
+  publicationRequestKey = publicationRequestKey || crypto.randomUUID();
+  await showPublicationJob(await api("/api/publications/jobs", {method: "POST",
+    headers: HDR, body: JSON.stringify({request_key: publicationRequestKey})}));
+});
+$("publication-check").addEventListener("click", async () => {
+  if (publicationJobId) await showPublicationJob(await api(`/api/publications/jobs/${publicationJobId}`));
 });
