@@ -58,3 +58,47 @@
   tests/test_url_filter.py
 - deploy/{monitoring.md,prometheus.yml.example,COSTS.md},
   docs/setup/APPLE_CREDENTIALS.md
+
+## Security hardening follow-up (2026-11-16, post-review)
+
+Two weaknesses found in the account self-service code on inspection
+AFTER its first publish; both fixed openly with before/after evidence.
+These are new-account hardening issues, distinct in kind from the HELD
+cross-tenant/policy findings: every sensitive operation here required
+the account's own fresh password, so a stolen session alone could not
+exploit either, and no other tenant's data was reachable.
+
+1. Stateless MFA enrollment (BEFORE): enroll-start returned a
+   server-generated secret, but enroll-confirm accepted ANY
+   client-supplied secret + valid code + the account password. No
+   expiry, no binding of the pending secret to the user or to a
+   server-issued value; "not persisted" meant "not verified", not
+   "safe". An attacker needed session AND password to abuse it
+   (already full compromise), so severity: hardening weakness, not a
+   stop-condition finding.
+   AFTER: PendingMfaEnrollment table (model + alembic 0006). The
+   secret is generated and stored server-side, one pending row per
+   user, 10-minute expiry, replaced on restart, deleted on confirm
+   (single-use) and on expiry. Confirm takes only {code, password}.
+   Tests: substitution attack rejected, expiry rejected + row cleared,
+   restart invalidates the old code, pending bound to the caller's
+   user only, confirm-without-start 400.
+
+2. Sessions surviving password change (BEFORE): changing the account
+   password left every existing session valid, so the standard
+   compromise-remediation step would not eject a stolen session.
+   AFTER: password-change deletes the account's OTHER auth sessions
+   and audits the count ("other_sessions_invalidated=N"). Test: a
+   second logged-in client gets 401 afterwards while the changing
+   session survives.
+
+3. UI staleness (BEFORE): the guardians table showed the admin as MFA
+   "not enrolled" immediately after successful enrollment while the
+   account panel showed MFA ON. AFTER: the guardian list refreshes
+   after enrollment; rendered evidence (guard-09 screenshot) shows
+   both views agreeing.
+
+Evidence: control-plane suite 116 -> 122 tests on head c781438;
+rendered pipeline /tmp/evidence/run_guard.py re-run PASS (signed-out
+invite acceptance in a cookie-less context, role change, password
+change, MFA enrollment with a real TOTP code, network log captured).
