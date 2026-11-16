@@ -24,15 +24,19 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import app_ops
 from . import ddm_ops, filter_log_ops
-from . import mdm_ops, schedule_ops, security
+from . import mdm_ops
+from .ddm_routes import register_ddm_routes
+from .guardian_routes import register_guardian_routes
+from .staff_routes import (ALL_STAFF, fresh_check,
+                           register_staff_routes, require_staff)
+from . import schedule_ops, security
+from mdm.adapter import DESTRUCTIVE_COMMANDS
 from .config import Settings
 from .db import ScopedSession, make_engine
-from .models import (AuthSession, LoginAttempt,
+from .models import (StaffRole, SensitiveCommandApproval, AuthSession, LoginAttempt,
                      PendingMfaEnrollment, Role, User, Tenant)
 
 
-class DelegationBody(BaseModel):
-    capabilities: list[str]
 
 
 class GroupBody(BaseModel):
@@ -56,31 +60,8 @@ class CategoryRuleBody(BaseModel):
     source: str = "manual-review"
 
 
-class InviteBody(BaseModel):
-    email: str
-    role: str = "guardian"
 
 
-class RoleBody(BaseModel):
-    role: str
-
-
-class AcceptInviteBody(BaseModel):
-    token: str
-    password: str
-
-
-class MfaResetBody(BaseModel):
-    password: str
-
-SESSION_COOKIE = "kg_session"
-CSRF_HEADER = "x-kosherguard-request"
-MAX_FAILURES = 5
-LOCKOUT_SECONDS = 60
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class PolicyBody(BaseModel):
@@ -116,6 +97,11 @@ class EnrollmentBody(BaseModel):
 class MDMCommandBody(BaseModel):
     command: str
     payload: dict = {}
+    # Required only for destructive commands (Answer 25): fresh TOTP
+    # verification and an explicit confirmation equal to the command.
+    totp_code: str | None = None
+    confirm: str | None = None
+    reason: str | None = None
 class RetentionBody(BaseModel):
     days: int = Field(strict=True, ge=1, le=30)
 
@@ -163,6 +149,15 @@ class PasswordChangeBody(BaseModel):
 class MfaConfirmBody(BaseModel):
     code: str
     password: str
+
+
+SESSION_COOKIE = "kg_session"
+CSRF_HEADER = "x-kosherguard-request"
+MAX_FAILURES = 5
+LOCKOUT_SECONDS = 60
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def error(status: int, message: str) -> JSONResponse:
@@ -262,7 +257,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         # A password-only login is a restricted enrollment session, not
         # permission to operate the tenant. Read checks also cover existing
         # sessions, role promotion and accounts whose MFA was reset.
-        if (user.role in (Role.owner, Role.guardian) or user.is_platform_admin):
+        if (user.role in (Role.owner, Role.guardian) or user.is_platform_admin
+                or user.staff_role is not None):
             enrollment_paths = {"/api/auth/me", "/api/auth/logout",
                 "/api/auth/mfa/enroll-start", "/api/auth/mfa/enroll-confirm",
                 "/api/auth/password-change"}
@@ -329,7 +325,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             SESSION_COOKIE, token, httponly=True, samesite="strict",
             secure=settings.secure_cookies, max_age=int(lifetime.total_seconds()))
         return {"status": "signed_in", "role": user.role.value,
-                "mfa_required": bool((user.role != Role.viewer or user.is_platform_admin) and not user.totp_secret)}
+                "mfa_required": bool((user.role != Role.viewer or user.is_platform_admin or user.staff_role is not None) and not user.totp_secret)}
 
     @app.post("/api/auth/logout", dependencies=[Depends(require_csrf_header)])
     def logout(request: Request, response: Response,
@@ -478,7 +474,6 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                          IssuedCredential, MDMEnrollment, Policy,
                          PolicyVersion, PublicationState)
 
-    GUARDIAN_CAPABILITIES = {"policies", "schedules", "devices", "groups", "apps", "publish", "exceptions"}
 
     def require_guardian(user: User, capability="devices") -> JSONResponse | None:
         if user.role == Role.owner:
@@ -882,6 +877,40 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return denied
         if user.role != Role.owner and body.command not in {"DeviceInformation", "ProfileList", "InstalledApplicationList", "ManagedApplicationList"}:
             return error(403,"profile/application/system changes require owner approval")
+        if body.command in DESTRUCTIVE_COMMANDS:
+            # Answer 25: fresh verification + explicit confirmation, then
+            # the request waits for a DIFFERENT privileged approver.
+            # Nothing is queued to the device here.
+            # A support/read-only staff account is limited to
+            # troubleshooting even if it also holds a tenant owner role
+            # (Answer 25: support gets no destructive commands).
+            if user.staff_role in (StaffRole.support_admin.value,
+                                   StaffRole.read_only.value):
+                return error(403, "destructive commands are not available to this role")
+            if user.role != Role.owner and user.staff_role not in (
+                    StaffRole.owner.value, StaffRole.security_admin.value):
+                return error(403, "destructive commands are not available to this role")
+            bad = fresh_check(error, user, body.totp_code, body.confirm, body.command)
+            if bad is not None:
+                return bad
+            if not (body.reason or "").strip():
+                return error(400, "a reason is required for destructive commands")
+            approval = SensitiveCommandApproval(
+                tenant_id=user.tenant_id, enrollment_pk=enrollment_pk,
+                operation=body.command, payload=json.dumps(body.payload or {}),
+                reason=body.reason.strip(), status="pending",
+                requested_by_user_id=user.id,
+                expires_at=utcnow() + timedelta(hours=1))
+            session.add(approval)
+            session.flush()
+            ScopedSession(session, user.tenant_id).audit(
+                "mdm.sensitive.request",
+                f"{body.command} on enrollment {enrollment_pk}: {body.reason.strip()}",
+                actor_user_id=user.id)
+            session.commit()
+            return JSONResponse(status_code=202, content={
+                "approval_id": approval.id, "status": "pending",
+                "detail": "awaiting approval by a second privileged user; nothing sent to the device"})
         try:
             row = mdm_ops.issue_command(
                 session, user.tenant_id, enrollment_pk, body.command,
@@ -938,12 +967,18 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                  "at": a.created_at.isoformat()} for a in recent],
         }
 
+    register_staff_routes(app, error=error,
+        current_user=current_user, db_session=db_session,
+        require_csrf_header=require_csrf_header, make_adapter=make_adapter,
+        command_json=command_json, require_guardian=require_guardian,
+        mdm_command_body=MDMCommandBody)
+
     @app.get("/api/admin/tenants")
     def admin_list_tenants(user: User = Depends(current_user),
                            session: Session = Depends(db_session)):
         """Platform-admin customer list: tenant names and counts only -
         never another tenant's policies, devices or user details."""
-        denied = require_platform_admin(user)
+        denied = require_staff(error, user, *ALL_STAFF)
         if denied is not None:
             return denied
         from sqlalchemy import func
@@ -1095,107 +1130,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return filter_log_ops.edge_status(session, user.tenant_id)
 
 
-    # -- DDM serving (spec Part 10; NanoMDM -dm forwards device DDM
-    # check-ins here; see app/ddm_ops.py docstring for the verified
-    # protocol sources). No session cookie/CSRF: identity is the
-    # X-Enrollment-ID header NanoMDM attaches, plus optional HMAC.
-    def _ddm_enrollment(request: Request,
-                        session: Session = Depends(db_session)):
-        try:
-            body = getattr(request.state, "_ddm_body", None)
-            ddm_ops.verify_hmac(settings.ddm_hmac_key,
-                                request.headers.get("x-hmac-signature"),
-                                body or b"")
-            enrollment, bound = ddm_ops.resolve_or_bind(
-                session, request.headers.get("x-enrollment-id"))
-            activated = ddm_ops.ensure_active(session, enrollment)
-            if bound or activated:
-                ScopedSession(session, enrollment.tenant_id).audit(
-                    "mdm.enrollment_activated",
-                    f"{enrollment.enrollment_id}: "
-                    f"bound={bound} pending -> enrolled "
-                    "(first authenticated DDM check-in)")
-                session.commit()
-        except ddm_ops.DDMError as exc:
-            raise HTTPException(exc.status, str(exc))
-        return enrollment
-
-    @app.post("/api/mdm/enrollment-checkin")
-    async def mdm_enrollment_checkin(request: Request,
-                                     session: Session = Depends(db_session)):
-        """NanoMDM enrollment-confirmation sync hook (see ddm_ops).
-
-        The deployment syncs NanoMDM's enrollment confirmation to POST
-        here when a device checks in; the HMAC authenticates the
-        NanoMDM peer, and confirm_checkin records what NanoMDM
-        authenticated through the MDM protocol: the device is enrolled
-        (state pending -> enrolled). It records ENROLLMENT ONLY -
-        supervision is device-reported state and is never accepted
-        from this route. No session cookie/CSRF: identity is the HMAC
-        peer, the enrollment ID in the body is a lookup key only."""
-        body = await request.body()
-        try:
-            ddm_ops.verify_hmac(settings.ddm_hmac_key,
-                                request.headers.get("x-hmac-signature"),
-                                body)
-            payload = json.loads(body.decode() or "{}")
-            enrollment = ddm_ops.confirm_checkin(
-                session, payload.get("enrollment_id"),
-                nanomdm_id=payload.get("nanomdm_id"))
-        except ddm_ops.DDMError as exc:
-            return error(exc.status, str(exc))
-        except (ValueError, UnicodeDecodeError):
-            return error(400, "invalid JSON body")
-        ScopedSession(session, enrollment.tenant_id).audit(
-            "mdm.enrollment_checkin",
-            f"{enrollment.enrollment_id}: state={enrollment.state}")
-        session.commit()
-        return {"enrollment_id": enrollment.enrollment_id,
-                "state": enrollment.state}
-
-    @app.get("/api/ddm/tokens")
-    def ddm_tokens(enrollment: MDMEnrollment = Depends(_ddm_enrollment),
-                   session: Session = Depends(db_session)):
-        return ddm_ops.tokens(session, enrollment)
-
-    @app.get("/api/ddm/declaration-items")
-    def ddm_declaration_items(
-            enrollment: MDMEnrollment = Depends(_ddm_enrollment),
-            session: Session = Depends(db_session)):
-        return ddm_ops.declaration_items(session, enrollment)
-
-    @app.get("/api/ddm/declaration/{dtype}/{identifier}")
-    def ddm_declaration(dtype: str, identifier: str,
-                        enrollment: MDMEnrollment = Depends(_ddm_enrollment),
-                        session: Session = Depends(db_session)):
-        try:
-            return ddm_ops.get_declaration(session, enrollment, dtype,
-                                           identifier)
-        except ddm_ops.DDMError as exc:
-            return error(exc.status, str(exc))
-
-    @app.put("/api/ddm/status")
-    async def ddm_status(request: Request,
-                         session: Session = Depends(db_session)):
-        body = await request.body()
-        request.state._ddm_body = body
-        try:
-            ddm_ops.verify_hmac(settings.ddm_hmac_key,
-                                request.headers.get("x-hmac-signature"), body)
-            enrollment, bound = ddm_ops.resolve_or_bind(
-                session, request.headers.get("x-enrollment-id"))
-            activated = ddm_ops.ensure_active(session, enrollment)
-            if bound or activated:
-                ScopedSession(session, enrollment.tenant_id).audit(
-                    "mdm.enrollment_activated",
-                    f"{enrollment.enrollment_id}: "
-                    f"bound={bound} pending -> enrolled "
-                    "(first authenticated DDM check-in)")
-            ddm_ops.record_status(session, enrollment, body)
-        except ddm_ops.DDMError as exc:
-            return error(exc.status, str(exc))
-        session.commit()
-        return {"received": True}
+    register_ddm_routes(app, error=error, db_session=db_session,
+                        settings=settings)
 
     # -- Device scoped-credential issuance (M6, extended for 8B) -------
 
@@ -1470,13 +1406,6 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     credential_routes()
 
-    # -- Guardian account lifecycle (M6) ------------------------------
-
-    # Approved requirement: multiple authorized parent/guardian
-    # accounts per family tenant. Owners invite; invite tokens are
-    # single-use, expiring, and stored hashed.
-    from .models import InviteToken
-
     def require_owner(user: User) -> JSONResponse | None:
         if user.role != Role.owner:
             return error(403, "owner role required")
@@ -1488,154 +1417,20 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "delegated_settings": json.loads(row.delegated_settings),
                 "created_at": row.created_at.isoformat()}
 
-    @app.put("/api/guardians/{user_id}/delegation", dependencies=[Depends(require_csrf_header)])
-    def set_delegation(user_id: int, body: DelegationBody, user: User = Depends(current_user), session: Session = Depends(db_session)):
-        denied=require_owner(user)
-        if denied is not None:return denied
-        target=session.get(User,user_id)
-        if target is None or target.tenant_id!=user.tenant_id:return error(404,"guardian not found")
-        if target.role != Role.guardian:return error(400,"delegation is for guardian accounts only")
-        if not set(body.capabilities) <= GUARDIAN_CAPABILITIES:return error(400,"unsupported delegated capability")
-        target.delegated_settings=json.dumps(sorted(set(body.capabilities)))
-        ScopedSession(session,user.tenant_id).audit("guardian.delegation",f"user {user_id}: {target.delegated_settings}",actor_user_id=user.id)
-        return {"id":target.id,"delegated_settings":json.loads(target.delegated_settings)}
-
-    @app.get("/api/guardians")
-    def list_guardians(user: User = Depends(current_user),
-                       session: Session = Depends(db_session)):
-        rows = ScopedSession(session, user.tenant_id).query(
-            User, User.id).all() if hasattr(ScopedSession, "query") else             session.execute(select(User).where(
-                User.tenant_id == user.tenant_id)).scalars().all()
-        return {"guardians": [user_json(u) for u in rows]}
-
-    @app.post("/api/guardians/invite",
-              dependencies=[Depends(require_csrf_header)])
-    def invite_guardian(body: InviteBody,
-                        user: User = Depends(current_user),
-                        session: Session = Depends(db_session)):
-        denied = require_owner(user)
-        if denied is not None:
-            return denied
-        email = body.email.strip().lower()
-        if "@" not in email:
-            return error(400, "invalid email")
-        if body.role not in ("guardian", "viewer", "owner"):
-            return error(400, "invalid role")
-        existing = session.execute(select(User).where(
-            User.tenant_id == user.tenant_id,
-            User.email == email)).scalar_one_or_none()
-        if existing is not None:
-            return error(409, "email already has an account")
-        raw = security.new_session_token()
-        invite = InviteToken(
-            tenant_id=user.tenant_id, email=email, role=Role(body.role),
-            token_hash=security.hash_session_token(raw),
-            invited_by_user_id=user.id,
-            expires_at=utcnow() + timedelta(hours=72))
-        session.add(invite)
-        ScopedSession(session, user.tenant_id).audit(
-            "guardian.invite", email, actor_user_id=user.id)
-        session.commit()
-        # The raw token is returned once; delivery to the invitee is
-        # out of band. It is never stored or logged.
-        return {"invited": email, "role": body.role,
-                "invite_token": raw,
-                "expires_at": invite.expires_at.isoformat()}
-
-    @app.post("/api/invites/accept",
-              dependencies=[Depends(require_csrf_header)])
-    def accept_invite(body: AcceptInviteBody,
-                      session: Session = Depends(db_session)):
-        invite = session.execute(select(InviteToken).where(
-            InviteToken.token_hash == security.hash_session_token(
-                body.token))).scalar_one_or_none()
-        if invite is None or invite.used_at is not None:
-            return error(400, "invalid or used invite")
-        if invite.expires_at < utcnow():
-            return error(400, "invite expired")
-        if len(body.password) < 12:
-            return error(400, "password too short")
-        existing = session.execute(select(User).where(
-            User.tenant_id == invite.tenant_id,
-            User.email == invite.email)).scalar_one_or_none()
-        if existing is not None:
-            return error(409, "email already has an account")
-        new_user = User(
-            tenant_id=invite.tenant_id, email=invite.email,
-            password_hash=security.hash_password(body.password),
-            role=invite.role)
-        session.add(new_user)
-        invite.used_at = utcnow()
-        session.flush()
-        ScopedSession(session, invite.tenant_id).audit(
-            "guardian.accept_invite", invite.email,
-            actor_user_id=new_user.id)
-        session.commit()
-        return {"accepted": invite.email, "role": invite.role.value}
-
-    @app.put("/api/guardians/{user_id}/role",
-             dependencies=[Depends(require_csrf_header)])
-    def change_role(user_id: int, body: RoleBody,
-                    user: User = Depends(current_user),
-                    session: Session = Depends(db_session)):
-        denied = require_owner(user)
-        if denied is not None:
-            return denied
-        if body.role not in ("guardian", "viewer", "owner"):
-            return error(400, "invalid role")
-        target = session.get(User, user_id)
-        if target is None or target.tenant_id != user.tenant_id:
-            return error(404, "guardian not found")
-        if target.id == user.id:
-            return error(400, "cannot change your own role")
-        target.role = Role(body.role)
-        ScopedSession(session, user.tenant_id).audit(
-            "guardian.role_change",
-            f"{target.email} -> {body.role}", actor_user_id=user.id)
-        session.commit()
-        return user_json(target)
-
-    @app.post("/api/guardians/{user_id}/mfa-reset",
-              dependencies=[Depends(require_csrf_header)])
-    def mfa_reset(user_id: int, body: MfaResetBody,
-                  user: User = Depends(current_user),
-                  session: Session = Depends(db_session)):
-        denied = require_owner(user)
-        if denied is not None:
-            return denied
-        # Fresh authentication: an unattended session must not be
-        # enough to strip a guardian's MFA.
-        if not security.verify_password(body.password,
-                                        user.password_hash):
-            return error(403, "fresh authentication failed")
-        target = session.get(User, user_id)
-        if target is None or target.tenant_id != user.tenant_id:
-            return error(404, "guardian not found")
-        if target.id == user.id:
-            return error(400, "cannot remove your own MFA; use another verified owner")
-        target.totp_secret = None
-        for old in session.scalars(select(AuthSession).where(AuthSession.user_id == target.id)):
-            session.delete(old)
-        pending = session.scalar(select(PendingMfaEnrollment).where(PendingMfaEnrollment.user_id == target.id))
-        if pending is not None:
-            session.delete(pending)
-        ScopedSession(session, user.tenant_id).audit(
-            "guardian.mfa_reset", target.email, actor_user_id=user.id)
-        session.commit()
-        return user_json(target)
+    register_guardian_routes(app, error=error,
+        current_user=current_user, db_session=db_session,
+        require_csrf_header=require_csrf_header, require_owner=require_owner,
+        user_json=user_json, settings=settings)
 
     # -- Platform category dataset administration (M6) -----------------
 
     # Approved fallback for the commercial category feed: a
     # human-reviewed seed dataset managed through these routes.
-    # Platform-admin only (is_platform_admin is set out of band, never
-    # via the API); guardians get 403.
+    # Staff endpoints are gated by staff_role (Answer 29 five roles).
+    # Legacy is_platform_admin rows are staff owner via alembic 0017;
+    # staff_role itself is set out of band or by a staff owner, never
+    # self-assigned. Guardians get 403.
     from .models import CategoryRule
-
-    def require_platform_admin(user: User) -> JSONResponse | None:
-        if user.role != Role.owner or not getattr(user, "is_platform_admin", False):
-            return error(403, "platform admin required")
-        return None
 
     def rule_json(row):
         return {
@@ -1652,7 +1447,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     @app.get("/api/admin/categories")
     def admin_list_categories(user: User = Depends(current_user),
                               session: Session = Depends(db_session)):
-        denied = require_platform_admin(user)
+        denied = require_staff(error, user, StaffRole.owner, StaffRole.security_admin)
         if denied is not None:
             return denied
         rows = session.execute(
@@ -1664,7 +1459,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def admin_add_category(body: CategoryRuleBody,
                            user: User = Depends(current_user),
                            session: Session = Depends(db_session)):
-        denied = require_platform_admin(user)
+        denied = require_staff(error, user, StaffRole.owner, StaffRole.security_admin)
         if denied is not None:
             return denied
         domain = body.domain.strip().lower().rstrip(".")
@@ -1705,7 +1500,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def admin_deactivate_category(rule_id: int,
                                   user: User = Depends(current_user),
                                   session: Session = Depends(db_session)):
-        denied = require_platform_admin(user)
+        denied = require_staff(error, user, StaffRole.owner, StaffRole.security_admin)
         if denied is not None:
             return denied
         row = session.get(CategoryRule, rule_id)
@@ -1724,7 +1519,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         """Active rules in the exact shape the publication pipeline's
         categories file (KG_CATEGORIES_FILE) carries, so the DB can
         become the dataset source of truth."""
-        denied = require_platform_admin(user)
+        denied = require_staff(error, user, StaffRole.owner, StaffRole.security_admin)
         if denied is not None:
             return denied
         rows = session.execute(
