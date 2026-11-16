@@ -38,6 +38,21 @@ h2 { margin-bottom:.4rem; }
       <div class="error" id="login-error"></div>
     </form>
   </section>
+  <section class="panel" id="accept-panel">
+    <h2>Accept an invitation</h2>
+    <p class="muted">Invited to a family? Paste the token from your
+    invite link here. No sign-in needed - accepting creates your
+    account.</p>
+    <form id="invite-accept-form">
+      <label>Invite token <input id="a-token" required></label>
+      <label>Choose a password (12+ characters) <input id="a-password"
+        type="password" required minlength="12"></label>
+      <button type="submit">Accept invitation</button>
+      <span class="error" id="accept-error"></span>
+      <span class="ok" id="accept-ok"></span>
+    </form>
+  </section>
+
 
   <section class="panel hidden" id="overview-panel">
     <h2>Overview</h2>
@@ -196,6 +211,64 @@ h2 { margin-bottom:.4rem; }
       <thead><tr><th>Kind</th><th>Label</th><th>SHA-256</th><th>Bytes</th><th>Env</th><th>Version</th><th>Status</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+  </section>
+  <section class="panel hidden" id="guardians-panel">
+    <h2>Guardians</h2>
+    <p class="muted">Accounts with access to this family. Inviting,
+    role changes and MFA reset require the owner role; MFA reset asks
+    for your password again (fresh authentication).</p>
+    <table id="guardians-table">
+      <thead><tr><th>Email</th><th>Role</th><th>MFA</th><th>Since</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h3 style="margin-top:1.2rem">Invite a guardian</h3>
+    <form id="guardian-invite-form">
+      <label>Email <input id="g-email" type="email" required></label>
+      <label>Role <select id="g-role">
+        <option value="guardian">guardian</option>
+        <option value="viewer">viewer</option>
+        <option value="owner">owner</option>
+      </select></label>
+      <button type="submit">Create invite</button>
+      <span class="error" id="guardian-error"></span>
+      <span class="ok" id="guardian-ok"></span>
+    </form>
+    <div id="invite-result" class="hidden">
+      <p class="muted">Invite created. Share this link out of band; the
+      token is shown once and never stored:</p>
+      <textarea id="invite-link" readonly rows="2"></textarea>
+    </div>
+  </section>
+  <section class="panel hidden" id="account-panel">
+    <h2>Your account</h2>
+    <h3>Change password</h3>
+    <form id="password-change-form">
+      <label>Current password <input id="pc-current" type="password"
+        required></label>
+      <label>New password (12+ characters) <input id="pc-new"
+        type="password" required minlength="12"></label>
+      <button type="submit">Change password</button>
+      <span class="error" id="pc-error"></span>
+      <span class="ok" id="pc-ok"></span>
+    </form>
+    <h3 style="margin-top:1.2rem">Two-factor authentication</h3>
+    <p id="mfa-state" class="muted"></p>
+    <div id="mfa-enroll-box" class="hidden">
+      <p class="muted">Add this secret to your authenticator app, then
+      enter the 6-digit code and your password to confirm. The secret
+      is shown once and never stored before confirmation.</p>
+      <textarea id="mfa-uri" readonly rows="2"></textarea>
+      <form id="mfa-confirm-form">
+        <label>Authenticator code <input id="mfa-code" required
+          inputmode="numeric" pattern="[0-9]{6}"></label>
+        <label>Your password <input id="mfa-password" type="password"
+          required></label>
+        <button type="submit">Confirm and enable</button>
+        <span class="error" id="mfa-error"></span>
+        <span class="ok" id="mfa-ok"></span>
+      </form>
+    </div>
+    <button id="mfa-start">Set up two-factor authentication</button>
   </section>
   <section class="panel hidden" id="signout-panel"><button id="signout">Sign out</button></section>
 </main>
