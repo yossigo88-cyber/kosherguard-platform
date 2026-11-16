@@ -57,7 +57,8 @@ async function refreshMdm() {
   };
   document.querySelector("#enrollments tbody").innerHTML = enrollmentList.map(e =>
     `<tr><td>${esc(deviceName(e.device_id))}</td><td>${esc(e.enrollment_id)}</td>` +
-    `<td>${esc(e.state)}</td><td>${e.supervised ? "yes" : "no"}</td>` +
+    `<td>${esc(e.state)}</td><td>${e.supervision_requested ? "yes" : "no"}</td>` +
+    `<td>${e.supervision_verified ? "yes" : "no"}</td>` +
     `<td>${esc(e.last_seen_at || "never")}</td>` +
     `<td><button class="link" data-history="${e.id}">history</button></td></tr>`).join("");
   $("c-enrollment").innerHTML = enrollmentList.map(e =>
@@ -68,7 +69,7 @@ $("enroll-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const r = await api("/api/mdm/enrollments", {method: "POST", headers: HDR,
     body: JSON.stringify({device_id: Number($("e-device").value),
-                          supervised: $("e-supervised").checked})});
+                          supervision_requested: $("e-supervised").checked})});
   $("enroll-error").textContent = r.status === 200 ? "" : (r.body.error || "failed");
   if (r.status === 200) await refreshMdm();
 });
