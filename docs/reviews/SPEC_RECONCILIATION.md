@@ -5,6 +5,15 @@ HEAD with held unpublished commits; "published" = exact GitHub
 full-platform-build content. Test counts are LOCAL unless a fresh-clone
 run of the exact published SHA says otherwise (that run is M7).
 
+M7 fresh-clone verification of the exact published head bda1279 is
+COMPLETE (2026-11-16, clean clone, per-suite runs): control-plane 107,
+mdm 34, url-filter-server 29, dns-edge 60, proxy-edge 25,
+category-pipeline 6, dashboard 276, filtering-engine 336 - all passing.
+One filtering-engine TCP test (large-response downstream) failed once in
+a full-suite run and passed in isolation; timing flake, not a code
+regression. Local tree counts that include the HELD unpublished fixes
+are labeled "local" and are never published-tree claims.
+
 Legend: DONE = implemented + local tests pass. BUILT-UNVERIFIED = code
 written, needs hardware/credentials/Apple approval to validate.
 PARTIAL = some of the requirement exists. OUTSTANDING = not built.
@@ -77,6 +86,14 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   before relay, token never logged; 25 proxy-edge tests pass locally.
 - dns-edge: runner + DoH per-device identity + per-device policy
   selection. DONE as code (fail-closed).
+- Scoped credential issuance/request path: guardian-facing issuance
+  route + scoped token mint/verify for doh (dns-edge), proxy
+  (policy-bound) and dataset (unbound) scopes - TestCredentialIssuance
+  and TestProxyScopeMinting (5) pass on the published tree at bda1279.
+  DNS credential issuance request path covered by the same route and
+  the dns-edge doh_identity request/verify code. Revocation registry,
+  revoke route and revocation feed are HELD (local only, 4 TestRevocation
+  tests) pending the user's decision on the held set.
 - NE content filter + iOS 26 NEURLFilter: iOS Swift sources +
   Xcode project structure, UNCOMPILED/UNSIGNED/UNTESTED.
   BUILT-UNVERIFIED.
@@ -108,8 +125,9 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 - control-plane/web: policies, devices, MDM (enrollments, commands,
   supervision split), categories panels - rendered evidence exists for
   MDM and categories. Overview, Customers, schedules UI, credentials
-  screen added (schedules + overview rendered; credentials screen
-  rendered evidence OWED).
+  screen added (schedules + overview rendered; credential-upload screen
+  rendered evidence exists - 3 screenshots: fixture banner, metadata
+  list with active/revoked states; minor textarea-width polish noted).
 
 ## Part 11 - Customer-facing website
 
@@ -157,15 +175,18 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   (fixture-only build): metadata-only API, secret bytes 0600 on
   server filesystem outside Git, rotate/revoke lifecycle, owner-only,
   tenant-scoped, environment-stamped with an on-screen fixture-only
-  banner. 12 tests pass locally. No credentials invented or hardcoded.
+  banner. 12 tests pass on the published tree at bda1279 (fresh clone).
+No credentials invented or hardcoded.
 
 ## Part 17 - Testing
 
-- Local suites: control-plane 111, mdm 34, url-filter-server 29,
-  dns-edge 60, proxy-edge 25, category-pipeline 6 - passing on the
-  local tree at the times their features landed. Published-tree
-  fresh-clone verification is M7 OUTSTANDING. No published-tree claim
-  is made for post-M5 files yet.
+- Published-tree fresh-clone verification at bda1279 (M7, clean
+  clone, per-suite): control-plane 107, mdm 34, url-filter-server 29,
+  dns-edge 60, proxy-edge 25, category-pipeline 6, dashboard 276,
+  filtering-engine 336 - all passing (one timing-flake TCP test passes
+  in isolation). Local tree including HELD fixes: control-plane 120
+  (delta = 6 default-mutation reproof + 3 per-tenant publication
+  negative tests + 4 revocation tests, all held unpublished).
 
 ## Part 18 - 22 deliverables
 
@@ -188,7 +209,9 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
 17 Monitoring and logging: DONE as config/docs (not running).
 18 Backup and recovery: PARTIAL (scripts, unexercised).
 19 Apple integration instructions: DONE (docs/setup).
-20 Testing results: PARTIAL (M7 fresh-clone owed).
+20 Testing results: published-tree M7 verification DONE at bda1279
+   (counts in Part 17); hardware/Apple-gated validation remains
+   BUILT-UNVERIFIED.
 21 Documentation: reviews per milestone + design docs. DONE, updated.
 22 Remaining limitations: THIS DOCUMENT + per-milestone reviews. DONE.
 
