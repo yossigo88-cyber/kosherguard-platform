@@ -62,14 +62,15 @@ def tenant_root_for_token(publications_root: str, payload: dict) -> str:
     refused: the resolved path must stay under publications_root.
     """
     tenant_id = str(payload.get("tenant_id", ""))
-    # Strict allowlist: tenant ids are simple identifiers. Anything
+    # Tenant ids are integers minted by the control plane; anything
     # with path semantics is refused before touching the filesystem.
-    if not tenant_id or not all(
-            ch.isalnum() or ch in "-_" for ch in tenant_id):
+    if not tenant_id.isdigit() or int(tenant_id) <= 0:
         raise IdentityError("bad tenant identity")
+    # Same layout the publisher writes (publication_ops.tenant_root):
+    # <root>/tenant-<id>, single level, no client-supplied segment.
     root = os.path.realpath(
-        os.path.join(publications_root, "tenants", tenant_id))
+        os.path.join(publications_root, f"tenant-{int(tenant_id)}"))
     base = os.path.realpath(publications_root)
-    if not (root == base or root.startswith(base + os.sep)):
+    if not (root.startswith(base + os.sep)):
         raise IdentityError("bad tenant identity")
     return root
