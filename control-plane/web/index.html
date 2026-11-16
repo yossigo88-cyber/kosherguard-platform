@@ -270,6 +270,21 @@ h2 { margin-bottom:.4rem; }
     </div>
     <button id="mfa-start">Set up two-factor authentication</button>
   </section>
+  <section class="panel hidden" id="filtering-panel">
+    <h2>Filtering activity</h2>
+    <p class="muted">Decisions the filtering proxy actually made and
+    reported for this family, newest first. If nothing appears, no
+    proxy is connected and reporting yet - an empty table here means no
+    reported activity, not "everything allowed". DNS decision reporting
+    is not connected.</p>
+    <p class="muted" id="filtering-status"></p>
+    <table id="filtering-table" class="hidden">
+      <thead><tr><th>Time</th><th>Device</th><th>Domain</th>
+        <th>Decision</th><th>Rule</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <section class="panel hidden" id="apps-panel">
     <h2>Applications</h2>
     <p class="muted">Per-device app allow/block list and install, remove
