@@ -21,12 +21,18 @@ fi
 [ -f "$BACKUP" ] || { echo "restore: backup not found: $BACKUP" >&2; exit 1; }
 
 # Verify the archive before touching the target.
-pg_restore --list "$BACKUP" > /dev/null \
+umask 077
+TOC="$(mktemp)"
+trap 'rm -f "$TOC"' EXIT
+pg_restore --list "$BACKUP" > "$TOC" \
     || { echo "restore: unreadable archive" >&2; exit 1; }
+# Old archives may include browsing history. Never restore that table's data.
+# Schema remains, so migrations can run before any service starts.
+sed -i '/ TABLE DATA public filter_decisions /d' "$TOC"
 
 # --clean drops objects that exist in the target; --exit-on-error
 # fails loudly rather than leaving a half-restored database.
 pg_restore --clean --if-exists --exit-on-error --no-owner \
-           --no-privileges --dbname="$URL" "$BACKUP"
+           --no-privileges --use-list="$TOC" --dbname="$URL" "$BACKUP"
 echo "restore: restored $BACKUP into target database"
-echo "restore: now start the services again"
+echo "restore: activity history excluded; run migrations and privacy maintenance before starting services"
