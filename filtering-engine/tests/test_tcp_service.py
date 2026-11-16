@@ -87,15 +87,33 @@ class FakeUpstream:
         self.queries = []             # parsed queries received
         self._lock = threading.Lock()
 
-        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp_sock.bind(("127.0.0.1", 0))
-        self.port = self.udp_sock.getsockname()[1]
+        self.udp_sock = None
         self.tcp_sock = None
-        if not no_tcp:
-            self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.tcp_sock.bind(("127.0.0.1", self.port))
-            self.tcp_sock.listen(16)
+        # Bind UDP to an ephemeral port, then TCP to the same number.
+        # Another process can grab the TCP port in between (observed as
+        # intermittent 'Address already in use' under parallel suite
+        # load), so retry the pair a few times.
+        for _attempt in range(20):
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.bind(("127.0.0.1", 0))
+            port = udp.getsockname()[1]
+            tcp = None
+            if not no_tcp:
+                tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    tcp.bind(("127.0.0.1", port))
+                except OSError:
+                    tcp.close()
+                    udp.close()
+                    continue
+                tcp.listen(16)
+            self.udp_sock = udp
+            self.port = port
+            self.tcp_sock = tcp
+            break
+        else:
+            raise OSError("could not bind matching UDP/TCP port pair")
 
         self._threads = [
             threading.Thread(target=self._serve_udp, daemon=True),
