@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))  # mfa_support et al.
 
 import pgserver  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
@@ -26,6 +27,6 @@ def engine(pg_uri):
     db_module.create_schema(eng)
     yield eng
     with eng.begin() as conn:
-        for table in ("category_rules", "invite_tokens", "mdm_commands", "mdm_enrollments", "login_attempts", "audit_events", "auth_sessions", "users", "tenants"):
+        for table in ("sensitive_command_approvals", "category_rules", "invite_tokens", "mdm_commands", "mdm_enrollments", "login_attempts", "audit_events", "auth_sessions", "users", "tenants"):
             conn.execute(text(f"TRUNCATE {table} CASCADE"))
     eng.dispose()
