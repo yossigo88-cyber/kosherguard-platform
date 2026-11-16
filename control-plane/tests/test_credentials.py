@@ -51,17 +51,14 @@ def client(engine, cred_root):
                          "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
                          "KG_CREDENTIALS_ROOT": cred_root})
     c = TestClient(create_app(settings, engine=engine))
-    r = c.post("/api/auth/login",
-               json={"email": "o@example.com", "password": PASSWORD},
-               headers=HDR)
+    r = mfa_login(c, json={'email': 'o@example.com', 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
     return c
 
 
 def login_as(client, email):
     c = TestClient(client.app)
-    r = c.post("/api/auth/login",
-               json={"email": email, "password": PASSWORD}, headers=HDR)
+    r = mfa_login(c, json={'email': email, 'password': PASSWORD}, headers=HDR)
     assert r.status_code == 200
     return c
 
@@ -201,3 +198,5 @@ class TestCredentialGuards:
         assert "credential.upload" in actions
         assert "credential.rotate" in actions
         assert "credential.revoke" in actions
+
+from mfa_support import mfa_login
