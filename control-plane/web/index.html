@@ -19,6 +19,7 @@ table { width:100%; border-collapse:collapse; margin-top:.8rem; }
 th, td { text-align:left; padding:.45rem .35rem; border-bottom:1px solid #e8edf5; font-size:.92rem; }
 .error { color:#a33; margin-top:.6rem; }
 .ok { color:#276; margin-top:.6rem; }
+.muted { color:#556; font-size:.9em; }
 .hidden { display:none; }
 h2 { margin-bottom:.4rem; }
 </style>
@@ -70,6 +71,39 @@ h2 { margin-bottom:.4rem; }
       <button type="submit">Create policy</button>
       <div class="error" id="policy-error"></div>
       <div class="ok" id="policy-ok"></div>
+    </form>
+  </section>
+
+  <section class="panel hidden" id="schedules-panel">
+    <h2>Filtering schedules</h2>
+    <p class="muted">Extra blocks that apply during a weekly time window
+    (for example games after bedtime). Schedules only ever add blocks;
+    an allowlisted domain stays allowed. Removing a schedule takes
+    effect at the next publication, like any policy change.</p>
+    <label>Policy <select id="s-policy"></select></label>
+    <table id="schedules">
+      <thead><tr><th>Name</th><th>Days</th><th>Window</th><th>Zone</th>
+        <th>Blocks</th><th>On</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h3>Add schedule</h3>
+    <form id="schedule-form">
+      <label>Name <input id="s-name" required pattern="[a-z0-9\-]+"
+        title="lowercase letters, numbers, dashes"></label>
+      <label>Days <input id="s-days" required placeholder="0,1,2,3,4"
+        title="0=Monday ... 6=Sunday, comma separated"></label>
+      <label>Start <input id="s-start" type="time" required></label>
+      <label>End <input id="s-end" type="time" required></label>
+      <label>Timezone <input id="s-tz" required
+        value="America/New_York"></label>
+      <label>Block categories <input id="s-cats"
+        placeholder="games, social-media"></label>
+      <label>Block domains <input id="s-doms"
+        placeholder="fun.example"></label>
+      <label><input id="s-enabled" type="checkbox" checked> active</label>
+      <button type="submit">Add schedule</button>
+      <span class="error" id="schedule-error"></span>
+      <span class="ok" id="schedule-ok"></span>
     </form>
   </section>
 
