@@ -32,6 +32,7 @@ filtering-engine/README.md for the formats.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -40,6 +41,15 @@ import stat
 from pathlib import Path
 
 from policy_engine import PolicyConfigError
+
+
+class GenerationFileNotFound(PolicyConfigError):
+    """A generation file is genuinely absent (ENOENT during a safe open).
+
+    Distinct from every other PolicyConfigError so the optional legacy
+    manifest helper can tell "not there" (load unverified, the legacy
+    pre-publication layout) from "there but unusable" (fail closed).
+    """
 
 
 def _sha256(data: bytes) -> str:
@@ -177,7 +187,8 @@ def load_json_strict(data: bytes, description: str):
 
 
 def _validate_generation_manifest(manifest, policy_path, categories_path,
-                                  policy_sha256, categories_sha256):
+                                  policy_sha256, categories_sha256,
+                                  resolved_dir_name=None):
     """Fail-closed validation of a legacy Stage 10 generation manifest.
 
     When a manifest.json exists it MUST be complete, well-formed, and
@@ -217,7 +228,9 @@ def _validate_generation_manifest(manifest, policy_path, categories_path,
         raise PolicyConfigError(
             f"generation manifest {manifest_path}: generation {generation!r} "
             f"is inconsistent with revision {revision}; refusing to load")
-    directory = os.path.basename(os.path.dirname(os.path.realpath(policy_path)))
+    directory = (resolved_dir_name if resolved_dir_name is not None
+                 else os.path.basename(os.path.dirname(
+                     os.path.realpath(policy_path))))
     if generation != directory:
         raise PolicyConfigError(
             f"generation manifest {manifest_path}: generation {generation!r} "
@@ -328,3 +341,311 @@ def validate_multidoc_manifest(manifest, generation_dir_name: str,
                 "refusing to load")
         validated[key] = value
     return validated
+
+
+# -- no-follow directory-descriptor traversal ------------------------------
+#
+# The safe opens above protect the FINAL component of a generation file
+# path. They cannot protect its PARENTS: if any directory component
+# between the filesystem root and the generation directory is a symlink,
+# the path silently resolves somewhere else and the "verified" bytes can
+# come from outside the intended generation directory entirely. The
+# functions below close that hole by walking the path one component at a
+# time with os.open(..., O_DIRECTORY | O_NOFOLLOW, dir_fd=<parent>), so:
+#
+# - a symlink in ANY parent component is never followed (ELOOP fails
+#   closed), whether it was planted before or swapped in during the load;
+# - the returned descriptor pins the exact directory that was verified,
+#   so renaming or replacing any ancestor afterwards cannot change which
+#   directory generation files are read from (no TOCTOU window);
+# - the one deliberate exception is the publisher's atomic
+#   "current -> <generation>" pattern: the FINAL directory component may
+#   be a symlink whose target is a relative path staying inside the
+#   symlink's own parent directory (no absolute target, no "..", no
+#   backslash, segments limited to [A-Za-z0-9._-]). At most
+#   _MAX_SYMLINK_HOPS such hops are followed, so symlink chains and
+#   loops fail closed instead of spinning.
+#
+# Consequence for deployments: every directory ABOVE the generation (the
+# generations root and its ancestors) must be a real directory. That
+# matches the deployment layout in deploy/; a deployment that needs a
+# relocated root must bind-mount or move the directory, not symlink it.
+
+_MAX_SYMLINK_HOPS = 8
+
+
+def _nofollow_supported(description):
+    if getattr(os, "O_NOFOLLOW", None) is None:
+        raise PolicyConfigError(
+            f"{description}: this platform lacks O_NOFOLLOW, so no "
+            "directory can be traversed safely; refusing to load")
+
+
+def _dir_open_flags(nofollow=True):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    if nofollow:
+        flags |= os.O_NOFOLLOW
+    return flags
+
+
+def _validate_symlink_target(target, description):
+    """Validate the target of a followable FINAL-component symlink.
+
+    Returns the target's path segments. The target must stay inside the
+    symlink's own parent directory: relative, no empty/"."//".."
+    segments after normalization, no backslash or NUL, and every
+    segment within the conservative manifest character set.
+    """
+    if not isinstance(target, str) or not target:
+        raise PolicyConfigError(
+            f"{description}: unreadable or empty symlink target; "
+            "refusing to load")
+    if target.startswith("/"):
+        raise PolicyConfigError(
+            f"{description}: symlink target {target!r} is absolute; a "
+            "generation symlink may only point inside its own parent "
+            "directory; refusing to load")
+    if "\\" in target or "\x00" in target:
+        raise PolicyConfigError(
+            f"{description}: symlink target {target!r} contains a "
+            "backslash or NUL; refusing to load")
+    segments = [s for s in target.split("/") if s not in ("", ".")]
+    if not segments:
+        raise PolicyConfigError(
+            f"{description}: symlink target {target!r} names no "
+            "directory; refusing to load")
+    for segment in segments:
+        if segment == ".." or not _SAFE_PATH_SEGMENT.fullmatch(segment):
+            raise PolicyConfigError(
+                f"{description}: symlink target segment {segment!r} is "
+                "unsafe ('..' or characters outside [A-Za-z0-9._-]); a "
+                "generation symlink may only point inside its own "
+                "parent directory; refusing to load")
+    return segments
+
+
+def _open_dir_chain_nofollow(path, description):
+    """Open the directory `path` through a per-component no-follow walk.
+
+    Returns (dir_fd, final_dir_name): a descriptor pinning the verified
+    directory, and the resolved name of its final component (after any
+    allowed final-symlink hops), which callers compare against a
+    manifest's declared generation name.
+
+    Raises PolicyConfigError (fail closed) when any parent component is
+    a symlink, a component cannot be opened, the final component is a
+    symlink with an unsafe/absolute/escaping target or a hop loop, the
+    path is not a directory, or the platform lacks O_NOFOLLOW.
+    """
+    _nofollow_supported(description)
+    absolute = os.path.abspath(str(path))
+    queue = [c for c in absolute.split(os.sep) if c not in ("", ".")]
+    fd = os.open(os.sep, _dir_open_flags(nofollow=False))
+    hops = 0
+    index = 0
+    try:
+        while index < len(queue):
+            component = queue[index]
+            is_final = index == len(queue) - 1
+            try:
+                new_fd = os.open(component, _dir_open_flags(), dir_fd=fd)
+            except OSError as exc:
+                # Linux reports a symlink opened with O_DIRECTORY|
+                # O_NOFOLLOW as ENOTDIR, and with O_NOFOLLOW alone as
+                # ELOOP; identify symlinks reliably with a no-follow
+                # stat instead of trusting one errno.
+                try:
+                    st = os.stat(component, dir_fd=fd,
+                                 follow_symlinks=False)
+                    is_symlink = stat.S_ISLNK(st.st_mode)
+                except OSError:
+                    is_symlink = exc.errno == errno.ELOOP
+                if is_symlink and is_final:
+                    if hops >= _MAX_SYMLINK_HOPS:
+                        raise PolicyConfigError(
+                            f"{description} {path}: more than "
+                            f"{_MAX_SYMLINK_HOPS} symlink hops at the "
+                            "final component (symlink chain or loop); "
+                            "refusing to load")
+                    try:
+                        target = os.readlink(component, dir_fd=fd)
+                    except OSError as read_exc:
+                        raise PolicyConfigError(
+                            f"{description} {path}: cannot inspect "
+                            f"symlink {component!r} ({read_exc}); "
+                            "refusing to load")
+                    segments = _validate_symlink_target(
+                        target, f"{description} {path}")
+                    queue[index:index + 1] = segments
+                    hops += 1
+                    continue
+                if is_symlink:
+                    raise PolicyConfigError(
+                        f"{description} {path}: parent directory "
+                        f"component {component!r} is a symlink; "
+                        "parent-directory symlinks are never followed "
+                        "because they could redirect generation reads "
+                        "outside the intended directory; refusing to "
+                        "load")
+                if exc.errno in (errno.ENOTDIR, errno.ELOOP):
+                    raise PolicyConfigError(
+                        f"{description} {path}: component {component!r} "
+                        "is not a directory; refusing to load")
+                raise PolicyConfigError(
+                    f"{description} {path}: cannot traverse component "
+                    f"{component!r} safely ({exc}); refusing to load")
+            os.close(fd)
+            fd = new_fd
+            index += 1
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise PolicyConfigError(
+                f"{description} {path}: not a directory; refusing to "
+                "load")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, (queue[-1] if queue else os.sep)
+
+
+def open_generation_dir_nofollow(path, description="generation directory"):
+    """Open a generation DIRECTORY through the no-follow chain.
+
+    Returns (dir_fd, dir_name). All generation files must then be read
+    relative to dir_fd via safe_open_under / read_under, never through
+    a path string again.
+    """
+    return _open_dir_chain_nofollow(path, description)
+
+
+def open_parent_dir_nofollow(file_path, description="generation file"):
+    """Open the PARENT directory of a generation file through the
+    no-follow chain; returns (dir_fd, dir_name, file_name).
+
+    The file name itself is not opened or followed here; callers open
+    it relative to dir_fd with safe_open_file_under, so a symlinked
+    file is still rejected at open time with O_NOFOLLOW.
+    """
+    absolute = os.path.abspath(str(file_path))
+    parent = os.path.dirname(absolute) or os.sep
+    fd, name = _open_dir_chain_nofollow(parent, description)
+    return fd, name, os.path.basename(absolute)
+
+
+def _check_single_name(name, description):
+    if (not name) or name in (".", "..") or "/" in name or "\\" in name \
+            or "\x00" in name:
+        raise PolicyConfigError(
+            f"{description}: unsafe file name {name!r}; refusing to "
+            "load")
+
+
+def _open_under_segments(dir_fd, segments, description):
+    """Open segments[-1] as a regular file under dir_fd, traversing any
+    leading segments as no-follow directories. Returns the pinned file
+    descriptor. Never consumes dir_fd."""
+    _nofollow_supported(description)
+    current = os.dup(dir_fd)
+    try:
+        for segment in segments[:-1]:
+            try:
+                next_fd = os.open(segment, _dir_open_flags(),
+                                  dir_fd=current)
+            except OSError as exc:
+                try:
+                    st = os.stat(segment, dir_fd=current,
+                                 follow_symlinks=False)
+                    is_symlink = stat.S_ISLNK(st.st_mode)
+                except OSError:
+                    is_symlink = exc.errno == errno.ELOOP
+                if is_symlink:
+                    raise PolicyConfigError(
+                        f"{description}: directory {segment!r} inside "
+                        "the generation is a symlink; refusing to load")
+                if exc.errno == errno.ENOENT:
+                    raise GenerationFileNotFound(
+                        f"{description}: cannot open safely ({exc}); "
+                        "refusing to load")
+                raise PolicyConfigError(
+                    f"{description}: cannot traverse directory "
+                    f"{segment!r} safely ({exc}); refusing to load")
+            os.close(current)
+            current = next_fd
+        flags = (os.O_RDONLY | os.O_NOFOLLOW
+                 | getattr(os, "O_CLOEXEC", 0)
+                 | getattr(os, "O_NONBLOCK", 0))
+        try:
+            file_fd = os.open(segments[-1], flags, dir_fd=current)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise GenerationFileNotFound(
+                    f"{description}: cannot open safely ({exc}); "
+                    "refusing to load")
+            raise PolicyConfigError(
+                f"{description}: cannot open safely ({exc}); refusing "
+                "to load")
+        try:
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                raise PolicyConfigError(
+                    f"{description} exists but is not a regular file "
+                    "(directory, FIFO, socket, device, or other "
+                    "non-regular entry); refusing to load")
+        except BaseException:
+            os.close(file_fd)
+            raise
+        return file_fd
+    finally:
+        os.close(current)
+
+
+def safe_open_under(dir_fd, rel_path, description):
+    """Open a manifest-safe RELATIVE path under a verified directory fd.
+
+    rel_path must pass the same rules as a manifest files key (no
+    absolute paths, '..', backslashes, or unsafe characters), so it can
+    never escape the pinned directory even by naming.
+    """
+    validate_manifest_path_key(rel_path, description)
+    return _open_under_segments(dir_fd, rel_path.split("/"), description)
+
+
+def safe_open_file_under(dir_fd, name, description):
+    """Open one file NAME (no directory separators) under a verified
+    directory fd with O_NOFOLLOW and a regular-file fstat check."""
+    _check_single_name(name, description)
+    return _open_under_segments(dir_fd, [name], description)
+
+
+def read_under(dir_fd, rel_path, description):
+    """safe_open_under + read_fd_bytes in one call."""
+    return read_fd_bytes(safe_open_under(dir_fd, rel_path, description),
+                         description)
+
+
+def read_file_under(dir_fd, name, description):
+    """safe_open_file_under + read_fd_bytes in one call."""
+    return read_fd_bytes(safe_open_file_under(dir_fd, name, description),
+                         description)
+
+
+def open_optional_manifest_under(dir_fd, description):
+    """Open manifest.json under a verified directory fd.
+
+    Returns the pinned descriptor, or None when the manifest is
+    genuinely absent (the legacy pre-publication layout). Any
+    present-but-unusable entry (symlink, directory, FIFO, permission
+    error) fails closed with PolicyConfigError.
+    """
+    try:
+        return safe_open_file_under(dir_fd, "manifest.json", description)
+    except GenerationFileNotFound:
+        return None
+
+
+def stat_entry_under(dir_fd, name):
+    """os.lstat-equivalent for one entry under a verified directory fd.
+
+    Returns the stat result WITHOUT following a symlinked entry, so a
+    caller can distinguish a real subdirectory from a planted symlink
+    before deciding to descend."""
+    return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
