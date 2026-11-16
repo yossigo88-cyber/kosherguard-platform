@@ -9,9 +9,11 @@ M7 fresh-clone verification of the exact published head bda1279 is
 COMPLETE (2026-11-16, clean clone, per-suite runs): control-plane 107,
 mdm 34, url-filter-server 29, dns-edge 60, proxy-edge 25,
 category-pipeline 6, dashboard 276, filtering-engine 336 - all passing.
-One filtering-engine TCP test (large-response downstream) failed once in
-a full-suite run and passed in isolation; timing flake, not a code
-regression. Local tree counts that include the HELD unpublished fixes
+One filtering-engine TCP test (large-response downstream) failed in the
+first full-suite run and passed in isolation. This is an UNEXPLAINED
+intermittent failure: a passing retry does not establish its cause, and
+an entirely clean filtering-engine full-suite run has not been
+recorded. First-run result preserved: 336 passed, 1 failed. Local tree counts that include the HELD unpublished fixes
 are labeled "local" and are never published-tree claims.
 
 Legend: DONE = implemented + local tests pass. BUILT-UNVERIFIED = code
@@ -86,14 +88,17 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   before relay, token never logged; 25 proxy-edge tests pass locally.
 - dns-edge: runner + DoH per-device identity + per-device policy
   selection. DONE as code (fail-closed).
-- Scoped credential issuance/request path: guardian-facing issuance
-  route + scoped token mint/verify for doh (dns-edge), proxy
-  (policy-bound) and dataset (unbound) scopes - TestCredentialIssuance
-  and TestProxyScopeMinting (5) pass on the published tree at bda1279.
-  DNS credential issuance request path covered by the same route and
-  the dns-edge doh_identity request/verify code. Revocation registry,
-  revoke route and revocation feed are HELD (local only, 4 TestRevocation
-  tests) pending the user's decision on the held set.
+- Scoped credential issuance/request path: the published mint route
+  (POST /api/devices/{id}/dataset-credential) accepts scopes "dataset"
+  (unbound) and "proxy" (policy-bound) ONLY - TestCredentialIssuance
+  (dataset) and TestProxyScopeMinting (5) pass on the published tree
+  at bda1279. A "doh" scope request is rejected 400 on the published
+  tree: minting doh-scoped tokens is part of the HELD set (7cbdbef)
+  pending the user's decision. dns-edge's doh_identity request/verify
+  code (scope "doh") IS published, but no published mint route issues
+  tokens it accepts, so app-mediated DoH identity cannot run end to
+  end until the held set lands. Revocation registry, revoke route and
+  revocation feed are also HELD (local only, 4 TestRevocation tests).
 - NE content filter + iOS 26 NEURLFilter: iOS Swift sources +
   Xcode project structure, UNCOMPILED/UNSIGNED/UNTESTED.
   BUILT-UNVERIFIED.
@@ -183,8 +188,10 @@ No credentials invented or hardcoded.
 - Published-tree fresh-clone verification at bda1279 (M7, clean
   clone, per-suite): control-plane 107, mdm 34, url-filter-server 29,
   dns-edge 60, proxy-edge 25, category-pipeline 6, dashboard 276,
-  filtering-engine 336 - all passing (one timing-flake TCP test passes
-  in isolation). Local tree including HELD fixes: control-plane 120
+  filtering-engine 336 passed / 1 failed on the first full-suite run
+  (unexplained intermittent; the same test passes in isolation - cause
+  not established, clean full-suite run not recorded). Local tree
+  including HELD fixes: control-plane 120
   (delta = 6 default-mutation reproof + 3 per-tenant publication
   negative tests + 4 revocation tests, all held unpublished).
 
