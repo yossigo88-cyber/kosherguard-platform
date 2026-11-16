@@ -17,7 +17,7 @@ import sys
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import DeviceAssignment, Policy, PolicyVersion, PublicationState
+from .models import DeviceAssignment, DeviceGroup, Policy, PolicyVersion, PublicationState
 
 _ENGINE_SRC = os.path.join(os.path.dirname(__file__), "..", "..",
                            "filtering-engine", "src")
@@ -85,7 +85,11 @@ def active_assignments(session: Session, tenant_id: int,
         select(DeviceAssignment).where(
             DeviceAssignment.tenant_id == tenant_id,
             DeviceAssignment.active.is_(True)))
-    return [r for r in rows if r.policy_id != exclude_policy_id]
+    # Group policies count even before membership, so later adding a device
+    # cannot activate a stale policy weaker than the current baseline.
+    groups = session.scalars(select(DeviceGroup).where(
+        DeviceGroup.tenant_id == tenant_id, DeviceGroup.policy_id.is_not(None)))
+    return [r for r in [*rows, *groups] if r.policy_id != exclude_policy_id]
 
 
 def _schedule_segments(sched: dict):
