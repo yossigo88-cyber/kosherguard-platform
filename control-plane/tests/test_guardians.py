@@ -303,7 +303,8 @@ class TestOverviewAndTenants:
             s.add(t); s.flush()
             s.add(User(tenant_id=t.id, email="admin@example.com",
                        password_hash=security.hash_password(PASSWORD),
-                       role=Role.owner, is_platform_admin=True))
+                       role=Role.owner, is_platform_admin=True,
+                       staff_role='owner'))
             t2 = Tenant(name="fam-b")
             s.add(t2); s.flush()
             s.add(User(tenant_id=t2.id, email="b@b.com",
