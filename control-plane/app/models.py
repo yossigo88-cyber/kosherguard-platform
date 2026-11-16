@@ -212,10 +212,12 @@ class DeviceAppPolicy(Base):
 
 class DDMStatusReport(Base):
     """A verbatim DDM status report from a device, received on the
-    /api/ddm/status endpoint NanoMDM forwards (spec Part 10). This is
-    the ONLY record that a declaration actually reached a device; a
-    served declaration (declaration-items/declaration fetches) is not
-    proof of application. Body stored verbatim for the review phase."""
+    /api/ddm/status endpoint NanoMDM forwards (spec Part 10). RECEIPT
+    ONLY: a stored report proves the enrollment sent a well-formed
+    report, not that any declaration applied. Application evidence
+    lives in declaration_states, extracted per the verified
+    management.declarations shape (identifier + server-token + active
+    + valid); it must be matched against what was actually served."""
     __tablename__ = "ddm_status_reports"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
@@ -223,6 +225,8 @@ class DDMStatusReport(Base):
     enrollment_id: Mapped[str] = mapped_column(String(120), nullable=False,
                                                index=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    declaration_states: Mapped[str] = mapped_column(Text, nullable=False,
+                                                    default="{}")
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
 
