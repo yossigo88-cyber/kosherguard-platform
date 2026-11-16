@@ -379,3 +379,28 @@ class CredentialArtifact(Base):
         DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+
+
+class IssuedCredential(Base):
+    """Issuance registry for scoped device tokens. Stores the token's
+    jti (never the token itself) so outstanding credentials can be
+    revoked before their natural expiry: the revoke route marks rows,
+    the revocation feed lists revoked jtis, and edge verifiers
+    (proxy-edge, url-filter-server) refuse listed tokens."""
+    __tablename__ = "issued_credentials"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int] = mapped_column(
+        ForeignKey("devices.id"), nullable=False, index=True)
+    jti: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True)
+    scope: Mapped[str] = mapped_column(String(24), nullable=False)
+    policy_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
