@@ -830,10 +830,10 @@ async function refreshExceptions(){
   const g=await api("/api/groups");
   const groups=g.status===200?g.body.groups:[];
   $("ex-group").innerHTML=groups.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("");
-  $("exceptions-table").querySelector("tbody").innerHTML=ex.map(x=>`<tr><td>${esc(x.kind)}</td><td>${esc(x.scope_type)} ${esc(String(x.device_id||x.group_id||""))}</td><td>${esc((x.domains||[]).join(", "))}</td><td>${esc(x.starts_at.slice(0,16))} - ${esc(x.expires_at.slice(0,16))}</td><td>${esc(x.reason)}</td><td>${x.revoked_at?"revoked":(x.active?"active":"expired")}</td><td>${x.revoked_at?"":`<button data-revoke="${x.id}">Revoke</button>`}</td></tr>`).join("");
+  $("exceptions-table").querySelector("tbody").innerHTML=ex.map(x=>`<tr><td>${esc(x.kind)}</td><td>${esc(x.scope_type)} ${esc(String(x.device_id||x.group_id||""))}</td><td>${esc((x.domains||[]).join(", "))}</td><td>${esc(x.starts_at.slice(0,16))} - ${esc(x.expires_at.slice(0,16))}</td><td>${esc(x.reason)}</td><td>${x.revoked_at?"revoked":(x.active?"window open (applies once published)":"expired")}</td><td>${x.revoked_at?"":`<button data-revoke="${x.id}">Revoke</button>`}</td></tr>`).join("");
   $("exceptions-table").querySelectorAll("[data-revoke]").forEach(b=>b.addEventListener("click",async()=>{
     const rr=await api(`/api/exceptions/${b.dataset.revoke}`,{method:"DELETE",headers:HDR});
-    $("exception-result").textContent=rr.status===200?"Revoked; publish to distribute":(rr.body.error||"Failed");
+    $("exception-result").textContent=rr.status===200?"Revoked; republication queued automatically":(rr.body.error||"Failed");
     if(rr.status===200)await refreshExceptions();
   }));
 }
