@@ -112,6 +112,17 @@ class LoginBody(BaseModel):
     totp_code: str | None = None
 
 
+class PasswordChangeBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class MfaConfirmBody(BaseModel):
+    secret: str
+    code: str
+    password: str
+
+
 def error(status: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": message})
 
@@ -255,6 +266,58 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"email": user.email, "role": user.role.value,
                 "tenant_id": user.tenant_id,
                 "mfa_enabled": user.totp_secret is not None}
+
+    # -- Account self-service (M6 follow-up) ---------------------------
+    # Password change requires the current password (fresh auth). MFA
+    # enrollment is two-step: start returns a new secret + provisioning
+    # URI to the authenticated session only; confirm requires the
+    # account password AND a valid code against that secret before the
+    # secret is stored. The pending secret is never persisted, so an
+    # abandoned enrollment leaves no half-state.
+    @app.post("/api/auth/password-change",
+              dependencies=[Depends(require_csrf_header)])
+    def password_change(body: PasswordChangeBody,
+                        user: User = Depends(current_user),
+                        session: Session = Depends(db_session)):
+        if not security.verify_password(body.current_password,
+                                        user.password_hash):
+            return error(403, "current password incorrect")
+        if len(body.new_password) < 12:
+            return error(400, "password too short")
+        user.password_hash = security.hash_password(body.new_password)
+        ScopedSession(session, user.tenant_id).audit(
+            "auth.password_change", user.email, actor_user_id=user.id)
+        session.commit()
+        return {"changed": True}
+
+    @app.post("/api/auth/mfa/enroll-start",
+              dependencies=[Depends(require_csrf_header)])
+    def mfa_enroll_start(user: User = Depends(current_user)):
+        if user.totp_secret:
+            return error(409, "MFA already enrolled")
+        secret = security.new_totp_secret()
+        import pyotp
+        uri = pyotp.totp.TOTP(secret).provisioning_uri(
+            name=user.email, issuer_name="KosherGuard")
+        return {"secret": secret, "provisioning_uri": uri}
+
+    @app.post("/api/auth/mfa/enroll-confirm",
+              dependencies=[Depends(require_csrf_header)])
+    def mfa_enroll_confirm(body: MfaConfirmBody,
+                           user: User = Depends(current_user),
+                           session: Session = Depends(db_session)):
+        if user.totp_secret:
+            return error(409, "MFA already enrolled")
+        if not security.verify_password(body.password,
+                                        user.password_hash):
+            return error(403, "fresh authentication failed")
+        if not security.verify_totp(body.secret, body.code):
+            return error(400, "invalid code")
+        user.totp_secret = body.secret
+        ScopedSession(session, user.tenant_id).audit(
+            "auth.mfa_enroll", user.email, actor_user_id=user.id)
+        session.commit()
+        return {"mfa_enabled": True}
 
     # -- Milestone 2: policies, devices, tighten-only enforcement ------
 
