@@ -112,6 +112,14 @@ h2 { margin-bottom:.4rem; }
       <label>End <input id="s-end" type="time" required></label>
       <label>Timezone <input id="s-tz" required
         value="America/New_York"></label>
+      <label>First date (optional, for one-time/holiday windows)
+        <input id="s-first-date" type="date"></label>
+      <label>Last start date (optional, inclusive)
+        <input id="s-last-date" type="date"></label>
+      <p class="muted">School hours and bedtime use weekly days. For a one-time
+      or holiday window, set its dates explicitly. Overnight windows end the
+      following day. Timezone stays fixed while traveling unless you change
+      it here; no location tracking or religious calendar is inferred.</p>
       <label>Block categories <input id="s-cats"
         placeholder="games, social-media"></label>
       <label>Block domains <input id="s-doms"
@@ -123,6 +131,15 @@ h2 { margin-bottom:.4rem; }
     </form>
   </section>
 
+  <section class="panel hidden" id="publication-jobs-panel">
+    <h2>Publish filtering policies</h2>
+    <p class="muted">Queues the selected default and active device assignments.
+    A separate worker publishes the policy state it reads when the job runs.
+    Completed means files were published, not that a device applied them.</p>
+    <button id="publication-queue">Queue publication</button>
+    <button id="publication-check" class="link">Refresh job status</button>
+    <p id="publication-job-status" role="status">No publication queued here.</p>
+  </section>
   <section class="panel hidden" id="devices-panel">
     <h2>Devices</h2>
     <table id="devices"><thead><tr><th>Name</th><th>State</th><th>Assign policy</th></tr></thead><tbody></tbody></table>
