@@ -27,6 +27,7 @@ from . import ddm_ops, filter_log_ops
 from . import mdm_ops
 from .ddm_routes import register_ddm_routes
 from .enrollment_routes import register_enrollment_routes
+from .category_source_routes import register_category_source_routes
 from .offboarding_routes import register_offboarding_routes
 from .guardian_routes import register_guardian_routes
 from .staff_routes import (ALL_STAFF, fresh_check,
@@ -1431,6 +1432,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     register_offboarding_routes(app, error=error, current_user=current_user,
         db_session=db_session, require_csrf_header=require_csrf_header,
         require_guardian=require_guardian, require_owner=require_owner,
+        fresh_check=fresh_check)
+
+    register_category_source_routes(app, error=error,
+        current_user=current_user, db_session=db_session,
+        require_csrf_header=require_csrf_header, require_staff=require_staff,
         fresh_check=fresh_check)
 
     # -- Platform category dataset administration (M6) -----------------
