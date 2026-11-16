@@ -885,7 +885,12 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             ddm_ops.verify_hmac(settings.ddm_hmac_key,
                                 request.headers.get("x-hmac-signature"),
                                 body or b"")
-            ddm_ops.authorize_active(enrollment)
+            if ddm_ops.ensure_active(session, enrollment):
+                ScopedSession(session, enrollment.tenant_id).audit(
+                    "mdm.enrollment_activated",
+                    f"{enrollment.enrollment_id}: pending -> enrolled "
+                    "(first authenticated DDM check-in)")
+                session.commit()
         except ddm_ops.DDMError as exc:
             raise HTTPException(exc.status, str(exc))
         return enrollment
@@ -953,7 +958,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 session, request.headers.get("x-enrollment-id"))
             ddm_ops.verify_hmac(settings.ddm_hmac_key,
                                 request.headers.get("x-hmac-signature"), body)
-            ddm_ops.authorize_active(enrollment)
+            if ddm_ops.ensure_active(session, enrollment):
+                ScopedSession(session, enrollment.tenant_id).audit(
+                    "mdm.enrollment_activated",
+                    f"{enrollment.enrollment_id}: pending -> enrolled "
+                    "(first authenticated DDM check-in)")
             ddm_ops.record_status(session, enrollment, body)
         except ddm_ops.DDMError as exc:
             return error(exc.status, str(exc))
