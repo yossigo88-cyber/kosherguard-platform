@@ -70,7 +70,10 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   tighten-only invariant, server-hosted PAC (proxy-edge/pac.py) and
   dataset distribution (url-filter-server) so filtering changes need
   no profile reinstall. MDM profile vs filtering policy kept separate.
-  DONE as code; delivery to real devices BLOCKED.
+  App-policy changes also propagate two ways as code: classic
+  InstallProfile command queueing and DDM re-sync (server tokens track
+  policy content; see Part 10 DDM entry). DONE as code; delivery to
+  real devices BLOCKED.
 
 ## Part 7 - APNs
 
@@ -293,15 +296,25 @@ No credentials invented or hardcoded.
 
 ## Part 17 - Testing
 
-- Published-tree fresh-clone verification at bda1279 (M7, clean
-  clone, per-suite): control-plane 107, mdm 34, url-filter-server 29,
-  dns-edge 60, proxy-edge 25, category-pipeline 6, dashboard 276,
-  filtering-engine 336 passed / 1 failed on the first full-suite run
-  (unexplained intermittent; the same test passes in isolation - cause
-  not established, clean full-suite run not recorded). Local tree
-  including HELD fixes: control-plane 120
-  (delta = 6 default-mutation reproof + 3 per-tenant publication
-  negative tests + 4 revocation tests, all held unpublished).
+- FINAL published-tree fresh-clone verification at b19132a
+  (2026-11-16 ~08:21 EST, per-suite, every suite run at the exact
+  head): control-plane 157 passed, mdm 60, proxy-edge 30, dns-edge
+  60, url-filter-server 29, category-pipeline 6, filtering-engine
+  337, dashboard 276 (per-file) + test_devices_ui.mjs 22 node
+  assertions. TOTAL 955 Python + 22 node assertions, all green.
+- History preserved: published-tree verification at bda1279 (M7):
+  control-plane 107, mdm 34, url-filter-server 29, dns-edge 60,
+  proxy-edge 25, category-pipeline 6, dashboard 276, filtering-engine
+  336 passed / 1 failed on the first full-suite run (unexplained
+  intermittent; the same TCP test passes in isolation and passed
+  cleanly at dc816fd and again at b19132a - cause never established,
+  recorded here as required). Local tree including HELD fixes:
+  control-plane 120 (delta = 6 default-mutation reproof + 3
+  per-tenant publication negative tests + 4 revocation tests, all
+  held unpublished).
+- Hardware/Apple-gated validation (real device, real APNs, real
+  enrollment, DDM application state) remains BUILT-UNVERIFIED and is
+  out of authorized scope until the device-testing phase.
 
 ## Part 18 - 22 deliverables
 
@@ -315,7 +328,10 @@ No credentials invented or hardcoded.
 8 Automatic re-enrollment architecture: DONE (documented).
 9 Filtering engine: DONE (pre-existing, reviewed).
 10 Filtering policy database: DONE (pipeline + admin tools).
-11 Administration dashboard: PARTIAL (sections missing).
+11 Administration dashboard: DONE as code. Applications,
+   filtering-activity and proxy/DNS edge-status panels built
+   2026-11-16 (see Part 10) with rendered evidence; edge health
+   is labeled UNKNOWN, device behavior BUILT-UNVERIFIED.
 12 Customer management: DONE as code (guardian lifecycle M6).
 13 Customer-facing website: DONE as code (not live).
 14 Database and migrations: DONE.
@@ -326,9 +342,9 @@ No credentials invented or hardcoded.
 18 Backup and recovery: DONE (PG roundtrip 2026-11-16 + 16 dashboard
    backup/restore tests).
 19 Apple integration instructions: DONE (docs/setup).
-20 Testing results: published-tree M7 verification DONE at bda1279
-   (counts in Part 17); hardware/Apple-gated validation remains
-   BUILT-UNVERIFIED.
+20 Testing results: FINAL published-tree verification DONE at
+   b19132a (counts in Part 17); hardware/Apple-gated validation
+   remains BUILT-UNVERIFIED.
 21 Documentation: reviews per milestone + design docs. DONE, updated.
 22 Remaining limitations: THIS DOCUMENT + per-milestone reviews. DONE.
 
@@ -345,7 +361,11 @@ No credentials invented or hardcoded.
 - Q1 base 9eaa221: DONE. Q2 continuous milestones + per-milestone
   review docs: DONE (M1-M6 review docs).
 - Q3 per-device identity: device credentials + DoH binding + per-device
-  policy resolution DONE as code; iOS native-transport constraint
+  policy resolution DONE as code. The approval's hard rule "no
+  long-lived bearer credentials in DoH URLs or query strings" is
+  honored: only short-lived scoped tokens are minted, returned once;
+  the DoH wiring itself sits in HELD 7cbdbef (user decision pending).
+  iOS native-transport constraint
   documented with Apple sources (DOH_IOS_TRANSPORT.md); app-mediated
   path requires the iOS app (BUILT-UNVERIFIED); mTLS hardware-unknown
   recorded. IP binding kept as limited fallback only (explicit flag).
