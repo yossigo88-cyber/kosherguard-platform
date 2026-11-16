@@ -853,6 +853,14 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
              "rule": r.rule, "reason": r.reason,
              "received_at": r.received_at.isoformat()} for r in rows]}
 
+
+    @app.get("/api/filter-status")
+    def get_filter_status(user: User = Depends(current_user),
+                          session: Session = Depends(db_session)):
+        # Evidenced configured/published/reported state only; health is
+        # explicitly "unknown" (see filter_log_ops.edge_status).
+        return filter_log_ops.edge_status(session, user.tenant_id)
+
     # -- Device scoped-credential issuance (M6, extended for 8B) -------
 
     # Mints the short-lived scoped tokens url-filter-server (scope
