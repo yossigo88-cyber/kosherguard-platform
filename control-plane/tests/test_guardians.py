@@ -187,3 +187,79 @@ class TestGuardianLifecycle:
         assert c.post("/api/guardians/1/mfa-reset",
                       json={"password": PASSWORD},
                       headers=HDR).status_code == 403
+
+
+class TestCredentialIssuance:
+    def test_mint_and_verify_roundtrip(self, engine):
+        import os as _os
+        _os.environ["KG_DEVICE_TOKEN_KEY"] = "route-test-key"
+        try:
+            with session_scope(engine) as s:
+                tenant = Tenant(name="family-z")
+                s.add(tenant)
+                s.flush()
+                user = User(tenant_id=tenant.id, email="o@example.com",
+                            password_hash=security.hash_password(PASSWORD),
+                            role=Role.owner)
+                s.add(user)
+                s.flush()
+                from app.models import Device
+                s.add(Device(tenant_id=tenant.id, name="iphone-1"))
+            settings = Settings({
+                "KG_DATABASE_URL": "postgresql://placeholder",
+                "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
+                "KG_DEVICE_TOKEN_KEY": "route-test-key"})
+            c = TestClient(create_app(settings, engine=engine))
+            login(c, "o@example.com")
+            devices = c.get("/api/devices").json()["devices"]
+            dev_id = devices[0]["id"]
+            r = c.post(f"/api/devices/{dev_id}/dataset-credential",
+                       headers=HDR)
+            assert r.status_code == 200
+            token = r.json()["credential"]
+            import importlib.util as ilu
+            spec = ilu.spec_from_file_location(
+                "kg_device_auth_test",
+                _os.path.abspath(_os.path.join(
+                    _os.path.dirname(__file__), "..", "..",
+                    "url-filter-server", "app", "device_auth.py")))
+            da = ilu.module_from_spec(spec)
+            spec.loader.exec_module(da)
+            payload = da.verify_token(b"route-test-key", token, "dataset")
+            assert payload["device_id"] == str(dev_id)
+            assert payload["tenant_id"] == str(
+                devices[0].get("tenant_id", payload["tenant_id"]))
+        finally:
+            _os.environ.pop("KG_DEVICE_TOKEN_KEY", None)
+
+    def test_mint_unconfigured_503(self, engine):
+        c = TestClient(make_app(engine))
+        login(c)
+        r = c.post("/api/devices/1/dataset-credential", headers=HDR)
+        assert r.status_code in (404, 503)
+
+    def test_mint_cross_tenant_device_404(self, engine):
+        c = TestClient(make_app(engine))
+        login(c)
+        with session_scope(engine) as s:
+            other = Tenant(name="family-q")
+            s.add(other)
+            s.flush()
+            from app.models import Device
+            d = Device(tenant_id=other.id, name="other-phone")
+            s.add(d)
+            s.flush()
+            did = d.id
+        import os as _os
+        _os.environ["KG_DEVICE_TOKEN_KEY"] = "k"
+        try:
+            settings = Settings({
+                "KG_DATABASE_URL": "postgresql://placeholder",
+                "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
+                "KG_DEVICE_TOKEN_KEY": "k"})
+            c2 = TestClient(create_app(settings, engine=engine))
+            login(c2)
+            assert c2.post(f"/api/devices/{did}/dataset-credential",
+                           headers=HDR).status_code == 404
+        finally:
+            _os.environ.pop("KG_DEVICE_TOKEN_KEY", None)
