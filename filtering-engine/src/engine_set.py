@@ -72,9 +72,11 @@ it, so each binding carries its device reference inline (device_id).
 A binding with missing, null, or malformed device metadata rejects the
 whole generation; whether a well-formed device_id exists in the
 dashboard registry is NOT verifiable from this generation format, and
-no registry lookup is performed (the publisher enforces it upstream). The policy set is exactly the default policy plus
-the policies referenced by bindings (the publisher emits exactly that
-set, plan 7.3): a manifest listing a policy document nothing
+no registry lookup is performed; enforcing registry existence is a
+requirement on the future Stage 11D publisher, which does not exist yet.
+The policy set is exactly the default policy plus the policies
+referenced by bindings (the future publisher is required to emit exactly
+that set, plan 7.3): a manifest listing a policy document nothing
 references, or a reference to a policy with no document, is an
 inconsistent generation and is rejected fail-closed - silently
 accepting it could mask a binding lost from devices.json.
@@ -88,7 +90,9 @@ Every binding key is the canonical string produced by the Stage 11A
 canonicalizer; any other spelling is malformed and rejected. The engine
 canonicalizes every observed source address with the SAME canonicalizer
 before lookup, so lookups are plain string dict lookups with no parsing
-ambiguity - and no per-query database, file, or network access.
+ambiguity - and no per-query database, file, or network access for
+policy resolution. Normal DNS forwarding of allowed queries to upstream
+resolvers is unchanged and is not what this claim covers.
 
 Path contract (the command line is unchanged): for a multi-document
 generation, --policy names the GENERATION DIRECTORY (typically the
@@ -306,9 +310,10 @@ def binding_key_for_client(client_addr):
 # metadata - a missing, null, or malformed device_id rejects the whole
 # generation - it CANNOT verify that a positive device_id actually
 # exists in the dashboard registry, and no registry lookup is performed
-# at load time or per query. Registry existence is enforced upstream by
-# the publisher (plan 7.1: only associations of active devices with an
-# active assignment are exported).
+# at load time or per query. Enforcing registry existence is a
+# requirement on the future Stage 11D publisher (plan 7.1: it must
+# export only associations of active devices with an active
+# assignment); no publisher implements that today.
 _DEVICES_KEYS = {"default_policy_id", "bindings", "credentials", "_meta"}
 _BINDING_KEYS = {"device_id", "policy_id", "class"}
 _BINDING_KEY_RE = re.compile(r"^(ipv4|ipv6):(.+)$")
