@@ -6,15 +6,22 @@ supervised device. Behavior on device - especially of the application
 access restrictions below - must be confirmed during the device testing
 phase (spec Part 17) before customer rollout.
 
-Application access restrictions: the com.apple.applicationaccess
-payload's whiteListedAppBundleIDs / blacklistedAppBundleIDs keys are the
-longstanding bundle-ID allow/block mechanism. Apple has been steering
-app restriction toward Screen Time / Family Controls and the
-ManagedSettings framework on current iOS releases; the bundle-ID keys
-remain the only MDM-declarative mechanism available to a server without
-a companion iOS app, so they are what this build generates. The
-deprecation direction is recorded here so the device-validation phase
-checks current-iOS behavior explicitly rather than assuming it.
+Application access restrictions (verified against Apple sources,
+2026-11-16): the com.apple.applicationaccess payload's bundle-ID
+allow/block keys - current names allowListedAppBundleIDs /
+blockedAppBundleIDs, older names whiteListedAppBundleIDs /
+blacklistedAppBundleIDs (what this build generates) - are the
+longstanding restrictions-profile mechanism. They are deprecated as of
+iOS 27 / iPadOS 27 (per Microsoft's Intune documentation of Apple's
+restriction lifecycle and Citrix's endpoint-management docs) in favor
+of the App settings declarative configuration, which Apple Support
+(depd65c456fa, 2026-09-17) documents as requiring iOS/iPadOS 27+,
+supervision, and Automated Device Enrollment. KosherGuard's target
+deployment is ADE + supervised from Day One, so the App settings
+declaration is the correct long-term mechanism; this legacy-payload
+builder is the compatible fallback whose on-device behavior - on both
+current and older OS versions - must be confirmed in the spec Part 17
+device-testing phase before customer rollout.
 
 Destructive commands (EraseDevice and friends) are not part of this
 build and are not added here.
@@ -124,10 +131,19 @@ def install_application_command(*, itunes_store_id: int | None = None,
 def remove_application_command(bundle_id: str) -> dict:
     """RemoveApplication command payload for a managed app.
 
-    Only managed applications can be removed by MDM; removing an app the
-    user installed personally is rejected by the device. The command is
-    non-destructive to the device itself (no wipe) and stays within this
-    build's no-destructive-commands rule.
+    Boundaries verified against Apple sources, 2026-11-16:
+    - Apple's command list names this "Remove managed apps": only
+      MDM-managed applications can be removed; the device rejects
+      removal of apps the user installed personally. Apple Support
+      (dep789n2k1qp, 2025-03-31) lists it for iOS/iPadOS/macOS/tvOS/
+      visionOS without a supervision requirement.
+    - Removal is NOT data-preserving: Apple (WWDC21 session 10136)
+      states that when a managed app is removed - by MDM command or on
+      unenrollment - the app's data container is erased with it. Guardians
+      must be told removal loses the app's local data.
+    - It is not a device-destructive command (no wipe, no settings
+      loss outside the removed app's container) and stays within this
+      build's no-destructive-commands rule.
     """
     return {"Identifier": validate_bundle_id(bundle_id)}
 
