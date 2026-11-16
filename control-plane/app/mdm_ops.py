@@ -41,7 +41,8 @@ def get_enrollment(session: Session, tenant_id: int,
 
 
 def create_enrollment(session: Session, tenant_id: int, device_id: int,
-                      supervision_requested: bool = False) -> MDMEnrollment:
+                      supervision_requested: bool = False,
+                      device_udid: str | None = None) -> MDMEnrollment:
     device = session.get(Device, device_id)
     if device is None or device.tenant_id != tenant_id:
         raise MDMError("device not found", 404)
@@ -49,6 +50,7 @@ def create_enrollment(session: Session, tenant_id: int, device_id: int,
         tenant_id=tenant_id,
         device_id=device_id,
         enrollment_id=f"pending-{uuid.uuid4().hex[:16]}",
+        device_udid=device_udid,
         state="pending",
         supervision_requested=supervision_requested,
         supervision_verified=False,
