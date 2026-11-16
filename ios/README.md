@@ -38,12 +38,18 @@ docs/GENTECH_TECHNICAL_INVESTIGATION.md sections 5.4 and 10):
   AuthSessionClient signs in through the published /api/auth/login
   (JSON body + static CSRF marker header, MFA code when enrolled; the
   server's identical-401 anti-enumeration is honored) and captures the
-  session cookie; CredentialController.signInAndIssue runs sign-in ->
-  dataset-scope mint -> Keychain save end to end. Storage:
-  KeychainCredentialStore (generic-password, ThisDeviceOnly, no iCloud
-  sync). STILL no execution evidence (uncompiled; fixture base URL
-  control-plane.invalid), so none of this is working iOS
-  functionality.
+  kg_session cookie (contract re-checked against the published server
+  after an initial draft used the wrong cookie name). A reachable user
+  action exists: CredentialSignInView's "Sign in and request
+  credential" button runs CredentialController.signInAndIssue =
+  sign-in -> dataset-scope mint -> Keychain save. Server URL and
+  device ID come from MDM-managed App Configuration
+  (AppConfiguration.swift, com.apple.configuration.managed), the real
+  configuration mechanism - nothing fixture-baked; unconfigured
+  devices show "Not configured by MDM". Keychain lifecycle: a 401 at
+  mint deletes the stored session; signOut() calls the server logout
+  and deletes both keys. STILL no execution evidence (uncompiled), so
+  none of this is working iOS functionality.
 - `Sources/URLFilter/DNSOverHTTPSClient.swift` - RFC 8484 DoH client
   attaching the scoped credential as an Authorization header, the
   app-mediated identity path from docs/design/DOH_IOS_TRANSPORT.md
