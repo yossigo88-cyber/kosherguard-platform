@@ -49,6 +49,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[Role] = mapped_column(Enum(Role), nullable=False)
     totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_platform_admin: Mapped[bool] = mapped_column(
+        nullable=False, default=False)
     tenant: Mapped[Tenant] = relationship()
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
@@ -210,3 +212,30 @@ class MDMCommand(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow,
         nullable=False)
+
+
+class CategoryRule(Base):
+    """Platform-wide domain -> category assignment (seed dataset).
+
+    Provenance is recorded per row: who added it, from what source,
+    when. A rule is never hard-deleted; deactivating keeps the audit
+    trail. Platform-admin only via the /api/admin/categories routes;
+    tenant guardians never see other tenants' data because these rows
+    are not tenant data at all - they are the shared filter dataset.
+    """
+    __tablename__ = "category_rules"
+    __table_args__ = (UniqueConstraint("domain"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), nullable=False)
+    category: Mapped[str] = mapped_column(String(120), nullable=False)
+    verdict: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="block")
+    source: Mapped[str] = mapped_column(
+        String(400), nullable=False, default="manual-review")
+    added_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
