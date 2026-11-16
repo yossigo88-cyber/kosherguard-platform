@@ -15,7 +15,7 @@ import os
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Policy, PolicyVersion, PublicationState
+from .models import Device, DeviceAssignment, Policy, PolicyVersion, PublicationState
 from .policy_ops import PolicyError
 from .publisher import Publisher, PublicationError, canonical_json
 
@@ -75,9 +75,11 @@ def tenant_root(root: str, tenant_id: int) -> str:
 
 def publish_selected(session: Session, tenant_id: int, root: str,
                      actor_email: str,
-                     categories_path: str | None = None) -> dict:
+                     categories_path: str | None = None,
+                     publication_job_id: int | None = None) -> dict:
     """Publish the tenant's selected default policy as a new generation."""
-    state = session.get(PublicationState, tenant_id)
+    state = session.scalar(select(PublicationState).where(
+        PublicationState.tenant_id == tenant_id).with_for_update())
     if state is None or state.selected_policy_id is None:
         raise PolicyError("no default policy selected for this tenant", 409)
     policy = session.get(Policy, state.selected_policy_id)
@@ -94,6 +96,30 @@ def publish_selected(session: Session, tenant_id: int, root: str,
     policy_json, categories_json = export_policy_documents(
         version, categories_path)
 
+    # Emit assigned policies and the authenticated device map in the SAME
+    # immutable generation. No IP/device identity inference is made.
+    from .policy_ops import prove_tighten_only
+    extras = {}
+    mapping = {}
+    assignments = list(session.scalars(select(DeviceAssignment).where(
+        DeviceAssignment.tenant_id == tenant_id,
+        DeviceAssignment.active.is_(True)).order_by(DeviceAssignment.id)))
+    for assignment in assignments:
+        device = session.get(Device, assignment.device_id)
+        assigned = session.get(Policy, assignment.policy_id)
+        if (device is None or device.tenant_id != tenant_id or
+                assigned is None or assigned.tenant_id != tenant_id or
+                not assigned.enabled):
+            raise PolicyError("invalid active device assignment", 409)
+        if str(device.id) in mapping:
+            raise PolicyError("ambiguous active device assignments", 409)
+        prove_tighten_only(json.loads(assigned.engine_doc), policy)
+        name = f"assigned-policy-{assigned.id}.json"
+        extras[name] = canonical_json(json.loads(assigned.engine_doc))
+        mapping[str(device.id)] = {"policy": name, "policy_id": assigned.id}
+    if mapping:
+        extras["device-map.json"] = canonical_json({
+            "default_policy_id": policy.id, "devices": mapping})
     state.revision = (state.revision or 0) + 1
     revision = state.revision
     publisher = Publisher(tenant_root(root, tenant_id))
@@ -103,7 +129,9 @@ def publish_selected(session: Session, tenant_id: int, root: str,
                 revision, policy_json, categories_json,
                 {"tenant_id": tenant_id, "policy": policy.name,
                  "policy_version": version.version,
-                 "published_by": actor_email})
+                 "published_by": actor_email,
+                 "publication_job_id": publication_job_id},
+                extra_documents=extras)
     except PublicationError as exc:
         raise PolicyError(f"publication failed: {exc}", 500)
     session.flush()
