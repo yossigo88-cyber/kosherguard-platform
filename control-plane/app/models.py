@@ -210,6 +210,23 @@ class DeviceAppPolicy(Base):
         nullable=False)
 
 
+class DDMStatusReport(Base):
+    """A verbatim DDM status report from a device, received on the
+    /api/ddm/status endpoint NanoMDM forwards (spec Part 10). This is
+    the ONLY record that a declaration actually reached a device; a
+    served declaration (declaration-items/declaration fetches) is not
+    proof of application. Body stored verbatim for the review phase."""
+    __tablename__ = "ddm_status_reports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    enrollment_id: Mapped[str] = mapped_column(String(120), nullable=False,
+                                               index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class MDMCommand(Base):
     """One MDM command sent to one enrollment, with its full lifecycle.
 
