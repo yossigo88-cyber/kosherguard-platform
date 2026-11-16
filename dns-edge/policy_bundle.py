@@ -10,17 +10,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-
-Legacy two-file generations still use the reviewed loader. Supplemental
-assigned-policy documents are pinned to one directory descriptor and
-hash-checked before building any engines. No query-time file access.
-"""
-from __future__ import annotations
-import hashlib
-import json
-import os
-import re
-from dataclasses import dataclass
 from types import MappingProxyType
 
 import sys
