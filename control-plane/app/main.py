@@ -24,7 +24,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from . import mdm_ops, schedule_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
-from .models import AuthSession, LoginAttempt, Role, User
+from .models import (AuthSession, LoginAttempt,
+                     PendingMfaEnrollment, Role, User)
 
 
 class CategoryRuleBody(BaseModel):
@@ -118,7 +119,6 @@ class PasswordChangeBody(BaseModel):
 
 
 class MfaConfirmBody(BaseModel):
-    secret: str
     code: str
     password: str
 
@@ -267,16 +267,21 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "tenant_id": user.tenant_id,
                 "mfa_enabled": user.totp_secret is not None}
 
-    # -- Account self-service (M6 follow-up) ---------------------------
-    # Password change requires the current password (fresh auth). MFA
-    # enrollment is two-step: start returns a new secret + provisioning
-    # URI to the authenticated session only; confirm requires the
-    # account password AND a valid code against that secret before the
-    # secret is stored. The pending secret is never persisted, so an
-    # abandoned enrollment leaves no half-state.
+    # -- Account self-service (M6 follow-up, hardened) ------------------
+    # Password change requires the current password (fresh auth) and
+    # invalidates the account's OTHER sessions: changing the password
+    # is the remediation step after suspected compromise, so it must
+    # actually kick other sessions out. MFA enrollment is server-bound:
+    # enroll-start generates and stores the secret server-side (one
+    # pending row per user, replaced on restart, 10-minute expiry);
+    # enroll-confirm requires the account password and a valid code
+    # against THAT stored secret, then promotes and deletes it. The
+    # client never supplies the secret, so it cannot substitute a
+    # known/weak one, bind another user's pending secret, or replay an
+    # old URI after expiry.
     @app.post("/api/auth/password-change",
               dependencies=[Depends(require_csrf_header)])
-    def password_change(body: PasswordChangeBody,
+    def password_change(body: PasswordChangeBody, request: Request,
                         user: User = Depends(current_user),
                         session: Session = Depends(db_session)):
         if not security.verify_password(body.current_password,
@@ -285,21 +290,43 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         if len(body.new_password) < 12:
             return error(400, "password too short")
         user.password_hash = security.hash_password(body.new_password)
+        current_token = request.cookies.get(SESSION_COOKIE)
+        current_hash = (security.hash_session_token(current_token)
+                        if current_token else None)
+        others = session.execute(select(AuthSession).where(
+            AuthSession.user_id == user.id,
+            AuthSession.token_hash != current_hash)).scalars().all()
+        for row in others:
+            session.delete(row)
         ScopedSession(session, user.tenant_id).audit(
-            "auth.password_change", user.email, actor_user_id=user.id)
+            "auth.password_change",
+            f"{user.email} other_sessions_invalidated={len(others)}",
+            actor_user_id=user.id)
         session.commit()
-        return {"changed": True}
+        return {"changed": True,
+                "other_sessions_invalidated": len(others)}
 
     @app.post("/api/auth/mfa/enroll-start",
               dependencies=[Depends(require_csrf_header)])
-    def mfa_enroll_start(user: User = Depends(current_user)):
+    def mfa_enroll_start(user: User = Depends(current_user),
+                         session: Session = Depends(db_session)):
         if user.totp_secret:
             return error(409, "MFA already enrolled")
         secret = security.new_totp_secret()
+        pending = session.execute(select(PendingMfaEnrollment).where(
+            PendingMfaEnrollment.user_id == user.id)).scalar_one_or_none()
+        if pending is None:
+            pending = PendingMfaEnrollment(user_id=user.id, secret=secret,
+                                           expires_at=utcnow())
+            session.add(pending)
+        pending.secret = secret
+        pending.expires_at = utcnow() + timedelta(minutes=10)
+        session.commit()
         import pyotp
         uri = pyotp.totp.TOTP(secret).provisioning_uri(
             name=user.email, issuer_name="KosherGuard")
-        return {"secret": secret, "provisioning_uri": uri}
+        return {"secret": secret, "provisioning_uri": uri,
+                "expires_in_seconds": 600}
 
     @app.post("/api/auth/mfa/enroll-confirm",
               dependencies=[Depends(require_csrf_header)])
@@ -311,9 +338,21 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         if not security.verify_password(body.password,
                                         user.password_hash):
             return error(403, "fresh authentication failed")
-        if not security.verify_totp(body.secret, body.code):
+        pending = session.execute(select(PendingMfaEnrollment).where(
+            PendingMfaEnrollment.user_id == user.id)).scalar_one_or_none()
+        if pending is None:
+            return error(400, "no enrollment started")
+        expires = pending.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < utcnow():
+            session.delete(pending)
+            session.commit()
+            return error(400, "enrollment expired; start again")
+        if not security.verify_totp(pending.secret, body.code):
             return error(400, "invalid code")
-        user.totp_secret = body.secret
+        user.totp_secret = pending.secret
+        session.delete(pending)
         ScopedSession(session, user.tenant_id).audit(
             "auth.mfa_enroll", user.email, actor_user_id=user.id)
         session.commit()
