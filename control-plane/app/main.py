@@ -12,6 +12,7 @@ leak to clients.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -207,9 +208,14 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     # -- Milestone 2: policies, devices, tighten-only enforcement ------
 
-    from . import policy_ops
+    from . import policy_ops, publication_ops
     from .models import (Device, DeviceAssignment, Policy, PolicyVersion,
                          PublicationState)
+
+    def require_guardian(user: User) -> JSONResponse | None:
+        if user.role.value not in ("owner", "guardian"):
+            return error(403, "viewers cannot change configuration")
+        return None
 
     def policy_json(policy, session):
         import json as _json
@@ -372,6 +378,51 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         session.commit()
         return {"status": "assigned", "device_id": device.id,
                 "policy_id": policy.id}
+
+    # -- Front ends (Milestone 2) --------------------------------------
+    from fastapi.staticfiles import StaticFiles
+    control_plane_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo_root = os.path.dirname(control_plane_dir)
+    @app.post("/api/publications", dependencies=[Depends(require_csrf_header)])
+    def publish(user: User = Depends(current_user),
+                session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        try:
+            result = publication_ops.publish_selected(
+                session, user.tenant_id, settings.publications_root,
+                user.email)
+        except publication_ops.PolicyError as exc:
+            session.rollback()
+            return error(exc.status, str(exc))
+        ScopedSession(session, user.tenant_id).audit(
+            "publication.publish",
+            f"published generation {result['revision']}",
+            actor_user_id=user.id)
+        session.commit()
+        return result
+
+    @app.get("/api/publications/current")
+    def publication_current(user: User = Depends(current_user)):
+        from .publisher import Publisher
+        try:
+            manifest = Publisher(settings.publications_root).current()
+        except Exception as exc:
+            return error(500, f"could not read current generation: {exc}")
+        if manifest is None:
+            return {"published": False}
+        return {"published": True, "manifest": manifest}
+
+    app.mount("/web", StaticFiles(
+        directory=os.path.join(control_plane_dir, "web"), html=True),
+        name="admin-web")
+    app.mount("/portal", StaticFiles(
+        directory=os.path.join(repo_root, "portal"), html=True),
+        name="portal")
+    app.mount("/", StaticFiles(
+        directory=os.path.join(repo_root, "website"), html=True),
+        name="website")
 
     @app.exception_handler(Exception)
     def unhandled(request: Request, exc: Exception):
