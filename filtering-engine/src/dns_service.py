@@ -140,16 +140,22 @@ TCP_LISTEN_BACKLOG = 64  # kernel backlog behind the application queue
 
 
 class DecisionLogger:
-    """Structured JSON-lines decision log, suitable for future dashboard
-    ingestion. One JSON object per line. No personal data is collected:
-    the client address is never written."""
+    """Identifier-free operational JSON lines, not browsing history.
+
+    Only fixed event/outcome, transport and latency fields are retained.
+    Domains, URL paths, client/device identifiers, reasons and upstream
+    addresses are never written here. Central blocked activity has its
+    separate short-retention store.
+    """
 
     def __init__(self, stream) -> None:
         self._stream = stream
         self._lock = threading.Lock()
 
     def log_decision(self, record: dict) -> None:
-        record = dict(record)
+        # Local diagnostics contain no browsing identifiers. Detailed blocked
+        # activity belongs only in the retention-controlled central store.
+        record = {k: record[k] for k in ("event", "outcome", "decision", "latency_ms", "transport") if k in record}
         record["ts"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         line = json.dumps(record, sort_keys=True)
         with self._lock:
@@ -489,8 +495,9 @@ class DNSFilteringService:
             try:
                 self.decisions.log_decision(record)
             except Exception:
-                log.exception("failed to write decision log")
-        log.info("%s", json.dumps(record, sort_keys=True))
+                log.warning("failed to write privacy-safe operational log")
+        # Never put domain-bearing decisions into journald/stdout backups.
+        log.debug("DNS request handled")
 
     # -- hot reload (Stage 10) ----------------------------------------------
 
