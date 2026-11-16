@@ -106,14 +106,20 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   SwiftPM URLFilter target (Package.swift dependency declared). STILL
   no execution evidence (uncompiled/unsigned/untested), so dataset/
   proxy minting is tested server-side only and is NOT working iOS
-  functionality. Session acquisition: AuthSessionClient + controller flow written
-  against the published login contract (no separate native token
-  exchange exists server-side - the JSON login + static CSRF marker IS
-  the native path; a dedicated device-auth exchange remains a possible
-  future server addition). Storage: KeychainCredentialStore
-  (ThisDeviceOnly). Both UNCOMPILED with no execution evidence - real
-  code, not working functionality. A no-op controller is NOT counted
-  as implemented integration.
+  functionality. Session acquisition: AuthSessionClient + reachable sign-in action
+  (CredentialSignInView -> CredentialController.signInAndIssue)
+  written against the published login contract (no separate native
+  token exchange exists server-side - the JSON login + static CSRF
+  marker IS the native path; a dedicated device-auth exchange remains
+  a possible future server addition). Configuration: MDM-managed App
+  Configuration (AppConfiguration.swift), no baked-in URL; the
+  kg_session cookie contract was re-verified against the published
+  server (an initial draft used the wrong cookie name - caught by
+  contract review, fixed before publish). Storage:
+  KeychainCredentialStore (ThisDeviceOnly) with lifecycle handling
+  (401 clears session; sign-out clears all). All UNCOMPILED with no
+  execution evidence - real code, not working functionality. A no-op
+  controller is NOT counted as implemented integration.
 - NE content filter + iOS 26 NEURLFilter: iOS Swift sources +
   Xcode project structure, UNCOMPILED/UNSIGNED/UNTESTED.
   BUILT-UNVERIFIED.
