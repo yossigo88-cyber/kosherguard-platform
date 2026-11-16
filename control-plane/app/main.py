@@ -101,6 +101,10 @@ class CredentialBody(BaseModel):
     content_base64: str
 
 
+class MintBody(BaseModel):
+    scope: str = "dataset"
+
+
 class LoginBody(BaseModel):
     email: str
     password: str
@@ -619,14 +623,21 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             })
         return {"tenants": rows}
 
-    # -- Device dataset-credential issuance (M6) ----------------------
+    # -- Device scoped-credential issuance (M6, extended for 8B) -------
 
-    # Mints the short-lived scoped tokens url-filter-server verifies.
-    # The raw token is returned once to the guardian and never stored
-    # or logged; revocation is by short expiry (+ jti list server-side).
+    # Mints the short-lived scoped tokens url-filter-server (scope
+    # "dataset") and proxy-edge (scope "proxy") verify. The raw token is
+    # returned once to the guardian and never stored or logged;
+    # revocation is by short expiry (+ jti list server-side).
+    # A proxy-scoped token is bound to the device's EFFECTIVE policy:
+    # its active assignment, else the tenant default. This is a
+    # shared-secret scoped identity for issuance and routing only; it
+    # does not by itself prove real on-device protection, which
+    # requires the end-to-end device validation that remains gated.
     @app.post("/api/devices/{device_id}/dataset-credential",
               dependencies=[Depends(require_csrf_header)])
     def mint_dataset_credential(device_id: int,
+                                body: MintBody | None = None,
                                 user: User = Depends(current_user),
                                 session: Session = Depends(db_session)):
         denied = require_guardian(user)
@@ -638,6 +649,22 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         if row is None or row.tenant_id != user.tenant_id:
             return error(404, "device not found")
         device = row
+        scope = (body.scope if body else "dataset").strip()
+        if scope not in ("dataset", "proxy"):
+            return error(400, "scope must be 'dataset' or 'proxy'")
+        policy_id = None
+        if scope == "proxy":
+            assignment = session.execute(select(DeviceAssignment).where(
+                DeviceAssignment.device_id == device.id,
+                DeviceAssignment.active.is_(True))).scalar_one_or_none()
+            if assignment is not None:
+                policy_id = assignment.policy_id
+            else:
+                pub = session.get(PublicationState, user.tenant_id)
+                if pub is not None and pub.selected_policy_id is not None:
+                    policy_id = pub.selected_policy_id
+            if policy_id is None:
+                return error(409, "device has no effective policy to bind")
         # Load the shared device_auth by file path - the control
         # plane's own package is also named "app", so a plain import
         # would resolve to the wrong package.
@@ -653,13 +680,18 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             settings.device_token_key.encode(),
             device_id=str(device.id),
             tenant_id=str(user.tenant_id),
-            scope="dataset",
+            scope=scope,
             lifetime_seconds=min(
-                settings.session_lifetime_seconds, 86400))
+                settings.session_lifetime_seconds, 86400),
+            policy_id=policy_id)
         ScopedSession(session, user.tenant_id).audit(
-            "device.credential_mint", device.name, actor_user_id=user.id)
+            "device.credential_mint",
+            f"{device.name} scope={scope}"
+            + (f" policy_id={policy_id}" if policy_id is not None else ""),
+            actor_user_id=user.id)
         session.commit()
-        return {"device_id": device.id, "credential": token}
+        return {"device_id": device.id, "credential": token, "scope": scope,
+                "policy_id": policy_id}
 
     # -- Credential artifacts (Part 16 upload screens) ------------------
 
