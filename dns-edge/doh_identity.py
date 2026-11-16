@@ -37,7 +37,8 @@ class IdentityError(Exception):
 
 
 def authenticate_doh_request(authorization_header: str | None,
-                             key: bytes, now: float | None = None) -> dict:
+                             key: bytes, now: float | None = None,
+                             revoked_jtis=None) -> dict:
     """Verify the DoH device credential; return the token payload.
 
     Raises IdentityError on any failure. The token value is never
@@ -48,7 +49,8 @@ def authenticate_doh_request(authorization_header: str | None,
     header = authorization_header or ""
     token = header[7:] if header.lower().startswith("bearer ") else ""
     try:
-        return verify_token(key, token, "doh", now=now)
+        return verify_token(key, token, "doh", now=now,
+                            revoked_jtis=revoked_jtis)
     except TokenError:
         raise IdentityError("unauthorized")
 
