@@ -337,6 +337,10 @@ class CategoryRule(Base):
         String(16), nullable=False, default="block")
     source: Mapped[str] = mapped_column(
         String(400), nullable=False, default="manual-review")
+    # The registry update that activated this rule, when it came from a
+    # reviewed import (Answer 22 rollback needs this binding).
+    source_update_id: Mapped[int | None] = mapped_column(
+        ForeignKey("category_source_updates.id"), nullable=True)
     added_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True)
     active: Mapped[bool] = mapped_column(nullable=False, default=True)
@@ -536,6 +540,27 @@ class SensitiveCommandApproval(Base):
         DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class RestoreAttestation(Base):
+    """Manual Apple-side attestation for the restore/re-enrollment
+    flow (Answer 26): the device remains assigned to the correct Apple
+    Business/ADE organization after a computer-based restore. This
+    build has no Apple credentials, so that fact is attested by a
+    guardian with device delegation - recorded, never executed here.
+    Live checks (re-enrollment, baseline assignment, filtering
+    credential) are computed from real state by the readiness
+    endpoint; setup release requires every check green."""
+    __tablename__ = "restore_attestations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int] = mapped_column(
+        ForeignKey("devices.id"), nullable=False, index=True)
+    attested_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False)
+    attested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class CategorySource(Base):
     """A registered category-data source (Answer 22): name, license
     and attribution on record - an open-source repository license is
@@ -572,6 +597,10 @@ class CategorySourceUpdate(Base):
                                                   default="{}")
     validation_results: Mapped[str] = mapped_column(Text, nullable=False,
                                                     default="{}")
+    # The dataset rows this update carries; applied to category_rules
+    # only by the reviewed activation path, never at import time.
+    rules_json: Mapped[str] = mapped_column(Text, nullable=False,
+                                            default="[]")
     # pending_review | active | rejected | superseded | rolled_back
     status: Mapped[str] = mapped_column(String(20), nullable=False,
                                         default="pending_review")
