@@ -80,8 +80,11 @@ h2 { margin-bottom:.4rem; }
     <h3 style="margin-top:1.2rem">New policy</h3>
     <form id="policy-form">
       <label>Name <input id="p-name" required></label>
+      <label>Starting template
+        <select id="p-template"><option value="strict-review">Strict: block unknown domains (recommended)</option><option value="category-mode">Category mode: allow unknown domains</option></select></label>
+      <p class="muted">Examples only, not an approved religious standard. Review categories and unknown-domain behavior before use. Templates change only this unsaved form.</p>
       <label>Default action
-        <select id="p-default"><option value="allow">allow</option><option value="block">block</option></select></label>
+        <select id="p-default"><option value="block">block (recommended)</option><option value="allow">allow</option></select></label>
       <label>Blocked domains (comma separated) <input id="p-blocklist"></label>
       <label>Blocked categories (comma separated) <input id="p-catblock"></label>
       <button type="submit">Create policy</button>
@@ -98,7 +101,7 @@ h2 { margin-bottom:.4rem; }
     effect at the next publication, like any policy change.</p>
     <label>Policy <select id="s-policy"></select></label>
     <table id="schedules">
-      <thead><tr><th>Name</th><th>Days</th><th>Window</th><th>Zone</th>
+      <thead><tr><th>Name</th><th>Days</th><th>Window</th><th>Zone / dates</th>
         <th>Blocks</th><th>On</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
@@ -131,6 +134,22 @@ h2 { margin-bottom:.4rem; }
     </form>
   </section>
 
+  <section class="panel hidden" id="policy-preview-panel">
+    <h2>Preview filtering policy</h2>
+    <p class="muted">Tests a domain against the selected policy and configured
+    category dataset. This is not a device test. No URL paths are accepted.</p>
+    <form id="policy-preview-form">
+      <label>Policy <select id="preview-policy"></select></label>
+      <label>Domain <input id="preview-domain" placeholder="example.com" required></label>
+      <label>Time with offset (optional)
+        <input id="preview-at" placeholder="2026-11-17T22:00:00-05:00"></label>
+      <button type="submit">Preview</button>
+    </form>
+    <p id="preview-result" role="status"></p>
+    <p class="muted">New-policy examples: strict-review blocks unknown domains;
+    category-mode uses explicit allow/block lists. Neither is an approved
+    religious standard. Strict mode is the recommended starting default.</p>
+  </section>
   <section class="panel hidden" id="publication-jobs-panel">
     <h2>Publish filtering policies</h2>
     <p class="muted">Queues the selected default and active device assignments.
@@ -354,4 +373,4 @@ h2 { margin-bottom:.4rem; }
 </main>
 <script src="/web/app.js"></script>
 </body>
-</html>
+          </html>
