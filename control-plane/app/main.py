@@ -506,8 +506,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def publication_current(user: User = Depends(current_user)):
         from .publisher import Publisher
         try:
-            manifest = Publisher(publication_ops.tenant_root(
-                settings.publications_root, user.tenant_id)).current()
+            manifest = Publisher(settings.publications_root).current()
         except Exception as exc:
             return error(500, f"could not read current generation: {exc}")
         if manifest is None:
