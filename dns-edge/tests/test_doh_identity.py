@@ -73,3 +73,18 @@ class TestTenantRoot:
         import inspect
         params = list(inspect.signature(tenant_root_for_token).parameters)
         assert params == ["publications_root", "payload"]
+
+
+def test_revoked_doh_token_refused():
+    """The DNS edge refuses a revoked doh credential from the shared
+    revocation set (runtime distribution consumption point)."""
+    tok = issue_token(KEY, "dev-1", "tenant-1", "doh")
+    payload = authenticate_doh_request(f"Bearer {tok}", KEY)
+    jti = payload["jti"]
+    with pytest.raises(IdentityError):
+        authenticate_doh_request(
+            f"Bearer {tok}", KEY, revoked_jtis={jti})
+    # An unrevoked token still passes.
+    other = issue_token(KEY, "dev-2", "tenant-1", "doh")
+    assert authenticate_doh_request(
+        f"Bearer {other}", KEY, revoked_jtis={jti})["jti"]
