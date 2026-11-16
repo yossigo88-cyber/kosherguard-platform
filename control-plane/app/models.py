@@ -150,3 +150,4 @@ class PublicationState(Base):
         ForeignKey("tenants.id"), primary_key=True)
     selected_policy_id: Mapped[int | None] = mapped_column(
         ForeignKey("policies.id"), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
