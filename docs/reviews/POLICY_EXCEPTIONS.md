@@ -27,10 +27,28 @@ protection removal and high-impact bypasses are owner-only.
   publication time, so later moves do not extend an exception) and
   emitted as `exceptions.json` in the same immutable, hash-verified
   generation as the policy and device map. Revocation enqueues its own
-  republication automatically (the job executes as the tenant owner so
-  it cannot die on the worker's publish-delegation recheck), but it is
-  still eventual: the revoked exception remains effective at the edge
-  until the worker picks the job up and edges load the new generation.
+  republication automatically as a narrow system cleanup: the job keeps
+  the real revoker as its actor and carries a server-set
+  `system_action = "exception-revoke"` marker (migration 0016) that the
+  jobs API cannot mint - API-enqueued jobs keep the worker's full actor
+  re-check (role, tenant membership, MFA enrollment, publish
+  delegation) at execution. The marker exempts the job only from that
+  actor re-check, so the revocation still ships when the revoker lacks
+  publish delegation or the owner is unavailable, demoted, or
+  MFA-unverified. No owner approval or MFA authentication is
+  fabricated: the generation manifest records the publisher as
+  "system:exception-revoke job <id>" and the completion audit names the
+  initiating user. The cleanup is removal-only
+  (`publish_revocation_cleanup`): it republishes the LAST PUBLISHED
+  snapshot with the revoked exception entries deleted - it never
+  exports current saved state, so pending policy edits, assignment
+  changes and newly created exceptions (including an owner
+  `disable_policy` saved after the last publish) all stay pending and
+  cannot hitchhike on a revocation. A revoke by a guardian who can save
+  but not publish therefore distributes nothing except the removal
+  itself. Revocation is still eventual: the revoked exception remains
+  effective at the edge until the worker picks the job up and edges
+  load the new generation.
   If republication fails, the last known good generation stays active
   with the revoked exception still in it; bounded retries (5 attempts,
   exponential backoff, capped at 5 minutes) then mark the job failed,
@@ -81,8 +99,27 @@ protection removal and high-impact bypasses are owner-only.
   `disable_policy` full bypass; start/expiry boundaries with the expiry
   instant exclusive.
 - Revocation cycle: guardian without publish delegation revokes; the
-  auto-enqueued job executes under the worker's delegation recheck; the
-  resulting generation no longer carries the exception.
+  system-cleanup job keeps the guardian as actor, completes under the
+  worker, and the resulting generation no longer carries the exception;
+  the manifest records the system publisher and the audit names the
+  initiating user. Cleanup survives the owner being demoted and
+  MFA-unenrolled. The jobs API cannot mint the system marker (forged
+  request keys stay ordinary jobs with the full actor re-check, covered
+  by the existing worker tests).
+- Removal-only cleanup: with a published generation carrying an
+  exception, a delegated policy weakening saved-but-unpublished (still
+  above baseline) and a newly saved owner `disable_policy` exception
+  both remain pending after the revoke cleanup runs; only the revoked
+  exception is removed from the new generation.
+- Proxy integration (`proxy-edge/tests/test_proxy_exceptions.py`):
+  actual CONNECT requests through a live proxy with an attached
+  exception bundle: the guardian-added block opens for the excepted
+  device (upstream attempt, not 403), the baseline block stands with
+  the "protected baseline" reason in the block page, and a second
+  device on the same assigned policy without the exception stays
+  blocked. This is distinct from the shared-code argument (both
+  consumers load policy_bundle): the proxy decision path is exercised
+  end to end.
 - Publication with exceptions but no assigned policy emits an empty
   device map rather than failing (publisher cross-check satisfied).
 
@@ -99,9 +136,12 @@ protection removal and high-impact bypasses are owner-only.
   and the empty-device-map fix, with the tests above. A first version
   of the auto-republication enqueued the job as the tenant owner; that
   was replaced with the server-set system-cleanup marker so no owner
-  approval is fabricated and the real revoker stays the job actor.
-  Reviewers should
-  treat any checkout at or before 9e72bac as carrying the flaw.
+  approval is fabricated and the real revoker stays the job actor. The
+  first marker version republished the tenant's current saved state
+  (like a manual publish); that was narrowed to the removal-only
+  cleanup so a save-only guardian's revocation cannot distribute
+  unrelated pending changes. Reviewers should treat any checkout at or
+  before 9e72bac as carrying the flaw.
 
 ## Not yet implemented (known gaps)
 
