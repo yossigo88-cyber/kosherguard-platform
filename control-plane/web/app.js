@@ -25,6 +25,13 @@ async function showApp() {
   ["policy-preview-panel", "publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
+  if (me.body.privileged && !me.body.mfa_verified) {
+    document.querySelectorAll("section.panel").forEach(p => p.classList.add("hidden"));
+    ["account-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+    $("mfa-state").textContent = "Two-factor authentication is required before administrative access. Enroll below, then sign in again with a code.";
+    $("mfa-start").classList.toggle("hidden", me.body.mfa_enabled);
+    return;
+  }
   await refresh();
 }
 
@@ -169,18 +176,22 @@ async function refreshEdgeStatus() {
 }
 
 async function refreshFiltering() {
+  const retention = await api("/api/privacy/retention");
+  if (retention.status === 200) $("retention-days").value = retention.body.blocked_days;
   refreshEdgeStatus();
   const status = $("filtering-status");
   const table = $("filtering-table");
   const r = await api("/api/filter-logs");
   if (r.status !== 200) {
     status.textContent = "Could not load filtering activity.";
+    table.querySelector("tbody").innerHTML = "";
     table.classList.add("hidden");
     return;
   }
   const rows = r.body.decisions || [];
   if (!rows.length) {
-    status.textContent = "No filtering decisions reported yet.";
+    status.textContent = "No blocked activity retained.";
+    table.querySelector("tbody").innerHTML = "";
     table.classList.add("hidden");
     return;
   }
@@ -427,6 +438,7 @@ $("mfa-confirm-form").addEventListener("submit", async (e) => {
   if (r.status === 200) {
     ok.textContent = "Two-factor authentication enabled.";
     $("mfa-enroll-box").classList.add("hidden");
+    $("mfa-ok").textContent = "MFA enabled. Sign out, then sign in with your password and authenticator code for administrative access.";
     refreshMfaState();
     refreshGuardians();
   } else {
@@ -768,3 +780,19 @@ $("p-template").addEventListener("change", async () => {
   $("p-blocklist").value = template.rules.blocklist.join(", ");
   $("p-catblock").value = template.rules.category_block.join(", ");
 });
+
+$("retention-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const r = await api("/api/privacy/retention", {method:"PUT", headers:HDR,
+    body:JSON.stringify({days:Number($("retention-days").value)})});
+  $("retention-result").textContent = r.status === 200 ?
+    `Saved ${r.body.blocked_days} days; physically deleted ${r.body.deleted} records.` :
+    (r.body.error || r.body.detail || "Save failed");
+  if (r.status === 200) refreshFiltering();
+});
+
+// No persistent browser history cache. Refresh visible blocked activity so
+// an open page stops showing rows removed by retention.
+setInterval(() => {
+  if (!$("filtering-panel").classList.contains("hidden")) refreshFiltering();
+}, 60000);
