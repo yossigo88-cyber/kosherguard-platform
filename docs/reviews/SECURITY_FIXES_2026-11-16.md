@@ -119,7 +119,15 @@ implemented and documented in ddm_ops:
   /api/mdm/enrollment-checkin binds by nanomdm_id equivalently
   (collision refused). Regression tests cover UDID-binding on first
   contact, ambiguity refusal, sync binding, conflict refusal, and
-  that the placeholder no longer resolves after binding. Supervision is never
+  that the placeholder no longer resolves after binding. Evidence
+  layers, kept separate: an operator-supplied UDID (the guardian's
+  enrollment creation) is a PRE-ASSOCIATION claim, not independent
+  proof of device possession; the proof of possession is NanoMDM's
+  authenticated forwarding - the first HMAC-authenticated DDM contact
+  can only come from a device NanoMDM enrolled via the MDM protocol.
+  Schema migration 0007 adds mdm_enrollments.device_udid; upgrade
+  from the preserved prior schema (0006) is tested (column added,
+  existing rows intact), not merely metadata.create_all. Supervision is never
   caller-claimed on any route: supervision_verified can only be set
   from device-reported check-in data (mdm_ops.mark_supervision_verified)
   and stays false until such a report exists. (An earlier draft
