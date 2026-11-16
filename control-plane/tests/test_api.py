@@ -32,7 +32,8 @@ def app_and_user(engine):
         s.add(user)
         s.flush()
         uid = user.id
-    settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder"})
+    settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
+              "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"})
     return create_app(settings, engine=engine), uid
 
 
@@ -112,3 +113,25 @@ class TestAuthAPI:
             hashes = [r[0] for r in rows]
         assert token not in hashes
         assert security.hash_session_token(token) in hashes
+
+
+class TestFrontEnds:
+    def test_website_portal_admin_served(self, app_and_user):
+        app, _ = app_and_user
+        c = TestClient(app)
+        r = c.get("/")
+        assert r.status_code == 200 and "KosherGuard" in r.text
+        r = c.get("/portal/")
+        assert r.status_code == 200 and "Family Portal" in r.text
+        r = c.get("/portal/app.js")
+        assert r.status_code == 200 and "esc(" in r.text
+        r = c.get("/web/")
+        assert r.status_code == 200 and "KosherGuard Admin" in r.text
+        r = c.get("/web/app.js")
+        assert r.status_code == 200 and "esc(" in r.text
+
+    def test_static_traversal_rejected(self, app_and_user):
+        app, _ = app_and_user
+        c = TestClient(app)
+        assert c.get("/portal/../app/main.py").status_code in (400, 404)
+        assert c.get("/web/..%2F..%2Fapp%2Fmain.py").status_code in (400, 404)
