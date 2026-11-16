@@ -174,12 +174,26 @@ def test_revoke_enqueues_republication(client, engine, pub_root):
         job = s.scalar(select(PublicationJob).where(
             PublicationJob.request_key.like(f'exception-revoke-{ex_id}-%')))
     assert job is not None and job.status == 'queued'
-    # The guardian revoker has no publish delegation; the job still runs
-    # because revocation republication executes as the tenant owner.
+    # Narrow system cleanup: the real revoker stays the job's actor (no
+    # fabricated owner/MFA approval), marked server-side as
+    # exception-revoke cleanup.
+    assert job.actor_user_id == uid
+    assert job.system_action == 'exception-revoke'
+    # The guardian revoker has no publish delegation; the job still runs.
     assert run_once(engine, settings(pub_root))
     with session_scope(engine) as s:
         job = s.get(PublicationJob, job.id)
         assert job.status == 'completed', job.last_error
+        import json as _json
+        assert _json.loads(job.result)['revision']
+        cleanup_audit = s.scalar(select(AuditEvent).where(
+            AuditEvent.action == 'publication.completed',
+            AuditEvent.detail.like(f'%job {job.id}%')))
+        assert 'exception-revoke' in cleanup_audit.detail
+        assert f'initiated by user {uid}' in cleanup_audit.detail
+    from app.publisher import Publisher
+    manifest = Publisher(tenant_root(pub_root, tid)).current()
+    assert manifest['published_by'].startswith('system:exception-revoke')
     # The resulting generation no longer carries the exception.
     decision = load_bundle(root, now=lambda: now).for_device(did).decide(
         'games.example')
@@ -206,3 +220,48 @@ def test_cross_tenant_exception_targeting_refused(client, engine):
         'device_id': foreign_id, 'domains': ['x.example'], 'reason': 'x',
         'expires_at': future(1)}, headers=HDR)
     assert r.status_code in (400, 404)
+
+
+def test_revoke_cleanup_survives_owner_unavailable(client, engine, pub_root):
+    """If the owner is demoted or loses MFA enrollment, the revocation
+    cleanup publication must still run: the revoked bypass must not stay
+    effective waiting for an owner who cannot act."""
+    did = setup(client)
+    g, uid = guardian_client(client, engine)
+    grant(client, uid, ['exceptions'])
+    r = g.post('/api/exceptions', json={
+        'kind': 'allow_domains', 'scope_type': 'device', 'device_id': did,
+        'domains': ['games.example'], 'reason': 'x',
+        'expires_at': future(2)}, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert g.delete(f"/api/exceptions/{r.json()['id']}",
+                    headers=HDR).status_code == 200
+    # Owner becomes unable to publish: demoted and MFA unenrolled.
+    with session_scope(engine) as s:
+        owner = s.scalar(select(User).where(User.email == 'g@example.com'))
+        owner.role = owner.role.viewer
+        owner.totp_secret = None
+    from app.models import PublicationJob
+    from app.worker import run_once
+    from test_baseline_edges import settings
+    assert run_once(engine, settings(pub_root))
+    with session_scope(engine) as s:
+        job = s.scalar(select(PublicationJob).where(
+            PublicationJob.request_key.like('exception-revoke-%')))
+        assert job.status == 'completed', job.last_error
+
+
+def test_api_enqueued_job_has_no_system_marker(client, engine):
+    """The jobs API must not be able to mint the cleanup marker: ordinary
+    enqueues keep the full actor re-check at execution."""
+    login(client)
+    make_default_policy(client)
+    g, uid = guardian_client(client, engine)
+    grant(client, uid, ['publish'])
+    jid = g.post('/api/publications/jobs',
+                 json={'request_key': 'exception-revoke-forged'},
+                 headers=HDR).json()['id']
+    from app.models import PublicationJob
+    with session_scope(engine) as s:
+        job = s.get(PublicationJob, jid)
+        assert job.system_action is None
