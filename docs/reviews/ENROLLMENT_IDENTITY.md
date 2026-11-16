@@ -46,6 +46,32 @@ migration `0018_enrollment_tickets.py`.
 - **Audit** - issue, revoke and redeem each write an audit event with
   the actor (redeem records the issuing staff member) and the details.
 
+## Fail-closed identity analysis (verified 2026-11-16)
+
+- **A ticket + self-asserted UDID is not device proof.** Redemption
+  only creates/binds a PENDING enrollment record. The pending ->
+  enrolled transition happens exclusively through the authenticated
+  DDM/NanoMDM check-in path (HMAC peer verification in `ddm_routes`,
+  binding in `ddm_ops.resolve_or_bind`), never through the ticket
+  endpoints. Tested: `test_redeem_does_not_activate_or_verify`
+  (redeemed enrollment stays pending; device-reported supervision
+  verification still refused on pending).
+- **No ticketless activation bypass.** The pre-existing guardian
+  enrollment endpoint also creates only pending records; activation
+  still requires the authenticated check-in. Existing ddm tests cover
+  fail-closed without HMAC key and pending-without-valid-HMAC
+  authorizing nothing.
+- **UDID collision fail-closed.** `resolve_or_bind` matches pending
+  enrollments by UDID across tenants; an ambiguous match (including
+  two tenants that redeemed tickets with the same UDID) is refused
+  409 rather than mis-bound. Tested same-tenant (ddm tests) and
+  cross-tenant via the ticket flow
+  (`test_cross_tenant_udid_collision_refused_at_checkin`).
+- **Certificate chain verification is fail-closed where configured**:
+  with `KG_DEVICE_IDENTITY_CA_FILE` set, an unverifiable chain is a
+  hard reject; without a CA nothing claims cryptographic verification
+  (recorded `chain_unverified`).
+
 ## Honest limits
 
 - No device identity CA ships with this build. Chain verification runs
