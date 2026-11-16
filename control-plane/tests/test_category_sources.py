@@ -287,7 +287,8 @@ class TestImportHashBinding:
 
 
 class TestFileSyncIntegrity:
-    def _mk(self, engine, tmp_path, **kw):
+    @staticmethod
+    def _mk(engine, tmp_path, **kw):
         path = str(tmp_path / "categories.json")
         return make_client(engine, categories_file=path, **kw), path
 
@@ -410,6 +411,39 @@ class TestPublishDivergenceGuard:
         with session_scope(engine) as s:
             _assert_categories_file_matches_db(s, path)  # no raise
 
+    def test_zero_active_registry_rules_still_enforced(self, engine,
+                                                       tmp_path):
+        """Provenance, not row count: after a registry update was
+        activated and its rules are later all deactivated, a stale
+        registry file on disk must NOT silently fall back to the
+        operator-file carve-out - publish still refuses until resync
+        materializes the empty committed state."""
+        from app.models import CategoryRule
+        from app.policy_ops import PolicyError
+        from app.publication_ops import (
+            _assert_categories_file_matches_db, build_categories_doc)
+        c, path = TestFileSyncIntegrity._mk(engine, tmp_path)
+        source = mk_source(c)
+        update = mk_import(c, source["id"])
+        assert activate(c, source["id"], update["id"]).status_code == 200
+        # Deactivate the only registry rule directly (removal path).
+        with session_scope(engine) as s:
+            rule = s.scalars(__import__("sqlalchemy").select(
+                CategoryRule)).first()
+            rule.active = False
+        with session_scope(engine) as s:
+            try:
+                _assert_categories_file_matches_db(s, path)
+                raise AssertionError("stale registry file accepted")
+            except PolicyError as exc:
+                assert "diverged" in str(exc)
+        # Resync materializes the empty committed state; then publish
+        # verification passes again.
+        assert c.post("/api/admin/category-sources/resync",
+                      headers=HDR).status_code == 200
+        with session_scope(engine) as s:
+            _assert_categories_file_matches_db(s, path)  # no raise
+
     def test_guard_skips_operator_provided_dataset(self, engine,
                                                    tmp_path):
         """With no registry-managed active rules the categories file is
@@ -473,3 +507,41 @@ class TestConcurrentActivation:
         assert rules[expected[winner]] is True
         loser = "u2" if winner == "u1" else "u1"
         assert rules[expected[loser]] is False
+
+
+class TestCrossSourceSync:
+    def test_concurrent_cross_source_syncs_converge(self, engine,
+                                                    tmp_path):
+        """Two activations on DIFFERENT sources race; the shared
+        categories file must end up matching the union of committed
+        rules regardless of interleaving (global sync lock + advisory
+        lock), never a stale subset written after a newer commit."""
+        import json as _json
+        import threading
+        c, path = TestFileSyncIntegrity._mk(engine, tmp_path)
+        s1 = mk_source(c, name="src-a")
+        s2 = mk_source(c, name="src-b")
+        c2 = make_client(engine, email="second@example.com")
+        s1u = mk_import(c, s1["id"], version="1",
+                        rules=[{"domain": "a.com", "category": "ads"}])
+        s2u = mk_import(c, s2["id"], version="1",
+                        rules=[{"domain": "b.com", "category": "ads"}])
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def go(client, sid, uid, key, email):
+            barrier.wait(timeout=10)
+            results[key] = activate(client, sid, uid, email).status_code
+
+        t1 = threading.Thread(target=go, args=(c, s1["id"], s1u["id"],
+                                               "u1", "admin@example.com"))
+        t2 = threading.Thread(target=go, args=(c2, s2["id"], s2u["id"],
+                                               "u2", "second@example.com"))
+        for t in (t1, t2):
+            t.start()
+        for t in (t1, t2):
+            t.join(timeout=30)
+        assert sorted(results.values()) == [200, 200], results
+        with open(path, "rb") as fh:
+            doc = _json.loads(fh.read())
+        assert doc["domains"] == {"a.com": ["ads"], "b.com": ["ads"]}
