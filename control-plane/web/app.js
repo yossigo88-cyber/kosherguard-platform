@@ -138,7 +138,36 @@ $("app-managed-list").addEventListener("click", async () => {
     {method: "POST", headers: HDR, body: JSON.stringify({action: "managed-list"})}));
 });
 
+async function refreshEdgeStatus() {
+  const box = $("filtering-edge-status");
+  const r = await api("/api/filter-status");
+  if (r.status !== 200) {
+    box.textContent = "Edge status unavailable.";
+    return;
+  }
+  const s = r.body;
+  const cfg = s.configured || {};
+  const rep = s.reported || {};
+  const lines = [
+    "Proxy/DNS edge status",
+    "Configured: " + (cfg.policy_selected
+      ? "a filtering policy is selected (publication revision " +
+        (cfg.publication_revision || 0) + ")"
+      : "no filtering policy selected yet"),
+    "Reported: " + (rep.decision_count
+      ? rep.decision_count + " decision(s) received from: " +
+        (rep.sources || []).join(", ") + "; latest " +
+        (rep.latest_received_at
+          ? new Date(rep.latest_received_at).toLocaleString() : "?")
+      : "no decisions reported yet"),
+    "DNS decision reporting: " + (s.dns_reporting || "not connected"),
+    "Health: UNKNOWN - " + (s.health_note || ""),
+  ];
+  box.innerHTML = lines.map(l => "<p>" + esc(l) + "</p>").join("");
+}
+
 async function refreshFiltering() {
+  refreshEdgeStatus();
   const status = $("filtering-status");
   const table = $("filtering-table");
   const r = await api("/api/filter-logs");
