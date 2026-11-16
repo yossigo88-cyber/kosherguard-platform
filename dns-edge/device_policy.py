@@ -36,14 +36,22 @@ class DevicePolicyError(Exception):
 DEFAULT_POLICY_NAME = "policy.json"
 
 
-def resolve_policy_path(generation_dir: str, device_id: str | None) -> str:
+def resolve_policy_path(generation_dir: str, device_id: str | None,
+                        allow_unauthenticated: bool = False) -> str:
     """Return the policy.json path this device's queries evaluate.
 
-    generation_dir is the tenant's current generation directory.
-    device_id None (unauthenticated/dev mode) always gets the default.
+    device_id None is only permitted when allow_unauthenticated is
+    explicitly set - that flag exists SOLELY for the separate,
+    explicitly limited fallback transport (Stage 11C IP binding / dev
+    mode). The authenticated DoH endpoint must never call this with
+    None: an unauthenticated request silently getting the default
+    could bypass a device's tighter assigned policy.
     """
     default_path = os.path.join(generation_dir, DEFAULT_POLICY_NAME)
     if device_id is None:
+        if not allow_unauthenticated:
+            raise DevicePolicyError(
+                "unauthenticated request on authenticated transport")
         return default_path
     devices_path = os.path.join(generation_dir, "devices.json")
     try:
