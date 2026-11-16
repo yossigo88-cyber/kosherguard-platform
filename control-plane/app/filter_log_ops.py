@@ -20,7 +20,10 @@ from .models import Device, FilterDecision
 
 MAX_BATCH = 100
 ALLOWED_ACTIONS = {"allow", "block"}
-ALLOWED_SOURCES = {"proxy"}
+ALLOWED_SOURCES = {"proxy", "dns"}
+# A scoped credential may only report decisions for its own source:
+# proxy tokens write "proxy", doh tokens write "dns".
+SCOPE_SOURCES = {"proxy": "proxy", "doh": "dns"}
 
 
 class FilterLogError(RuntimeError):
@@ -49,16 +52,20 @@ def verify_edge_token(settings, authorization: str | None) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise FilterLogError("missing bearer token", 401)
     da = _device_auth()
-    try:
-        return da.verify_token(settings.device_token_key.encode(),
-                               authorization[len("Bearer "):],
-                               required_scope="proxy")
-    except da.TokenError as exc:
-        raise FilterLogError(f"invalid credential: {exc}", 401) from exc
+    last_exc = None
+    for scope in SCOPE_SOURCES:
+        try:
+            return da.verify_token(settings.device_token_key.encode(),
+                                   authorization[len("Bearer "):],
+                                   required_scope=scope)
+        except da.TokenError as exc:
+            last_exc = exc
+    raise FilterLogError(f"invalid credential: {last_exc}", 401)
 
 
 def record_decisions(session: Session, claims: dict,
                      decisions) -> int:
+    expected_source = SCOPE_SOURCES.get(claims.get("scope"))
     if not isinstance(decisions, list) or not decisions:
         raise FilterLogError("decisions must be a non-empty list")
     if len(decisions) > MAX_BATCH:
@@ -77,13 +84,16 @@ def record_decisions(session: Session, claims: dict,
             raise FilterLogError("each decision must be an object")
         domain = str(raw.get("domain") or raw.get("host") or "")[:255]
         action = str(raw.get("action") or "")
-        source = str(raw.get("source") or "proxy")
+        source = str(raw.get("source") or expected_source or "proxy")
         if not domain:
             raise FilterLogError("decision missing domain")
         if action not in ALLOWED_ACTIONS:
             raise FilterLogError(f"unsupported action: {action!r}")
         if source not in ALLOWED_SOURCES:
             raise FilterLogError(f"unsupported source: {source!r}")
+        if expected_source is not None and source != expected_source:
+            raise FilterLogError(
+                "credential scope cannot report this source", 403)
         session.add(FilterDecision(
             tenant_id=tenant_id, device_id=device_pk, source=source,
             domain=domain, action=action,
