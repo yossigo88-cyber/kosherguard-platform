@@ -120,3 +120,87 @@ class TestPolicies:
         r = c2.put(f"/api/policies/{pid}",
                    json={"name": "stolen", **BASE}, headers=HDR)
         assert r.status_code == 404
+
+
+SCHED = {"name": "bedtime", "days": [0, 1, 2, 3, 4], "start": "21:00",
+         "end": "06:30", "timezone": "America/New_York",
+         "block_categories": ["games"], "block_domains": ["fun.example"],
+         "enabled": True}
+
+
+class TestSchedules:
+    def test_replace_and_read_back(self, client):
+        pid = mkpolicy(client, "base", **BASE).json()["id"]
+        r = client.put(f"/api/policies/{pid}/schedules",
+                       json={"schedules": [SCHED]}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["versions"] == 2
+        assert len(body["schedules"]) == 1
+        assert body["schedules"][0]["name"] == "bedtime"
+        assert body["schedules"][0]["start"] == 21 * 60
+        listing = client.get("/api/policies").json()["policies"]
+        assert listing[0]["schedules"][0]["name"] == "bedtime"
+
+    def test_invalid_schedule_rejected_400(self, client):
+        pid = mkpolicy(client, "base", **BASE).json()["id"]
+        bad = dict(SCHED, timezone="Monsey")
+        r = client.put(f"/api/policies/{pid}/schedules",
+                       json={"schedules": [bad]}, headers=HDR)
+        assert r.status_code == 400
+        assert "timezone" in r.json()["error"]
+        # Nothing was written: still version 1, no schedules.
+        p = client.get("/api/policies").json()["policies"][0]
+        assert p["versions"] == 1 and p["schedules"] == []
+
+    def test_clear_with_empty_list(self, client):
+        pid = mkpolicy(client, "base", **BASE).json()["id"]
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [SCHED]}, headers=HDR)
+        r = client.put(f"/api/policies/{pid}/schedules",
+                       json={"schedules": []}, headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["schedules"] == []
+
+    def test_general_update_preserves_schedules(self, client):
+        """Editing a policy must not silently drop its schedules (that
+        would loosen filtering without anyone asking)."""
+        pid = mkpolicy(client, "base", **BASE).json()["id"]
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [SCHED]}, headers=HDR)
+        r = client.put(f"/api/policies/{pid}",
+                       json={"name": "base", **TIGHTER}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        assert r.json()["schedules"][0]["name"] == "bedtime"
+
+    def test_create_with_schedules(self, client):
+        r = mkpolicy(client, "base", schedules=[SCHED], **BASE)
+        assert r.status_code == 200, r.json()
+        assert r.json()["schedules"][0]["name"] == "bedtime"
+
+    def test_cross_tenant_schedules_invisible(self, client, engine):
+        pid = mkpolicy(client, "base", **BASE).json()["id"]
+        with session_scope(engine) as s:
+            other = Tenant(name="other-family")
+            s.add(other)
+            s.flush()
+            s.add(User(tenant_id=other.id, email="o@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.owner))
+        c2 = TestClient(client.app)
+        c2.post("/api/auth/login",
+                json={"email": "o@example.com", "password": PASSWORD},
+                headers=HDR)
+        r = c2.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [SCHED]}, headers=HDR)
+        assert r.status_code == 404
+
+    def test_audit_event_written(self, client, engine):
+        pid = mkpolicy(client, "base", **BASE).json()["id"]
+        client.put(f"/api/policies/{pid}/schedules",
+                   json={"schedules": [SCHED]}, headers=HDR)
+        with session_scope(engine) as s:
+            from app.models import AuditEvent
+            from sqlalchemy import select
+            actions = [a.action for a in s.scalars(select(AuditEvent))]
+        assert "policy.schedules" in actions
