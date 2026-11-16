@@ -131,3 +131,32 @@ class TestAppSettingsDeclaration:
             app_settings_declaration("somelist", [])
         with pytest.raises(AppManagementError):
             app_settings_declaration("blocklist", ["no dots"])
+
+
+class TestInstallConfiguration:
+    """Managed-app configuration emission (spec Part 10 Applications).
+    Contract verified against apple/device-management @ 9e7fdbe
+    mdm/commands/application.install.yaml: Configuration, optional
+    dictionary, iOS 7.0+/macOS 11.0+."""
+
+    def test_configuration_emitted(self):
+        cmd = install_application_command(
+            itunes_store_id=284815942,
+            configuration={"controlPlaneBaseURL": "https://cp.example.com",
+                           "deviceID": 7})
+        assert cmd["Configuration"] == {
+            "controlPlaneBaseURL": "https://cp.example.com", "deviceID": 7}
+
+    def test_no_configuration_no_key(self):
+        cmd = install_application_command(itunes_store_id=284815942)
+        assert "Configuration" not in cmd
+
+    def test_configuration_must_be_dict(self):
+        with pytest.raises(AppManagementError):
+            install_application_command(itunes_store_id=1,
+                                        configuration="not-a-dict")
+
+    def test_configuration_must_be_json_serializable(self):
+        with pytest.raises(AppManagementError):
+            install_application_command(itunes_store_id=1,
+                                        configuration={"k": object()})
