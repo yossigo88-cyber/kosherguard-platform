@@ -267,6 +267,26 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "tenant_id": user.tenant_id,
                 "mfa_enabled": user.totp_secret is not None}
 
+    # -- Tenant audit log viewer (spec Part 10: Settings > logs) --------
+    # Append-only audit events, tenant-scoped, newest first. Any
+    # authenticated tenant user may read (viewers included: read-only
+    # visibility of who changed what); writes remain role-gated.
+    @app.get("/api/audit-logs")
+    def audit_logs(user: User = Depends(current_user),
+                   session: Session = Depends(db_session)):
+        rows = session.execute(
+            select(AuditEvent)
+            .where(AuditEvent.tenant_id == user.tenant_id)
+            .order_by(AuditEvent.id.desc())
+            .limit(200)).scalars().all()
+        emails = {u.id: u.email for u in session.execute(
+            select(User).where(User.tenant_id == user.tenant_id))
+            .scalars().all()}
+        return {"events": [
+            {"id": e.id, "action": e.action, "detail": e.detail,
+             "actor": emails.get(e.actor_user_id, "system"),
+             "created_at": e.created_at.isoformat()} for e in rows]}
+
     # -- Account self-service (M6 follow-up, hardened) ------------------
     # Password change requires the current password (fresh auth) and
     # invalidates the account's OTHER sessions: changing the password
