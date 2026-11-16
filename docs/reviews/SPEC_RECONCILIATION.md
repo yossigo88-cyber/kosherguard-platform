@@ -192,9 +192,28 @@ approvals, credentials, hardware) and held work remain. PARTIAL.
   documentation URLs. Built: GET /api/ddm/tokens, /declaration-items,
   /declaration/<type>/<id>, PUT /api/ddm/status (verbatim
   DDMStatusReport rows + enrollment last_seen); X-Enrollment-ID
-  resolved against MDMEnrollment; optional KG_DDM_HMAC_KEY
-  verification matching NanoMDM's flag; server tokens track policy
-  content so changes re-sync. DeclarativeManagement added to
+  resolved against MDMEnrollment; server tokens track policy
+  content so changes re-sync.
+  TRUST BOUNDARY (hardened 2026-11-16 after review): X-Enrollment-ID
+  is an identifier, not authentication - before this fix, with no
+  KG_DDM_HMAC_KEY set, any caller knowing an enrollment ID could read
+  that device's declarations and POST forged status reports
+  (reproduced in tests; the platform is pre-deployment, so no live
+  exposure existed). Now FAIL-CLOSED: every /api/ddm/* route is 503
+  unless KG_DDM_HMAC_KEY is configured, and then every request must
+  carry a valid X-Hmac-Signature (NanoMDM -dm-send-hmac-key signs even
+  GETs, over an empty body). The HMAC authenticates the forwarding
+  NanoMDM peer; the device authenticates to NanoMDM via the MDM
+  protocol. No protection is inferred from network topology.
+  STATUS SEMANTICS (corrected 2026-11-16): a stored status report is
+  RECEIPT ONLY. Application evidence requires a
+  StatusItems.management.declarations.configurations[] entry matching
+  the served identifier AND server-token with active=true and
+  valid="valid" (verified shape: apple/device-management
+  declarative/status + statusreport.yaml via KMFDDM
+  ddm/status/status.go). Received states are extracted into
+  DDMStatusReport.declaration_states for that later check.
+  DeclarativeManagement added to
   SUPPORTED_COMMANDS as the activation command. 6 tests + full suite
   green at d2b8d1a (control-plane 156, mdm 60).
   REMAINING GAPS, explicitly: (a) running NanoMDM with -dm pointed at
