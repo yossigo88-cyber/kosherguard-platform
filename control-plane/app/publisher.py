@@ -122,7 +122,8 @@ class Publisher:
                     pass
 
     def publish(self, revision: int, policy_bytes: bytes,
-                categories_bytes: bytes, metadata: dict) -> str:
+                categories_bytes: bytes, metadata: dict,
+                extra_documents: dict[str, bytes] | None = None) -> str:
         """Write, verify, and atomically activate one generation.
 
         The caller must hold locked(). Raises PublicationError (or the
@@ -144,6 +145,39 @@ class Publisher:
             raise PublicationError(
                 f"exported configuration failed engine validation: {exc}")
 
+        extra_documents = dict(extra_documents or {})
+        for name, value in extra_documents.items():
+            import re
+            if not re.fullmatch(r"(?:device-map|assigned-policy-[1-9][0-9]*)\.json", name):
+                raise PublicationError("invalid supplemental document name")
+            json.loads(value)
+
+        if extra_documents:
+            from .schedule_ops import validate_schedules
+            mapping = json.loads(extra_documents.get("device-map.json", b"null"))
+            if not isinstance(mapping, dict) or set(mapping) != {"default_policy_id", "devices"}:
+                raise PublicationError("invalid authenticated device map")
+            if not isinstance(mapping["devices"], dict):
+                raise PublicationError("invalid authenticated device map entries")
+            referenced = {"device-map.json"}
+            for device_id, entry in mapping["devices"].items():
+                if not device_id.isdigit() or int(device_id) < 1 or str(int(device_id)) != device_id:
+                    raise PublicationError("invalid device identity")
+                if not isinstance(entry, dict) or set(entry) != {"policy", "policy_id"}:
+                    raise PublicationError("invalid assignment record")
+                pid = entry["policy_id"]
+                if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+                    raise PublicationError("invalid assigned policy identity")
+                name = f"assigned-policy-{pid}.json"
+                if entry["policy"] != name or name not in extra_documents:
+                    raise PublicationError("missing assigned policy")
+                document = json.loads(extra_documents[name])
+                policy_engine.validate_policy(document)
+                validate_schedules(document.get("_schedules"))
+                referenced.add(name)
+            if referenced != set(extra_documents):
+                raise PublicationError("unreferenced assigned policy")
+
         generation = str(revision)
         generation_dir = self.generations_dir / generation
         created = False
@@ -155,13 +189,17 @@ class Publisher:
             _write_file_atomic(generation_dir / "policy.json", policy_bytes, token)
             _write_file_atomic(generation_dir / "categories.json",
                                categories_bytes, token)
+            for name, value in sorted(extra_documents.items()):
+                _write_file_atomic(generation_dir / name, value, token)
             manifest = dict(metadata)
             manifest.update({
                 "revision": revision,
                 "generation": generation,
                 "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
                 "categories_sha256": hashlib.sha256(categories_bytes).hexdigest(),
-                "files": ["policy.json", "categories.json"],
+                "files": ["policy.json", "categories.json", *sorted(extra_documents)],
+                "extra_sha256": {name: hashlib.sha256(value).hexdigest()
+                                 for name, value in extra_documents.items()},
             })
             _write_file_atomic(generation_dir / "manifest.json",
                                canonical_json(manifest), token)
@@ -228,6 +266,14 @@ class Publisher:
             if mode != 0o600:
                 raise PublicationError(
                     f"{generation_dir}/{name}: mode {oct(mode)} != 0o600")
+        for name, digest in manifest.get("extra_sha256", {}).items():
+            import re
+            if not re.fullmatch(r"(?:device-map|assigned-policy-[1-9][0-9]*)\.json", name):
+                raise PublicationError("invalid supplemental document name")
+            if hashlib.sha256((generation_dir / name).read_bytes()).hexdigest() != digest:
+                raise PublicationError("supplemental document hash mismatch")
+            if stat.S_IMODE(os.stat(generation_dir / name).st_mode) != 0o600:
+                raise PublicationError("supplemental document permissions")
         return manifest
 
     def current(self) -> dict | None:
