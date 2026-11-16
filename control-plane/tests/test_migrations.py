@@ -136,8 +136,11 @@ def test_alembic_schema_matches_model_metadata(tmp_path):
     no create_all) and a metadata.create_all schema have identical
     table, column and index sets. NOTE: exercised on SQLite; the same
     migrations run on PostgreSQL in deployment (env.py rewrites the
-    URL to psycopg), where the 'role' enum is a native type - the
-    enum name matches 0001's so no duplicate CREATE TYPE occurs."""
+    URL to psycopg), where the 'role' enum is a native type -
+    0008 declares it with create_type=False so the type created by
+    0001 is reused. Also exercised against disposable local
+    PostgreSQL: clean alembic install, 0006->head upgrade preserving
+    rows, and table/column/index comparison all pass."""
     import sqlite3 as _sq
     db_a = tmp_path / "alembic.db"
     db_b = tmp_path / "createall.db"
