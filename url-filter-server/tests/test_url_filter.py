@@ -112,3 +112,44 @@ class TestServer:
         assert hashlib.sha256(r.content).hexdigest() == \
             r.headers["x-sha256"]
         assert client.get("/v1/dataset/shards/999").status_code == 404
+
+
+class TestPIRExport:
+    """Dataset export in Apple's PIR tooling input format (grounded in
+    the PIRShardDatabase doc example). The private query service itself
+    is Apple's Swift binary - not reimplemented here."""
+
+    def test_golden_format(self):
+        from app.pir_export import export_textpb
+        out = export_textpb([URLRule("Bet365.COM", "block", "gambling")])
+        assert out == ('rows {\n'
+                       '  keyword: "bet365.com"\n'
+                       '  value: "block:gambling"\n'
+                       '}\n')
+
+    def test_roundtrip(self):
+        from app.pir_export import export_textpb, parse_textpb
+        rules = [URLRule("a.example", "block", "adult"),
+                 URLRule("b.example", "allow", "")]
+        rows = parse_textpb(export_textpb(rules))
+        assert rows == [("a.example", "block:adult"),
+                        ("b.example", "allow")]
+
+    def test_escaping(self):
+        from app.pir_export import export_textpb, parse_textpb
+        rules = [URLRule('quo"te.example', "block", "cat")]
+        out = export_textpb(rules)
+        assert '\\"' in out
+        assert parse_textpb(out)[0][0] == 'quo\\"te.example'
+
+    def test_empty_keyword_rejected(self):
+        from app.pir_export import export_textpb
+        with pytest.raises(ValueError):
+            export_textpb([URLRule("  ", "block")])
+
+    def test_dataset_export_integration(self):
+        from app.pir_export import export_textpb, parse_textpb
+        ds = build_dataset(sample_rules(), version=1)
+        rows = parse_textpb(export_textpb(ds.rules))
+        assert len(rows) == 3
+        assert dict(rows)["bet365.com"] == "block:gambling"
