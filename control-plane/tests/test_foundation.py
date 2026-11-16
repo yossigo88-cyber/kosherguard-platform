@@ -57,6 +57,7 @@ class TestConfig:
     def test_ambiguous_flag_rejected(self):
         with pytest.raises(ConfigError):
             Settings({"KG_DATABASE_URL": "postgresql://x",
+                      "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test",
                       "KG_SECURE_COOKIES": "maybe"})
 
 
