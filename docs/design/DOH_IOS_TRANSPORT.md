@@ -33,12 +33,19 @@ path is wrong; do not build or claim it.
    as the identity. Feasibility on the native iOS DNS path is
    UNDOCUMENTED by Apple; must be verified on hardware before
    relying on it. No claim made here.
-3. **MDM-rotated short-lived URL tokens (fallback)** - the
-   ServerURL carries a per-device path token, redeployed by MDM
-   profile updates before expiry. This is a bearer credential in a
-   URL: it conflicts with the user's stated preference and is only
-   acceptable as a limited, explicitly approved fallback with short
-   rotation, single-device scope, and log redaction.
+3. **MDM-rotated short-lived URL tokens** - the ServerURL carries a
+   per-device path token, redeployed by MDM profile updates before
+   expiry. This is a bearer credential in a URL and CONTRADICTS the
+   user's explicit rule ("Do not put long-lived bearer credentials in
+   DoH URLs or query strings"). It is NOT approved, NOT a default, and
+   NOT built. It exists here only so the option is on record; using it
+   would require the user to approve a new exception in writing.
+
+The approved-design candidates are options 1 and 2. Option 2's
+hardware behavior (does the native iOS DNS client present a client
+certificate on the DoH TLS handshake?) is undocumented by Apple and
+unknown until tested on a supervised device with development
+signing - a hardware-only unknown, recorded here rather than assumed.
 
 ## What is built
 
