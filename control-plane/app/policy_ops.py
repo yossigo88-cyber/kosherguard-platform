@@ -131,6 +131,16 @@ def prove_schedule_coverage(candidate_doc: dict, baseline_doc: dict) -> None:
         for cand in cand_scheds:
             if cand["timezone"] != base["timezone"]:
                 continue
+            # A dated candidate cannot cover an unbounded baseline;
+            # otherwise its calendar interval must encompass baseline.
+            if cand.get("start_date") and (
+                    not base.get("start_date") or
+                    cand["start_date"] > base["start_date"]):
+                continue
+            if cand.get("end_date") and (
+                    not base.get("end_date") or
+                    cand["end_date"] < base["end_date"]):
+                continue
             if not need_cats <= cand_base_cats | set(cand["block_categories"]):
                 continue
             if not need_doms <= cand_base_doms | set(cand["block_domains"]):
