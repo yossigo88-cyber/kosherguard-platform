@@ -34,12 +34,16 @@ docs/GENTECH_TECHNICAL_INVESTIGATION.md sections 5.4 and 10):
   unsigned, untested, so dataset/proxy are not working iOS
   functionality - server-side minting is covered by control-plane
   tests only. doh scope is declared but refused client-side until the
-  held server change lands (the published server rejects it 400). The
-  controller deliberately no-ops: session acquisition is an open gap
-  (the mint route requires a guardian session cookie + CSRF header; no
-  native-app token exchange exists server-side), so the only reachable
-  state in this build is "Not requested". Credential storage is
-  in-memory only; Keychain integration is not built.
+  held server change lands (the published server rejects it 400). Session acquisition is now REAL CODE:
+  AuthSessionClient signs in through the published /api/auth/login
+  (JSON body + static CSRF marker header, MFA code when enrolled; the
+  server's identical-401 anti-enumeration is honored) and captures the
+  session cookie; CredentialController.signInAndIssue runs sign-in ->
+  dataset-scope mint -> Keychain save end to end. Storage:
+  KeychainCredentialStore (generic-password, ThisDeviceOnly, no iCloud
+  sync). STILL no execution evidence (uncompiled; fixture base URL
+  control-plane.invalid), so none of this is working iOS
+  functionality.
 - `Sources/URLFilter/DNSOverHTTPSClient.swift` - RFC 8484 DoH client
   attaching the scoped credential as an Authorization header, the
   app-mediated identity path from docs/design/DOH_IOS_TRANSPORT.md
