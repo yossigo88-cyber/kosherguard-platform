@@ -24,8 +24,15 @@ class TestResolvePolicyPath:
         assert resolve_policy_path(generation, "dev-1"
                                    ).endswith("policy.json")
 
-    def test_unauthenticated_gets_default(self, generation):
-        assert resolve_policy_path(generation, None
+    def test_unauthenticated_refused_on_authenticated_transport(
+            self, generation):
+        with pytest.raises(DevicePolicyError):
+            resolve_policy_path(generation, None)
+
+    def test_unauthenticated_default_only_on_explicit_fallback(
+            self, generation):
+        assert resolve_policy_path(generation, None,
+                                   allow_unauthenticated=True
                                    ).endswith("policy.json")
 
     def test_assigned_device_gets_own_policy(self, generation):
