@@ -146,3 +146,49 @@ def test_supplemental_path_traversal_refused(tmp_path):
             canonical_json({'domains': {}}), {},
             extra_documents={'../other.json': b'{}'})
     assert not (tmp_path.parent / 'other.json').exists()
+
+
+def test_proxy_automatic_reload_lifecycle_lkg_and_tenant_pin(client, engine, pub_root):
+    import time, importlib.util
+    login(client);make_default_policy(client)
+    with session_scope(engine) as s:
+        owner=s.query(User).filter_by(email='g@example.com').one();tid=owner.tenant_id
+        publish_selected(s,tid,pub_root,owner.email)
+    fp=os.path.abspath(os.path.join(os.path.dirname(__file__),'../../proxy-edge/server.py'))
+    spec=importlib.util.spec_from_file_location('proxy_auto',fp);proxy_mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(proxy_mod)
+    root=tenant_root(pub_root,tid)
+    proxy=proxy_mod.build_published_proxy(('127.0.0.1',0),root,b'local-test-key',watch_interval=.01)
+    from app.publisher import canonical_json
+    def publish(rev,tenant,blocked):
+        with Publisher(root).locked():
+            Publisher(root).publish(rev,canonical_json(dict(default_policy='allow',allowlist=[],blocklist=blocked,category_rules={'allow':[],'block':[]})),canonical_json({'domains':{}}),{'tenant_id':tenant})
+    def until(check):
+        end=time.monotonic()+2
+        while time.monotonic()<end:
+            if check():return
+            time.sleep(.01)
+        assert check()
+    try:
+        publish(2,tid,['changed.example'])
+        until(lambda:proxy.policy_bundle.revision==2)
+        assert proxy.policy_bundle.engines.default.decide('changed.example').action=='block'
+        publish(3,tid+1,['foreign.example'])
+        time.sleep(.05)
+        assert proxy.policy_bundle.revision==2
+        # Prepare corrupt generation before making it visible to the loop.
+        import shutil
+        staged=root+'-staged'
+        with Publisher(staged).locked():
+            Publisher(staged).publish(4,canonical_json(dict(default_policy='block',allowlist=[],blocklist=[],category_rules={'allow':[],'block':[]})),canonical_json({'domains':{}}),{'tenant_id':tid})
+        with open(os.path.join(staged,'current','policy.json'),'w') as f:f.write('{}')
+        shutil.move(os.path.join(staged,'generations','4'),os.path.join(root,'generations','4'))
+        os.symlink('generations/4',os.path.join(root,'incoming'))
+        os.replace(os.path.join(root,'incoming'),os.path.join(root,'current'))
+        time.sleep(.05)
+        assert proxy.policy_bundle.revision==2
+        publish(5,tid,['recovered.example'])
+        until(lambda:proxy.policy_bundle.revision==5)
+        assert proxy.policy_bundle.engines.default.decide('recovered.example').action=='block'
+    finally:
+        proxy.server_close()
+    assert proxy.publication_stop.is_set() and not proxy.publication_thread.is_alive()
