@@ -22,7 +22,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["policies-panel", "devices-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["policies-panel", "devices-panel", "mdm-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   $("who").textContent = me.body.email || "";
   await refresh();
@@ -39,6 +39,62 @@ async function refresh() {
     `<tr><td>${esc(d.name)}</td><td>${esc(d.state)}</td><td><select data-device="${d.id}">` +
     policyList.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("") +
     `</select><button class="link" data-assign="${d.id}">assign</button></td></tr>`).join("");
+  deviceList = devices.body.devices || [];
+  await refreshMdm();
+}
+
+let deviceList = [];
+let enrollmentList = [];
+
+async function refreshMdm() {
+  $("e-device").innerHTML = deviceList.map(d =>
+    `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+  const enr = await api("/api/mdm/enrollments");
+  enrollmentList = enr.body.enrollments || [];
+  const deviceName = (id) => {
+    const d = deviceList.find(x => x.id === id);
+    return d ? d.name : `#${id}`;
+  };
+  document.querySelector("#enrollments tbody").innerHTML = enrollmentList.map(e =>
+    `<tr><td>${esc(deviceName(e.device_id))}</td><td>${esc(e.enrollment_id)}</td>` +
+    `<td>${esc(e.state)}</td><td>${e.supervised ? "yes" : "no"}</td>` +
+    `<td>${esc(e.last_seen_at || "never")}</td>` +
+    `<td><button class="link" data-history="${e.id}">history</button></td></tr>`).join("");
+  $("c-enrollment").innerHTML = enrollmentList.map(e =>
+    `<option value="${e.id}">${esc(deviceName(e.device_id))} (${esc(e.state)})</option>`).join("");
+}
+
+$("enroll-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const r = await api("/api/mdm/enrollments", {method: "POST", headers: HDR,
+    body: JSON.stringify({device_id: Number($("e-device").value),
+                          supervised: $("e-supervised").checked})});
+  $("enroll-error").textContent = r.status === 200 ? "" : (r.body.error || "failed");
+  if (r.status === 200) await refreshMdm();
+});
+
+$("command-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const enrId = $("c-enrollment").value;
+  if (!enrId) { $("command-error").textContent = "no enrollment"; return; }
+  const r = await api(`/api/mdm/enrollments/${enrId}/commands`, {method: "POST",
+    headers: HDR, body: JSON.stringify({command: $("c-command").value, payload: {}})});
+  $("command-error").textContent = r.status === 200 ? "" : (r.body.error || "failed");
+  $("command-ok").textContent = r.status === 200
+    ? `queued (${r.body.status}; applied: ${r.body.applied ? "yes" : "no"})` : "";
+  if (r.status === 200) await loadHistory(enrId);
+});
+
+document.addEventListener("click", async (e) => {
+  const hist = e.target.dataset && e.target.dataset.history;
+  if (hist) await loadHistory(hist);
+});
+
+async function loadHistory(enrId) {
+  const r = await api(`/api/mdm/enrollments/${enrId}/commands`);
+  document.querySelector("#commands tbody").innerHTML = (r.body.commands || []).map(c =>
+    `<tr><td>${c.id}</td><td>${esc(c.command)}</td><td>${esc(c.status)}</td>` +
+    `<td>${c.applied ? "yes" : "no"}</td><td>${esc(c.result_detail || "")}</td></tr>`).join("");
 }
 
 document.addEventListener("click", async (e) => {
