@@ -151,3 +151,47 @@ def remove_application_command(bundle_id: str) -> dict:
 def managed_application_list_command() -> dict:
     """ManagedApplicationList query payload (no parameters)."""
     return {}
+
+
+# -- Declarative (iOS 27+) app settings -------------------------------
+#
+# Verified against Apple's device-management schema repository,
+# declarative/declarations/configurations/app.settings.yaml (release
+# branch, fetched 2026-11-16):
+#   declarationtype: com.apple.configuration.app.settings
+#   iOS/iPadOS/tvOS/visionOS 27.0+, supervision REQUIRED, system scope
+#   (Shared iPad: user scope); watchOS n/a.
+#   Payload keys: Allowed.AllowedApps / Allowed.DeniedApps, each an
+#   array of { "AppIdentifier": <bundle id> } (AppIdentifier required).
+#   Include "com.apple.webapp" to allow/deny all Web Clips.
+# This is Apple's replacement for the deprecated restrictions-payload
+# keys above. BUILT-UNVERIFIED: structure matches the published schema;
+# on-device behavior still requires the Part 17 device-testing phase.
+
+DDM_APP_SETTINGS_TYPE = "com.apple.configuration.app.settings"
+
+
+def app_settings_declaration(mode: str, bundle_ids,
+                             server_token: str | None = None) -> dict:
+    """A com.apple.configuration.app.settings DDM declaration.
+
+    mode "allowlist" emits Allowed.AllowedApps; "blocklist" emits
+    Allowed.DeniedApps. server_token is the server's change-tracking
+    token for the declaration (any opaque string; bump it when the
+    content changes so devices re-apply). Supervision + iOS 27+ are
+    device-side gates the server cannot verify - the enrollment state
+    the control plane tracks is where that eligibility is checked.
+    """
+    if mode not in APP_MODES:
+        raise AppManagementError(
+            f"mode must be one of {APP_MODES}, got {mode!r}")
+    ids = validate_bundle_ids(bundle_ids)
+    key = "AllowedApps" if mode == "allowlist" else "DeniedApps"
+    payload = {"Allowed": {key: [{"AppIdentifier": b} for b in ids]}}
+    declaration = {
+        "Type": DDM_APP_SETTINGS_TYPE,
+        "Identifier": f"com.kosherguard.appsettings.{mode}",
+        "ServerToken": server_token or "1",
+        "Payload": payload,
+    }
+    return declaration
