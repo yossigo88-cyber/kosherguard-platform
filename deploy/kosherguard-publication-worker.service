@@ -1,0 +1,21 @@
+# Configuration only. NOT installed or started during code build.
+[Unit]
+Description=KosherGuard durable publication worker
+After=network-online.target
+[Service]
+Type=simple
+User=kosherguard
+Group=kosherguard
+WorkingDirectory=/opt/kosherguard/control-plane
+EnvironmentFile=/etc/kosherguard/control-plane.env
+ExecStart=/opt/kosherguard/venv/bin/python -m app.worker --interval 5
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+ReadWritePaths=/var/lib/kosherguard
+[Install]
+WantedBy=multi-user.target
