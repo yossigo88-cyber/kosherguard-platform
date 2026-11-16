@@ -62,7 +62,8 @@ def mk_device(c, name="phone-1"):
 
 def mk_enrollment(c, device_id):
     r = c.post("/api/mdm/enrollments",
-               json={"device_id": device_id, "supervised": True},
+               json={"device_id": device_id,
+                     "supervision_requested": True},
                headers=HDR)
     assert r.status_code == 200, r.json()
     return r.json()
@@ -73,10 +74,48 @@ class TestEnrollments:
         dev = mk_device(client)
         enr = mk_enrollment(client, dev)
         assert enr["state"] == "pending"
-        assert enr["supervised"] is True
+        assert enr["supervision_requested"] is True
         listing = client.get("/api/mdm/enrollments").json()["enrollments"]
         assert len(listing) == 1
         assert listing[0]["device_id"] == dev
+
+    def test_requested_supervision_is_never_verified(self, client):
+        """A guardian's checkbox is a request, not a device fact. A
+        pending, never-contacted enrollment must never report verified
+        supervision, whatever the API caller asked for."""
+        dev = mk_device(client)
+        enr = mk_enrollment(client, dev)
+        assert enr["supervision_requested"] is True
+        assert enr["supervision_verified"] is False
+        listed = client.get("/api/mdm/enrollments").json()["enrollments"][0]
+        assert listed["supervision_verified"] is False
+
+    def test_verify_pending_enrollment_refused(self, engine, client):
+        """The device-reported path refuses to verify supervision on a
+        pending enrollment: the device has never checked in."""
+        enr = mk_enrollment(client, mk_device(client))
+        tid = tenant_id_of(engine)
+        with session_scope(engine) as s:
+            with pytest.raises(mdm_ops.MDMError) as exc:
+                mdm_ops.mark_supervision_verified(s, tid, enr["id"], True)
+            assert exc.value.status == 409
+            row = s.get(__import__("app.models", fromlist=["MDMEnrollment"])
+                        .MDMEnrollment, enr["id"])
+            assert row.supervision_verified is False
+
+    def test_verify_after_activation_works(self, engine, client):
+        """Once a device is active (has checked in), device-reported
+        supervision can be recorded through the check-in path."""
+        enr = mk_enrollment(client, mk_device(client))
+        tid = tenant_id_of(engine)
+        with session_scope(engine) as s:
+            from app.models import MDMEnrollment
+            row = s.get(MDMEnrollment, enr["id"])
+            row.state = "active"
+            s.flush()
+            mdm_ops.mark_supervision_verified(s, tid, enr["id"], True)
+            assert s.get(MDMEnrollment, enr["id"]).supervision_verified \
+                is True
 
     def test_enroll_other_tenants_device_rejected(self, engine):
         c1 = make_client(engine, "a@example.com", "tenant-a")
