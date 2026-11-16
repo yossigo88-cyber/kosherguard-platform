@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import mdm_ops, security
+from . import mdm_ops, schedule_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
 from .models import AuthSession, LoginAttempt, Role, User
@@ -70,6 +70,7 @@ class PolicyBody(BaseModel):
     category_allow: list[str] = []
     category_block: list[str] = []
     enabled: bool = True
+    schedules: list[dict] | None = None
 
 
 class DeviceBody(BaseModel):
@@ -78,6 +79,10 @@ class DeviceBody(BaseModel):
 
 class AssignmentBody(BaseModel):
     policy_id: int
+
+
+class SchedulesBody(BaseModel):
+    schedules: list[dict]
 
 
 class EnrollmentBody(BaseModel):
@@ -265,7 +270,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "default_policy": doc["default_policy"],
                 "allowlist": doc["allowlist"], "blocklist": doc["blocklist"],
                 "category_allow": doc["category_rules"]["allow"],
-                "category_block": doc["category_rules"]["block"]}
+                "category_block": doc["category_rules"]["block"],
+                "schedules": schedule_ops.doc_schedules(doc)}
 
     def get_tenant_policy(session, tenant_id, policy_id):
         policy = session.get(Policy, policy_id)
@@ -316,6 +322,15 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             return error(404, "policy not found")
         try:
             doc = policy_ops.normalize_engine_doc(body.model_dump())
+            # A general policy update must not silently drop the
+            # policy's filtering schedules (that would loosen filtering
+            # without anyone asking). Carry them over unchanged unless
+            # this request itself supplies a replacement list.
+            if body.schedules is None:
+                existing = schedule_ops.doc_schedules(
+                    _json.loads(policy.engine_doc))
+                if existing:
+                    doc = schedule_ops.with_schedules(doc, existing)
             policy_ops.enforce_on_content_mutation(
                 session, user.tenant_id, policy, doc)
         except policy_ops.PolicyError as exc:
@@ -328,6 +343,41 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         ScopedSession(session, user.tenant_id).audit(
             "policy.update", f"updated policy {body.name!r} "
             f"(version {version})", actor_user_id=user.id)
+        session.commit()
+        return policy_json(policy, session)
+
+    @app.put("/api/policies/{policy_id}/schedules",
+             dependencies=[Depends(require_csrf_header)])
+    def replace_schedules(policy_id: int, body: SchedulesBody,
+                          user: User = Depends(current_user),
+                          session: Session = Depends(db_session)):
+        """Replace a policy's filtering schedules wholesale.
+
+        Wholesale replacement (rather than per-schedule CRUD) means the
+        change goes through the exact same versioned, audited,
+        tighten-only-checked mutation path as every other policy
+        content change."""
+        import json as _json
+        policy = get_tenant_policy(session, user.tenant_id, policy_id)
+        if policy is None:
+            return error(404, "policy not found")
+        doc = _json.loads(policy.engine_doc)
+        try:
+            normalized = schedule_ops.validate_schedules(body.schedules)
+            candidate = schedule_ops.with_schedules(doc, normalized)
+            policy_ops.enforce_on_content_mutation(
+                session, user.tenant_id, policy, candidate)
+        except schedule_ops.ScheduleError as exc:
+            return error(400, f"invalid schedules: {exc}")
+        except policy_ops.PolicyError as exc:
+            return error(exc.status, str(exc))
+        policy.engine_doc = _json.dumps(candidate)
+        version = policy_ops.snapshot_version(session, policy, user.id)
+        ScopedSession(session, user.tenant_id).audit(
+            "policy.schedules",
+            f"replaced schedules of {policy.name!r} "
+            f"({len(normalized)} schedule(s), version {version})",
+            actor_user_id=user.id)
         session.commit()
         return policy_json(policy, session)
 
