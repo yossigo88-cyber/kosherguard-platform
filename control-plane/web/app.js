@@ -5,6 +5,7 @@ function esc(s) {
 const HDR = {"X-KosherGuard-Request": "1", "Content-Type": "application/json"};
 const $ = (id) => document.getElementById(id);
 let policyList = [];
+let accountInfo = {};
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -22,8 +23,9 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["policy-preview-panel", "publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["groups-panel", "policy-preview-panel", "publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
+  accountInfo = me.body;
   $("who").textContent = me.body.email || "";
   if (me.body.privileged && !me.body.mfa_verified) {
     document.querySelectorAll("section.panel").forEach(p => p.classList.add("hidden"));
@@ -50,7 +52,7 @@ async function refresh() {
   refreshSchedules();
   document.querySelector("#policies tbody").innerHTML = policyList.map(p =>
     `<tr><td>${esc(p.name)}</td><td>${esc(p.default_policy)}</td><td>${esc(p.blocklist.join(", "))}</td>` +
-    `<td>${p.versions}</td><td><button class="link" data-select="${p.id}">make default</button></td></tr>`).join("");
+    `<td>${p.versions}</td><td>${p.protected_baseline ? "protected baseline" : (accountInfo.role === "owner" ? `<button class="link" data-select="${p.id}">make protected baseline</button>` : "owner-controlled baseline")}</td></tr>`).join("");
   const devices = await api("/api/devices");
   document.querySelector("#devices tbody").innerHTML = (devices.body.devices || []).map(d =>
     `<tr><td>${esc(d.name)}</td><td>${esc(d.state)}</td><td><select data-device="${d.id}">` +
@@ -58,6 +60,7 @@ async function refresh() {
     `</select><button class="link" data-assign="${d.id}">assign</button></td></tr>`).join("");
   deviceList = devices.body.devices || [];
   refreshFiltering();
+  await refreshGroups();
   await refreshAppsPanel();
   await refreshMdm();
 }
@@ -497,6 +500,20 @@ async function refreshGuardians() {
     td.appendChild(roleBtn);
     td.appendChild(document.createTextNode(" "));
     td.appendChild(mfaBtn);
+    if (g.role === "guardian" && accountInfo.role === "owner") {
+      const grantBtn=document.createElement("button");grantBtn.className="link";
+      grantBtn.textContent="delegated settings";
+      grantBtn.onclick=async()=>{
+        const text=prompt("Explicit capabilities: policies, schedules, devices, groups, apps (inventory only), publish. Empty revokes all. No baseline/category/protection-removal grant.",(g.delegated_settings||[]).join(","));
+        if(text===null)return;
+        const capabilities=text.split(",").map(x=>x.trim()).filter(Boolean);
+        const rr=await api(`/api/guardians/${g.id}/delegation`,{method:"PUT",headers:HDR,body:JSON.stringify({capabilities})});
+        $("guardian-error").textContent=rr.status===200?"Delegation saved":(rr.body.error||"Failed");
+        refreshGuardians();
+      };
+      td.appendChild(grantBtn);
+    }
+
     tr.appendChild(td);
     tbody.appendChild(tr);
   }
@@ -796,3 +813,27 @@ $("retention-form").addEventListener("submit", async (e) => {
 setInterval(() => {
   if (!$("filtering-panel").classList.contains("hidden")) refreshFiltering();
 }, 60000);
+
+async function refreshGroups(){
+  const r=await api("/api/groups");
+  const groups=r.status===200?r.body.groups:[];
+  $("group-policy").innerHTML='<option value="">Use protected baseline</option>'+policyList.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  $("group-select").innerHTML=groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join("");
+  $("group-device").innerHTML=deviceList.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join("");
+  $("groups-table").querySelector("tbody").innerHTML=groups.map(g=>`<tr><td>${esc(g.name)}</td><td>${esc((policyList.find(p=>p.id===g.policy_id)||{}).name||"protected baseline")}</td><td>${g.device_ids.map(id=>esc((deviceList.find(d=>d.id===id)||{}).name||id)).join(", ")}</td></tr>`).join("");
+}
+$("group-form").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const r=await api("/api/groups",{method:"POST",headers:HDR,body:JSON.stringify({name:$("group-name").value,policy_id:Number($("group-policy").value)||null})});
+  $("group-result").textContent=r.status===200?"Group saved; publish to distribute":(r.body.error||"Failed");
+  if(r.status===200)await refreshGroups();
+});
+async function groupMembership(remove){
+  const gid=$("group-select").value,did=$("group-device").value;
+  if(!gid||!did)return;
+  const r=await api(`/api/groups/${gid}/devices/${did}`,{method:remove?"DELETE":"PUT",headers:HDR});
+  $("group-result").textContent=r.status===200?"Membership saved; publish to distribute":(r.body.error||"Failed");
+  if(r.status===200)await refreshGroups();
+}
+$("group-member-form").addEventListener("submit",async e=>{e.preventDefault();await groupMembership(false);});
+$("group-remove-member").addEventListener("click",()=>groupMembership(true));
