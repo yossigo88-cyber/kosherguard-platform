@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "URLFilter", targets: ["URLFilter"]),
     ],
     targets: [
-        .target(name: "KosherGuard"),
+        .target(name: "KosherGuard", dependencies: ["URLFilter"]),
         .target(name: "FilterExtension"),
         .target(name: "URLFilter"),
     ]
