@@ -343,13 +343,6 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                     doc = schedule_ops.with_schedules(doc, existing)
             policy_ops.enforce_on_content_mutation(
                 session, user.tenant_id, policy, doc)
-            if not body.enabled:
-                default = policy_ops.selected_default(session,
-                                                      user.tenant_id)
-                if default is not None and default.id == policy.id:
-                    raise policy_ops.PolicyError(
-                        "cannot disable the selected default policy; "
-                        "select another default first", 409)
         except policy_ops.PolicyError as exc:
             return error(exc.status, str(exc))
         policy.name = body.name
@@ -1069,7 +1062,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         try:
             result = publication_ops.publish_selected(
                 session, user.tenant_id, settings.publications_root,
-                user.email, categories_path=settings.categories_file)
+                user.email)
         except publication_ops.PolicyError as exc:
             session.rollback()
             return error(exc.status, str(exc))
@@ -1084,8 +1077,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     def publication_current(user: User = Depends(current_user)):
         from .publisher import Publisher
         try:
-            manifest = Publisher(publication_ops.tenant_root(
-                settings.publications_root, user.tenant_id)).current()
+            manifest = Publisher(settings.publications_root).current()
         except Exception as exc:
             return error(500, f"could not read current generation: {exc}")
         if manifest is None:
