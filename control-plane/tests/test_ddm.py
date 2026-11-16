@@ -185,3 +185,85 @@ class TestDDMServing:
             st = states[cfg["Identifier"]]
             assert st["server_token"] == cfg["ServerToken"]
             assert st["active"] is False and st["valid"] == "unknown"
+
+
+class TestEnrollmentAuthorization:
+    """Security fix (device-management auth): an enrollment ID alone
+    must never authorize. A 'pending' placeholder - created by a
+    guardian before any device has checked in - is refused on every
+    DDM serving route until the NanoMDM enrollment-info sync
+    (HMAC-authenticated peer) confirms a real device check-in."""
+
+    def _pending_client(self, engine):
+        c = make_client(engine, {"KG_DDM_HMAC_KEY": HMAC_KEY})
+        with session_scope(engine) as s:
+            dev = s.query(Device).filter_by(name="kid-phone").one()
+            s.add(MDMEnrollment(tenant_id=dev.tenant_id,
+                                device_id=dev.id,
+                                enrollment_id="ENR-PENDING",
+                                state="pending"))
+        return c
+
+    def test_pending_refused_on_all_ddm_routes(self, engine):
+        c = self._pending_client(engine)
+        hdr = ddm_headers(enrollment="ENR-PENDING")
+        for method, path in (
+                ("get", "/api/ddm/tokens"),
+                ("get", "/api/ddm/declaration-items"),
+                ("get", "/api/ddm/declaration/configuration/x"),
+        ):
+            r = getattr(c, method)(path, headers=hdr)
+            assert r.status_code == 403, (path, r.status_code, r.json())
+        body = b'{"StatusResponses":{}}'
+        r = c.put("/api/ddm/status", content=body,
+                  headers=ddm_headers(body, enrollment="ENR-PENDING"))
+        assert r.status_code == 403
+
+    def test_checkin_activates_pending_enrollment(self, engine):
+        c = self._pending_client(engine)
+        body = json.dumps({"enrollment_id": "ENR-PENDING",
+                           "supervised": True}).encode()
+        r = c.post("/api/mdm/enrollment-checkin", content=body,
+                   headers={"X-Hmac-Signature": sig(body)})
+        assert r.status_code == 200, r.json()
+        assert r.json() == {"enrollment_id": "ENR-PENDING",
+                            "state": "enrolled",
+                            "supervision_verified": True}
+        # Once confirmed, the enrollment may sync declarations.
+        r = c.get("/api/ddm/tokens",
+                  headers=ddm_headers(enrollment="ENR-PENDING"))
+        assert r.status_code == 200
+
+    def test_checkin_requires_valid_hmac(self, engine):
+        c = self._pending_client(engine)
+        body = json.dumps({"enrollment_id": "ENR-PENDING",
+                           "supervised": True}).encode()
+        r = c.post("/api/mdm/enrollment-checkin", content=body,
+                   headers={"X-Hmac-Signature": "bogus"})
+        assert r.status_code == 401
+        # Bad-HMAC checkin must not activate anything.
+        r = c.get("/api/ddm/tokens",
+                  headers=ddm_headers(enrollment="ENR-PENDING"))
+        assert r.status_code == 403
+
+    def test_checkin_unknown_enrollment_404(self, engine):
+        c = make_client(engine, {"KG_DDM_HMAC_KEY": HMAC_KEY})
+        body = json.dumps({"enrollment_id": "NOPE",
+                           "supervised": False}).encode()
+        r = c.post("/api/mdm/enrollment-checkin", content=body,
+                   headers={"X-Hmac-Signature": sig(body)})
+        assert r.status_code == 404
+
+    def test_checkin_idempotent_update(self, engine):
+        c = self._pending_client(engine)
+        for supervised in (True, False):
+            body = json.dumps({"enrollment_id": "ENR-PENDING",
+                               "supervised": supervised}).encode()
+            r = c.post("/api/mdm/enrollment-checkin", content=body,
+                       headers={"X-Hmac-Signature": sig(body)})
+            assert r.status_code == 200
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            assert row.state == "enrolled"
+            assert row.supervision_verified is False  # latest wins
