@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 
 
 class TokenError(Exception):
@@ -44,27 +45,39 @@ def _b64d(text: str) -> bytes:
 
 def issue_token(key: bytes, device_id: str, tenant_id: str,
                 scope: str, lifetime_seconds: int = 3600,
-                now: float | None = None) -> str:
+                now: float | None = None,
+                policy_id: str | None = None) -> str:
     if not key:
         raise ValueError("empty signing key")
     if lifetime_seconds <= 0 or lifetime_seconds > 86400:
         raise ValueError("lifetime must be within (0, 86400] seconds")
     now = time.time() if now is None else now
     payload = {
+        "jti": uuid.uuid4().hex,
         "device_id": device_id,
         "tenant_id": tenant_id,
         "scope": scope,
         "iat": int(now),
         "exp": int(now + lifetime_seconds),
     }
+    if policy_id is not None:
+        payload["policy_id"] = policy_id
     body = _b64e(json.dumps(payload, separators=(",", ":")).encode())
     sig = _b64e(hmac.new(key, body.encode(), hashlib.sha256).digest())
     return f"{body}.{sig}"
 
 
 def verify_token(key: bytes, token: str, required_scope: str,
-                 now: float | None = None) -> dict:
-    """Return the payload or raise TokenError. Never logs the token."""
+                 now: float | None = None,
+                 revoked_jtis: set[str] | None = None,
+                 required_policy_id: str | None = None) -> dict:
+    """Return the payload or raise TokenError. Never logs the token.
+
+    revoked_jtis: revocation store of token ids (jti). Revocation is
+    immediate for listed tokens; unlisted tokens still expire on their
+    short lifetime. required_policy_id: when set, the token must be
+    bound to exactly that policy (authorization, not just
+    authentication)."""
     if not key:
         raise TokenError("verification unavailable")
     try:
@@ -84,7 +97,11 @@ def verify_token(key: bytes, token: str, required_scope: str,
         raise TokenError("token expired")
     if payload.get("scope") != required_scope:
         raise TokenError("wrong scope")
-    for field in ("device_id", "tenant_id", "iat"):
+    for field in ("jti", "device_id", "tenant_id", "iat"):
         if field not in payload:
             raise TokenError(f"missing {field}")
+    if revoked_jtis is not None and payload["jti"] in revoked_jtis:
+        raise TokenError("token revoked")
+    if required_policy_id is not None and             payload.get("policy_id") != required_policy_id:
+        raise TokenError("wrong policy binding")
     return payload
