@@ -47,6 +47,10 @@ class AcceptInviteBody(BaseModel):
     token: str
     password: str
 
+
+class MfaResetBody(BaseModel):
+    password: str
+
 SESSION_COOKIE = "kg_session"
 CSRF_HEADER = "x-kosherguard-request"
 MAX_FAILURES = 5
@@ -614,11 +618,17 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     @app.post("/api/guardians/{user_id}/mfa-reset",
               dependencies=[Depends(require_csrf_header)])
-    def mfa_reset(user_id: int, user: User = Depends(current_user),
+    def mfa_reset(user_id: int, body: MfaResetBody,
+                  user: User = Depends(current_user),
                   session: Session = Depends(db_session)):
         denied = require_owner(user)
         if denied is not None:
             return denied
+        # Fresh authentication: an unattended session must not be
+        # enough to strip a guardian's MFA.
+        if not security.verify_password(body.password,
+                                        user.password_hash):
+            return error(403, "fresh authentication failed")
         target = session.get(User, user_id)
         if target is None or target.tenant_id != user.tenant_id:
             return error(404, "guardian not found")
