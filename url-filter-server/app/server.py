@@ -30,7 +30,8 @@ from .dataset import Dataset
 
 def create_app(dataset: Dataset,
                device_token_key: bytes | None = None,
-               revoked_jtis: set | None = None) -> FastAPI:
+               revoked_jtis: set | None = None,
+               revocation_feed=None) -> FastAPI:
     if device_token_key is None:
         raw = os.environ.get("KG_DEVICE_TOKEN_KEY", "")
         device_token_key = raw.encode() if raw else None
@@ -43,12 +44,14 @@ def create_app(dataset: Dataset,
         listed tokens immediately."""
         if device_token_key is None:
             return {"device_id": "dev-mode", "tenant_id": "dev-mode"}
+        effective = (revocation_feed.shared_set
+                     if revocation_feed is not None else revoked_jtis)
         header = request.headers.get("authorization", "")
         token = (header[7:] if header.lower().startswith("bearer ")
                  else "")
         try:
             return verify_token(device_token_key, token, "dataset",
-                                revoked_jtis=revoked_jtis)
+                                revoked_jtis=effective)
         except TokenError as exc:
             # Deliberately generic: no oracle about which check failed.
             raise HTTPException(status_code=401,
