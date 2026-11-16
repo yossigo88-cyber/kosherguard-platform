@@ -214,3 +214,45 @@ def test_tenant_sets_are_isolated(feed_server):
     f2_tok = issue_token(KEY, "dev-2", "tenant-2", "dataset")
     j2 = verify_token(KEY, f2_tok, "dataset")["jti"]
     assert j1 not in f2.jtis and j2 not in f1.jtis
+
+
+def test_entrypoint_build_runtime(feed_server):
+    """The service entrypoint (build_runtime) constructs the feed,
+    starts the refresh loop, and stops it - a revoked token is refused
+    without touching the constructor path directly."""
+    from app.server import build_runtime
+    ds = build_dataset([URLRule("bet365.com", "block", "gambling")],
+                       version=1, provenance="test")
+    _FeedHandler.body = b'{"revoked_jtis": []}'
+    token = issue_token(KEY, "dev-1", "tenant-1", "dataset")
+    app, stop = build_runtime(
+        ds, device_token_key=KEY,
+        control_plane_url=f"http://127.0.0.1:{feed_server.server_address[1]}",
+        token_provider=lambda: token, refresh_interval=0.1)
+    assert stop is not None
+    c = TestClient(app)
+    hdr = {"Authorization": f"Bearer {token}"}
+    try:
+        assert c.get("/v1/dataset/manifest",
+                     headers=hdr).status_code == 200
+        jti = verify_token(KEY, token, "dataset")["jti"]
+        _FeedHandler.body = json.dumps({"revoked_jtis": [jti]}).encode()
+        assert _wait_for(lambda: c.get(
+            "/v1/dataset/manifest", headers=hdr).status_code == 401)
+    finally:
+        stop.set()
+
+
+def test_entrypoint_without_feed(feed_server):
+    """Local development shape: no control plane configured, no feed,
+    verification still works."""
+    from app.server import build_runtime
+    ds = build_dataset([URLRule("bet365.com", "block", "gambling")],
+                       version=1, provenance="test")
+    app, stop = build_runtime(ds, device_token_key=KEY)
+    assert stop is None
+    token = issue_token(KEY, "dev-1", "tenant-1", "dataset")
+    c = TestClient(app)
+    assert c.get("/v1/dataset/manifest",
+                 headers={"Authorization": f"Bearer {token}"}
+                 ).status_code == 200
