@@ -15,7 +15,8 @@ import os
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import (CategoryRule, Device, DeviceAssignment, Policy,
+from .models import (CategoryRule, CategorySource, CategorySourceUpdate,
+                     Device, DeviceAssignment, Policy,
                      PolicyVersion, PublicationState)
 from .policy_ops import PolicyError
 from .publisher import Publisher, PublicationError, canonical_json
@@ -57,10 +58,16 @@ def _assert_categories_file_matches_db(session: Session,
     (category-pipeline build) and there is nothing committed to diverge
     from, so the check does not apply."""
     managed = session.scalars(select(CategoryRule).where(
-        CategoryRule.active.is_(True),
         CategoryRule.source_update_id.is_not(None)).limit(1)).first()
-    if managed is None:
+    active_update = session.scalars(select(CategorySourceUpdate).where(
+        CategorySourceUpdate.status == "active").limit(1)).first()
+    if managed is None and active_update is None:
         return
+    # Provenance, not row count: once the registry has managed any
+    # rules (even if all were later deactivated), the file must match
+    # the committed registry state - zero active rules must NOT
+    # silently downgrade to the operator-file carve-out with a stale
+    # registry file still on disk.
     expected = canonical_json(build_categories_doc(session))
     with open(categories_path, "rb") as fh:
         on_disk = fh.read()
