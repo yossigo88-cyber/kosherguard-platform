@@ -92,6 +92,7 @@ class SchedulesBody(BaseModel):
 class EnrollmentBody(BaseModel):
     device_id: int
     supervision_requested: bool = False
+    device_udid: str | None = None
 
 
 class MDMCommandBody(BaseModel):
@@ -144,6 +145,20 @@ class MfaConfirmBody(BaseModel):
 
 def error(status: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": message})
+
+
+def _load_device_auth():
+    """Load the shared device_auth by file path - the control plane's
+    own package is also named "app", so a plain import would resolve
+    to the wrong package."""
+    import importlib.util as _ilu
+    _da_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "..",
+        "url-filter-server", "app", "device_auth.py"))
+    _spec = _ilu.spec_from_file_location("kg_device_auth", _da_path)
+    _da = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_da)
+    return _da
 
 
 def create_app(settings: Settings, engine=None) -> FastAPI:
@@ -639,7 +654,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     def enrollment_json(row):
         return {"id": row.id, "device_id": row.device_id,
-                "enrollment_id": row.enrollment_id, "state": row.state,
+                "enrollment_id": row.enrollment_id,
+                "device_udid": row.device_udid, "state": row.state,
                 "supervision_requested": row.supervision_requested,
                 "supervision_verified": row.supervision_verified,
                 "last_seen_at": (row.last_seen_at.isoformat()
@@ -666,7 +682,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         try:
             row = mdm_ops.create_enrollment(
                 session, user.tenant_id, body.device_id,
-                body.supervision_requested)
+                body.supervision_requested,
+                device_udid=body.device_udid)
         except mdm_ops.MDMError as exc:
             return error(exc.status, str(exc))
         session.commit()
@@ -880,15 +897,17 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                         session: Session = Depends(db_session)):
         try:
             body = getattr(request.state, "_ddm_body", None)
-            enrollment = ddm_ops.resolve_enrollment(
-                session, request.headers.get("x-enrollment-id"))
             ddm_ops.verify_hmac(settings.ddm_hmac_key,
                                 request.headers.get("x-hmac-signature"),
                                 body or b"")
-            if ddm_ops.ensure_active(session, enrollment):
+            enrollment, bound = ddm_ops.resolve_or_bind(
+                session, request.headers.get("x-enrollment-id"))
+            activated = ddm_ops.ensure_active(session, enrollment)
+            if bound or activated:
                 ScopedSession(session, enrollment.tenant_id).audit(
                     "mdm.enrollment_activated",
-                    f"{enrollment.enrollment_id}: pending -> enrolled "
+                    f"{enrollment.enrollment_id}: "
+                    f"bound={bound} pending -> enrolled "
                     "(first authenticated DDM check-in)")
                 session.commit()
         except ddm_ops.DDMError as exc:
@@ -955,14 +974,16 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         body = await request.body()
         request.state._ddm_body = body
         try:
-            enrollment = ddm_ops.resolve_enrollment(
-                session, request.headers.get("x-enrollment-id"))
             ddm_ops.verify_hmac(settings.ddm_hmac_key,
                                 request.headers.get("x-hmac-signature"), body)
-            if ddm_ops.ensure_active(session, enrollment):
+            enrollment, bound = ddm_ops.resolve_or_bind(
+                session, request.headers.get("x-enrollment-id"))
+            activated = ddm_ops.ensure_active(session, enrollment)
+            if bound or activated:
                 ScopedSession(session, enrollment.tenant_id).audit(
                     "mdm.enrollment_activated",
-                    f"{enrollment.enrollment_id}: pending -> enrolled "
+                    f"{enrollment.enrollment_id}: "
+                    f"bound={bound} pending -> enrolled "
                     "(first authenticated DDM check-in)")
             ddm_ops.record_status(session, enrollment, body)
         except ddm_ops.DDMError as exc:
@@ -1080,17 +1101,53 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"device_id": row.id, "revoked": len(outstanding)}
 
     @app.get("/api/credential-revocations")
-    def credential_revocations(user: User = Depends(current_user),
+    def credential_revocations(request: Request,
                                session: Session = Depends(db_session)):
-        """Revoked, not-yet-expired jtis for this tenant (the set edge
-        verifiers refuse). Guardian-readable; automated edge pull is
-        pending the distribution channel design."""
-        denied = require_guardian(user)
-        if denied is not None:
-            return denied
+        """Revoked, not-yet-expired jtis for one tenant (the set edge
+        verifiers refuse). Two authenticated readers: a guardian
+        session, or an edge presenting a scoped device token (dataset,
+        proxy or doh) - the token's tenant scopes the feed, so an edge
+        can never read another tenant's revocations."""
+        tenant_id = None
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            payload = None
+            _da = _load_device_auth()
+            for scope in ("dataset", "proxy", "doh"):
+                try:
+                    payload = _da.verify_token(
+                        settings.device_token_key.encode(),
+                        header[7:].strip(), scope)
+                    break
+                except Exception:
+                    continue
+            if payload is None:
+                return error(401, "unauthorized")
+            try:
+                tenant_id = int(payload.get("tenant_id"))
+            except (TypeError, ValueError):
+                return error(401, "unauthorized")
+        else:
+            cookie = request.cookies.get(SESSION_COOKIE)
+            auth_row = (session.scalar(select(AuthSession).where(
+                AuthSession.token_hash ==
+                security.hash_session_token(cookie))) if cookie else None)
+            user = None
+            if auth_row is not None:
+                expires = auth_row.expires_at
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if expires > utcnow():
+                    user = session.get(User, auth_row.user_id)
+            if user is None:
+                return error(401, "authentication required")
+            denied = require_guardian(user)
+            if denied is not None:
+                return denied
+            tenant_id = user.tenant_id
         now = utcnow()
         rows = session.execute(select(IssuedCredential).where(
-            IssuedCredential.tenant_id == user.tenant_id,
+            IssuedCredential.tenant_id == tenant_id,
             IssuedCredential.revoked_at.is_not(None),
             IssuedCredential.expires_at > now)).scalars().all()
         return {"revoked_jtis": [r.jti for r in rows]}
