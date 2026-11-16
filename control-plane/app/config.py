@@ -42,8 +42,6 @@ class Settings:
             "KG_PUBLICATIONS_ROOT", "").strip()
         if not self.publications_root:
             raise ConfigError("KG_PUBLICATIONS_ROOT is required")
-        # Optional: path to the category-pipeline's built categories.json.
-        self.categories_file = env.get("KG_CATEGORIES_FILE", "").strip() or None
         # Optional: NanoMDM server base URL and API key. When unset the
         # control plane records commands as queued without delivery -
         # the honest state while no MDM server is configured.
