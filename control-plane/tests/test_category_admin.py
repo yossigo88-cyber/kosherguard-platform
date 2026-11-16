@@ -28,7 +28,8 @@ def make_app(engine, is_admin):
         s.flush()
         user = User(tenant_id=tenant.id, email="guardian@example.com",
                     password_hash=security.hash_password(PASSWORD),
-                    role=Role.owner, is_platform_admin=is_admin)
+                    role=Role.owner, is_platform_admin=is_admin,
+                    staff_role="owner" if is_admin else None)
         s.add(user)
     settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
                          "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"})
