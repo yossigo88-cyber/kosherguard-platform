@@ -148,7 +148,7 @@ async function refreshCategories() {
     $("category-form").classList.add("hidden");
     return;
   }
-  const body = await r.json();
+  const body = r.body;
   const tbody = $("cat-table").querySelector("tbody");
   tbody.innerHTML = "";
   for (const rule of body.rules || []) {
@@ -190,12 +190,11 @@ $("category-form").addEventListener("submit", async (e) => {
       source: $("cat-source").value,
     }),
   });
-  if (r.ok) {
+  if (r.status === 200) {
     ok.textContent = "Rule saved.";
     $("cat-domain").value = "";
     refreshCategories();
   } else {
-    const body = await r.json().catch(() => ({}));
-    err.textContent = body.detail || body.message || `Error ${r.status}`;
+    err.textContent = r.body.detail || r.body.error || `Error ${r.status}`;
   }
 });
