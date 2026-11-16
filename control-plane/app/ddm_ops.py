@@ -24,14 +24,20 @@ reaches the routes below directly. No adapter delivery step exists for
 declarations; the adapter's role is only to enqueue the classic
 DeclarativeManagement command that activates DDM on the device.
 
-Trust model: the only identity on these endpoints is the
-X-Enrollment-ID header resolved against a known MDMEnrollment row
-(the enrollment IDs NanoMDM mints and forwards). When
-KG_DDM_HMAC_KEY is configured, requests must additionally carry a
-valid X-Hmac-Signature, matching NanoMDM's -dm-send-hmac-key. Device
-behavior remains BUILT-UNVERIFIED until the Part 17 device-testing
-phase; a served declaration is not an applied declaration - the status
-endpoint is where the device reports actual application state.
+Trust model: X-Enrollment-ID is an IDENTIFIER, not authentication -
+any caller who learns an enrollment ID could otherwise read that
+device's declarations or forge status reports. The authenticated
+boundary is the shared HMAC key, matching NanoMDM's -dm-send-hmac-key:
+it authenticates the forwarding NanoMDM peer (the device itself
+authenticates to NanoMDM through the MDM protocol). Therefore
+KG_DDM_HMAC_KEY is REQUIRED: without it every /api/ddm/* route answers
+503 "not configured", fail-closed, exactly like scoped-credential
+issuance without KG_DEVICE_TOKEN_KEY. No protection is inferred from
+network topology or intended deployment.
+Device behavior remains BUILT-UNVERIFIED until the Part 17
+device-testing phase; a served declaration is not an applied
+declaration, and receipt of a status report is not proof of
+application either - see record_status for what a report can show.
 """
 
 from __future__ import annotations
@@ -55,9 +61,14 @@ class DDMError(RuntimeError):
 
 
 def verify_hmac(key: str | None, header: str | None, body: bytes) -> None:
-    """Match NanoMDM -dm-send-hmac-key semantics: required when set."""
+    """Fail-closed HMAC, matching NanoMDM -dm-send-hmac-key semantics.
+
+    No key configured -> serving is off (503), because the HMAC is the
+    only authentication on these endpoints. Key configured -> every
+    request must carry a valid X-Hmac-Signature (GETs sign an empty
+    body, which is what NanoMDM sends)."""
     if not key:
-        return
+        raise DDMError("DDM serving not configured", 503)
     expected = base64.b64encode(
         hmac.new(key.encode(), body, hashlib.sha256).digest()).decode()
     if not header or not hmac.compare_digest(expected, header):
@@ -136,16 +147,52 @@ def get_declaration(session: Session, enrollment: MDMEnrollment,
     raise DDMError("declaration not found", 404)
 
 
+def declaration_states(parsed: dict) -> dict:
+    """Per-declaration application state from a status report.
+
+    Verified shape (apple/device-management declarative/status +
+    statusreport.yaml, as generated in KMFDDM ddm/status/status.go,
+    cloned 2026-11-16): StatusItems.management.declarations.
+    configurations[] entries carry identifier, server-token, active
+    (bool), valid ("unknown"|"invalid"|"valid") and optional reasons
+    (code/description/details). Only an entry matching a SERVED
+    declaration's identifier AND server-token with active=true and
+    valid="valid" evidences that declaration applied. Anything else -
+    including a report with no declarations section at all - is
+    receipt of a report, not application."""
+    items = (parsed.get("StatusItems") or {}).get("management") or {}
+    decls = (items.get("declarations") or {}).get("configurations") or []
+    out = {}
+    for d in decls:
+        if not isinstance(d, dict) or "identifier" not in d:
+            continue
+        out[d["identifier"]] = {
+            "server_token": d.get("server-token"),
+            "active": d.get("active") is True,
+            "valid": d.get("valid"),
+            "reasons": d.get("reasons"),
+        }
+    return out
+
+
 def record_status(session: Session, enrollment: MDMEnrollment,
                   body: bytes) -> None:
-    """Store a device status report verbatim. This is the only signal
-    that a declaration actually reached and was processed by a device."""
+    """Store a device status report verbatim plus the extracted
+    per-declaration states. RECEIPT ONLY: a stored report proves the
+    enrollment sent a well-formed report, never that any declaration
+    applied - that conclusion needs declaration_states to match a
+    served declaration's identifier + server-token with active and
+    valid, checked against what we actually served."""
     try:
         parsed = json.loads(body.decode())
     except (ValueError, UnicodeDecodeError):
         raise DDMError("status report must be JSON", 400)
+    if not isinstance(parsed, dict):
+        raise DDMError("status report must be a JSON object", 400)
     session.add(DDMStatusReport(
         tenant_id=enrollment.tenant_id,
         enrollment_id=enrollment.enrollment_id,
-        body=json.dumps(parsed, sort_keys=True)))
+        body=json.dumps(parsed, sort_keys=True),
+        declaration_states=json.dumps(
+            declaration_states(parsed), sort_keys=True)))
     enrollment.last_seen_at = utcnow()
