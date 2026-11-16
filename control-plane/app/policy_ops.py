@@ -88,13 +88,77 @@ def active_assignments(session: Session, tenant_id: int,
     return [r for r in rows if r.policy_id != exclude_policy_id]
 
 
+def _schedule_segments(sched: dict):
+    """A schedule's active set as (day, start_min, end_min) segments,
+    overnight windows split at midnight."""
+    segs = []
+    for d in sched["days"]:
+        if sched["start"] < sched["end"]:
+            segs.append((d, sched["start"], sched["end"]))
+        elif sched["start"] > sched["end"]:
+            segs.append((d, sched["start"], 1440))
+            segs.append(((d + 1) % 7, 0, sched["end"]))
+    return segs
+
+
+def prove_schedule_coverage(candidate_doc: dict, baseline_doc: dict) -> None:
+    """The comparator drops _schedules as metadata, so base-rule
+    comparison alone cannot prove a candidate is at least as
+    restrictive when the baseline blocks on a schedule. This is the
+    conservative schedule-aware half of the proof.
+
+    A baseline schedule is COVERED when the candidate always blocks
+    the same things (base rules), or one candidate schedule in the
+    SAME timezone covers the whole window and blocks a superset
+    (base rules count toward the candidate's blocks during its own
+    windows). Anything unprovable is refused: a weaker device policy
+    must never slip through because the proof was unavailable."""
+    from . import schedule_ops
+    baseline_scheds = [s for s in schedule_ops.doc_schedules(baseline_doc)
+                       if s["enabled"]]
+    if not baseline_scheds:
+        return
+    cand_scheds = [s for s in schedule_ops.doc_schedules(candidate_doc)
+                   if s["enabled"]]
+    cand_base_cats = set(candidate_doc["category_rules"]["block"])
+    cand_base_doms = set(candidate_doc["blocklist"])
+    for base in baseline_scheds:
+        need_cats = set(base["block_categories"])
+        need_doms = set(base["block_domains"])
+        if need_cats <= cand_base_cats and need_doms <= cand_base_doms:
+            continue  # candidate blocks these at all times anyway
+        base_segs = _schedule_segments(base)
+        for cand in cand_scheds:
+            if cand["timezone"] != base["timezone"]:
+                continue
+            if not need_cats <= cand_base_cats | set(cand["block_categories"]):
+                continue
+            if not need_doms <= cand_base_doms | set(cand["block_domains"]):
+                continue
+            cand_segs = _schedule_segments(cand)
+            if all(any(cd == bd and cs <= bs and ce >= be
+                       for cd, cs, ce in cand_segs)
+                   for bd, bs, be in base_segs):
+                break
+        else:
+            raise PolicyError(
+                f"policy does not cover the default policy's schedule "
+                f"{base['name']!r}: a device on this policy would filter "
+                "weaker than the default during that schedule's window "
+                "(cover it with an equal or wider schedule blocking at "
+                "least the same categories and domains, or block them "
+                "unconditionally)", 409)
+
+
 def prove_tighten_only(candidate_doc: dict, baseline: Policy) -> None:
+    baseline_doc = json.loads(baseline.engine_doc)
     verdict = policy_comparison.at_least_as_restrictive(
-        candidate_doc, json.loads(baseline.engine_doc))
+        candidate_doc, baseline_doc)
     if not verdict.allowed:
         raise PolicyError(
             f"policy must be at least as restrictive as the default "
             f"policy {baseline.name!r}: {verdict.reason}", 409)
+    prove_schedule_coverage(candidate_doc, baseline_doc)
 
 
 def enforce_on_content_mutation(session: Session, tenant_id: int,
@@ -128,6 +192,11 @@ def enforce_on_default_selection(session: Session, tenant_id: int,
     for assignment in active_assignments(session, tenant_id,
                                          exclude_policy_id=new_default.id):
         policy = session.get(Policy, assignment.policy_id)
+        try:
+            prove_schedule_coverage(json.loads(policy.engine_doc), new_doc)
+        except PolicyError as exc:
+            violations.append(f"policy {policy.name!r}: {exc}")
+            continue
         verdict = policy_comparison.at_least_as_restrictive(
             json.loads(policy.engine_doc), new_doc)
         if not verdict.allowed:
