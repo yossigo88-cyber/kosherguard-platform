@@ -112,7 +112,7 @@ instances are never mutated to switch policies.
 
 The path contract is unchanged from the operator's point of view:
 `--policy` either names a legacy `policy.json` (Stage 10 behavior,
-unchanged) or a multi-document GENERATION DIRECTORY (typically the
+unchanged) or a multi-document GENERATION DIRECTORY (typically the future
 publisher's atomically switched `current` symlink), in which case
 `--categories` must name that same generation's `categories.json`
 (mixed-generation file sets are rejected).
@@ -127,10 +127,20 @@ generations/<revision>/
   manifest.json               revision/generation identity + SHA-256 of EVERY file
 ```
 
-`manifest.json`: `{"revision": <int>, "generation": "<revision as
-string>", "files": {"<relative path>": "<sha256 hex>", ...}}`.
-`generation` must equal `str(revision)` and the generation directory
-name; `files` must list `categories.json`, `devices.json`, and
+`manifest.json` schema (strict; `validate_multidoc_manifest` in
+`src/generation_io.py` owns structure and safety):
+
+- Allowed keys: exactly `revision`, `generation`, `files`, and optional
+  `_meta` (an object). Any other key rejects the generation.
+- `revision`: a non-negative integer; booleans are rejected.
+- `generation`: a non-empty string equal to `str(revision)` AND to the
+  resolved generation directory name.
+- `files`: a non-empty object mapping safe relative paths to
+  64-character lowercase SHA-256 hexadecimal strings.
+- Duplicate keys anywhere in the document are rejected at parse time
+  (`load_json_strict`).
+
+`files` must list `categories.json`, `devices.json`, and
 `policies/<id>.json` for exactly the referenced policy set (canonical
 decimal IDs only - `policies/05.json` is malformed). Manifest keys are
 validated as safe relative paths; duplicate keys are rejected at parse
@@ -139,6 +149,22 @@ generation; every listed file's bytes are read through the
 descriptor-based safe open and verified against its own hash before any
 document is used; and a directory scan rejects any file on disk the
 manifest does not list (unverified content in a verified generation).
+Example, for a generation whose bindings reference policies 1 and 5:
+
+```json
+{
+  "revision": 12,
+  "generation": "12",
+  "files": {
+    "categories.json": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "devices.json": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "policies/1.json": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "policies/5.json": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
+```
+
+(The hashes above are placeholders: the SHA-256 of an empty file.)
 The Stage 10 two-file manifest remains valid for legacy generations.
 
 `devices.json` has a strict schema - exactly `default_policy_id`,
@@ -152,7 +178,8 @@ Two contract decisions, resolved against the plan and recorded here in
 full:
 
 - **Exact referenced policy set.** Plan 7.3 defines the published policy
-  set exactly: the publisher emits documents for the default policy and
+  set exactly: the future Stage 11D publisher is required to emit
+  documents for the default policy and
   every policy referenced by an active assignment. A manifest listing a
   policy document nothing references therefore means devices.json and
   the policy set disagree - an inconsistent generation. It is rejected
@@ -165,15 +192,17 @@ full:
 - **Inline device metadata, with an explicit format limitation.** Plan
   7.1 fixes the devices.json schema at exactly the four keys above -
   there is no device inventory, and the engine never touches the device
-  registry (no SQLite, file, or network access during request
-  processing). Each binding must CARRY its device metadata inline: a
+  registry (no SQLite, file, or network access for policy resolution
+  during request processing; normal DNS forwarding of allowed queries
+  to upstream resolvers is unchanged). Each binding must CARRY its device metadata inline: a
   missing, null, or malformed `device_id` rejects the whole generation.
   LIMITATION, stated plainly: a well-formed positive `device_id` does
   NOT prove the ID exists in the dashboard registry; that is not
   verifiable from this generation format, no registry lookup is
-  performed at load time or per query, and registry existence is
-  enforced upstream by the publisher (plan 7.1 exports only
-  associations of active devices with active assignments). The required
+  performed at load time or per query, and enforcing registry
+  existence is a REQUIREMENT on the future Stage 11D publisher (plan
+  7.1: it must export only associations of active devices with active
+  assignments); no publisher implements this today. The required
   "binding referencing nonexistent device metadata is rejected" test
   proves the inline-metadata property only; it is not evidence about
   registry existence.
@@ -215,8 +244,8 @@ Reload builds a complete replacement engine set separately, validates
 every document and hash, and swaps one immutable reference only after
 everything succeeds; a rejected reload keeps the entire previous set
 serving (last-known-good) and records the error. SIGHUP and `--watch`
-are preserved and now reload whole engine sets through the publisher's
-atomic symlink switch. In-flight queries finish on the snapshot they
+are preserved and now reload whole engine sets through the future
+publisher's atomic symlink switch. In-flight queries finish on the snapshot they
 captured at request start, proven by a gated-engine test that swaps the
 active set mid-decision. Privacy: client addresses exist only in memory
 during routing; the decision log and the status file never contain
@@ -287,22 +316,29 @@ access (in-test fake upstream resolvers).
    (no internet in the sandbox) with a stale `policy_count` assertion
    (2 referenced policies, not 4). All test-side; no behavioral
    assertion was weakened at any point in this trail.
-5. New suite green: **104 passed**. Full suite: **313 passed** (70s).
-6. Contract rework after design review (section 4): removed the
+5. Fourth run: **102 passed, 2 failed**. The helper KeyError and the
+   missing import were fixed; the two remaining failures were the
+   SIGHUP/watch subprocess tests above, fixed by pointing them at
+   in-test fake upstream resolvers and asserting the real referenced
+   policy count. No behavioral assertion was weakened.
+6. New suite green: **104 passed**. Full suite: **313 passed** (70s).
+7. Contract rework after design review (section 4): removed the
    ungrounded optional device-inventory map, added the unmanifested-file
    directory scan and its test, parametrized the inline-device-metadata
    test. Intermediate run: 4 failures - the symlink tests' link target
    lived inside the generation (tripped the new scan; moved outside,
    which is also the stronger test) and the concurrent-reload test
    republished generations in place, leaving stale policy files (the
-   helper now wipes the directory first: the real publisher writes each
-   generation into a FRESH directory, and in-place rewrite leaving
-   strays is exactly what the scan rejects).
-7. Final new-suite run: **107 passed**.
-8. Final full-suite run on the implementation tree: **316 passed**
-   (209 pre-existing + 107 new), 69.86s. `python3 -m py_compile
-   src/*.py`: clean.
-9. Git diff inspection: only the 8 files in section 2; no Stage 11D/11E
+   helper now wipes the directory first: the future publisher is
+   required to write each generation into a FRESH directory, and
+   in-place rewrite leaving strays is exactly what the scan rejects).
+8. Final new-suite run: **107 passed**.
+9. Final full-suite runs on the implementation tree: **316 passed**
+   (209 pre-existing + 107 new), 69.86s; after the wording amendments
+   (section 10, commits 9-10) the identical amended tree re-ran at
+   **316 passed**, 69.86s, `python3 -m py_compile src/*.py` clean both
+   times.
+10. Git diff inspection: only the 8 files in section 2; no Stage 11D/11E
    or prohibited file; no secrets; no client addresses in any log or
    status path (privacy tests 56-59 prove the negative over real
    sockets).
@@ -321,7 +357,8 @@ Every committed file was verified BYTE-IDENTICAL to the tested local
 file immediately after its commit (raw fetch from the branch vs the
 local file, `cmp`; SHA-256 recorded for the first:
 `c354dc4d797e39b0bc4dcbe574543503dba60e3729da02dafcf4e550d8fba123` for
-generation_io.py). Commits, in order:
+generation_io.py; `641ceafbb119fda38eebe4d0c3383e4f7445f445138c4b9c162dff7ccad80d51`
+for the amended engine_set.py). Commits, in order:
 
 1. `fc748d35` generation_io.py (new)
 2. `ae6e1178` engine_set.py (new)
@@ -329,28 +366,52 @@ generation_io.py). Commits, in order:
 4. `7872bc5a` dns_service.py (modified)
 5. `db87748c` test_multi_policy.py (new)
 6. `7eda5476` filtering-engine/README.md (modified)
-7. `27c25636` README.md (modified) - code-final SHA
+7. `27c25636` README.md (modified)
+8. `6e014691` docs/reviews/STAGE_11C_IMPLEMENTATION_REVIEW.md (new)
+9. `9955094f` engine_set.py (wording amendment: registry-existence
+   enforcement is a REQUIREMENT on the future Stage 11D publisher, not
+   a claim that a publisher exists; the no-per-query-I/O claim is
+   scoped to policy resolution, not normal DNS forwarding)
+10. `feb64188` filtering-engine/README.md (same wording amendment; this
+    commit carries GitHub's DEFAULT message "Update README.md" because
+    the commit-confirm click landed before the custom message field was
+    filled - recorded plainly; amending it would require a force-push,
+    which is prohibited) - code-final SHA
 
-A fresh single-branch clone of the branch at
-`27c25636596957bfb4009c33256084236d40fd5e` was verified
-`diff -r`-identical to the tested implementation tree (only `.git`,
-`.pytest_cache`, `__pycache__`, and this not-yet-committed report were
-excluded), and all suites were re-run on that clone:
+A fresh single-branch clone of the branch at code-final
+`feb64188c42ff4e8280ed62e05b40e11452ff3c1` was verified:
 
-- Engine suite (`cd filtering-engine && python3 -m pytest tests/ -q`):
-  **316 passed, 3 warnings** (70.10s).
+- `git rev-parse HEAD` = `feb64188c42ff4e8280ed62e05b40e11452ff3c1`
+  (exact match to the ls-remote branch SHA).
+- `diff -r` against the tested implementation tree: identical (only
+  `.git`, `.pytest_cache`, `__pycache__`, and this not-yet-recommitted
+  report file excluded; the report differs as expected).
+
+All suites were re-run on that clone:
+
+- Engine suite (`cd filtering-engine && python3 -m pytest tests/ -q
+  -rw`): **316 passed, 3 warnings** (69.99s). The 3 warnings are all
+  `DeprecationWarning: invalid escape sequence '\['` in
+  `tests/test_policy_validation.py` lines 110, 115, 148 - a
+  pre-existing Stage-3-era test file (commit `4dc0c57`), untouched by
+  Stage 11C.
 - `python3 -m py_compile src/*.py`: clean.
-- Dashboard suites (untouched): **276 passed** = 150 + 80 + 21 + 24 + 1
-  across five invocations (split only to fit execution time limits),
-  matching the Stage 11B record (98 + 178 = 276) exactly.
+- Dashboard suites (untouched): **276 passed** = 115 + 83 + 78 across
+  three invocations (72.17s + 48.02s + 41.42s; split only to fit
+  execution time limits), matching the Stage 11B record (276) exactly.
 
 The historically intermittent socket-bind setup error in
 `tests/test_reload.py::test_failed_reload_does_not_stop_service` did NOT
-occur in the clone run. `git ls-remote` after every commit confirmed
-main stayed `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`. The commit
-after `27c25636` adds ONLY this report file; every code, test, and
-documentation file at the final branch HEAD is byte-identical to the
-verified clone.
+occur in any Stage 11C run. `git ls-remote` after every commit confirmed
+main stayed `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`.
+
+Report-only exception, stated plainly: the commit after `feb64188` adds
+ONLY this report file, so the final branch HEAD's SHA cannot be recorded
+inside the report itself. The final SHA is recorded in the completion
+message, and the final-SHA fresh-clone verification (rev-parse,
+diff-identity against the code-final clone, and re-run suites) is
+reported directly there; no extra report commit was made solely to chase
+the self-referential SHA.
 
 Note on commit mechanics: the first commit attempt used GitHub's file
 upload flow; its draft state renamed the upload (`2-generation_io.py`)
