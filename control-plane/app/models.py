@@ -50,6 +50,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[Role] = mapped_column(Enum(Role), nullable=False)
     totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    delegated_settings: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
     is_platform_admin: Mapped[bool] = mapped_column(
         nullable=False, default=False)
     tenant: Mapped[Tenant] = relationship()
@@ -436,3 +437,23 @@ class PublicationJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class DeviceGroup(Base):
+    """One optional group policy per device; direct assignment wins."""
+    __tablename__ = 'device_groups'
+    __table_args__ = (UniqueConstraint('tenant_id', 'name'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey('tenants.id'), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    policy_id: Mapped[int | None] = mapped_column(ForeignKey('policies.id'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GroupMembership(Base):
+    __tablename__ = 'group_memberships'
+    __table_args__ = (UniqueConstraint('device_id'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey('tenants.id'), index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey('device_groups.id'))
+    device_id: Mapped[int] = mapped_column(ForeignKey('devices.id'))
