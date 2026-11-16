@@ -242,6 +242,46 @@ class TestEnrollmentAuthorization:
             assert row.state == "enrolled"
             assert row.supervision_verified is False
 
+    def test_checkin_binds_real_nanomdm_id(self, engine):
+        """The actual NanoMDM identifier mapping: NanoMDM forwards its
+        OWN normalized enrollment ID (operations guide: device-channel
+        UDID / User-Enrollment EnrollmentID), never the local
+        'pending-*' placeholder. The sync binds the placeholder record
+        to the real ID; afterwards DDM traffic resolves by that ID and
+        the placeholder no longer resolves."""
+        c = self._pending_client(engine)
+        body = json.dumps({"enrollment_id": "ENR-PENDING",
+                           "nanomdm_id": "UDID-REAL-123"}).encode()
+        r = c.post("/api/mdm/enrollment-checkin", content=body,
+                   headers={"X-Hmac-Signature": sig(body)})
+        assert r.status_code == 200, r.json()
+        assert r.json() == {"enrollment_id": "UDID-REAL-123",
+                            "state": "enrolled"}
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="UDID-REAL-123").one()
+            assert row.state == "enrolled"
+            assert row.supervision_verified is False
+        # Real-ID traffic is served; the placeholder is gone.
+        r = c.get("/api/ddm/tokens",
+                  headers=ddm_headers(enrollment="UDID-REAL-123"))
+        assert r.status_code == 200
+        r = c.get("/api/ddm/tokens",
+                  headers=ddm_headers(enrollment="ENR-PENDING"))
+        assert r.status_code == 404
+
+    def test_checkin_bind_conflict_refused(self, engine):
+        c = self._pending_client(engine)
+        body = json.dumps({"enrollment_id": "ENR-PENDING",
+                           "nanomdm_id": "ENR-1"}).encode()
+        r = c.post("/api/mdm/enrollment-checkin", content=body,
+                   headers={"X-Hmac-Signature": sig(body)})
+        assert r.status_code == 409
+        with session_scope(engine) as s:
+            row = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-PENDING").one()
+            assert row.state == "pending"
+
     def test_checkin_sync_activates_pending_enrollment(self, engine):
         """The out-of-band sync route activates equally (same HMAC peer
         auth) - and supervision claims on it are never accepted."""
