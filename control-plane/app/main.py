@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from . import mdm_ops, security
 from .config import Settings
 from .db import ScopedSession, make_engine
-from .models import AuthSession, LoginAttempt, User
+from .models import AuthSession, LoginAttempt, Role, User
 
 
 class CategoryRuleBody(BaseModel):
@@ -32,6 +32,20 @@ class CategoryRuleBody(BaseModel):
     category: str
     verdict: str = "block"
     source: str = "manual-review"
+
+
+class InviteBody(BaseModel):
+    email: str
+    role: str = "guardian"
+
+
+class RoleBody(BaseModel):
+    role: str
+
+
+class AcceptInviteBody(BaseModel):
+    token: str
+    password: str
 
 SESSION_COOKIE = "kg_session"
 CSRF_HEADER = "x-kosherguard-request"
@@ -486,6 +500,133 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         except mdm_ops.MDMError as exc:
             return error(exc.status, str(exc))
         return command_json(row)
+
+    # -- Guardian account lifecycle (M6) ------------------------------
+    # Approved requirement: multiple authorized parent/guardian
+    # accounts per family tenant. Owners invite; invite tokens are
+    # single-use, expiring, and stored hashed.
+    from .models import InviteToken
+
+    def require_owner(user: User) -> JSONResponse | None:
+        if user.role != Role.owner:
+            return error(403, "owner role required")
+        return None
+
+    def user_json(row):
+        return {"id": row.id, "email": row.email, "role": row.role.value,
+                "mfa_enrolled": row.totp_secret is not None,
+                "created_at": row.created_at.isoformat()}
+
+    @app.get("/api/guardians")
+    def list_guardians(user: User = Depends(current_user),
+                       session: Session = Depends(db_session)):
+        rows = ScopedSession(session, user.tenant_id).query(
+            User, User.id).all() if hasattr(ScopedSession, "query") else             session.execute(select(User).where(
+                User.tenant_id == user.tenant_id)).scalars().all()
+        return {"guardians": [user_json(u) for u in rows]}
+
+    @app.post("/api/guardians/invite",
+              dependencies=[Depends(require_csrf_header)])
+    def invite_guardian(body: InviteBody,
+                        user: User = Depends(current_user),
+                        session: Session = Depends(db_session)):
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        email = body.email.strip().lower()
+        if "@" not in email:
+            return error(400, "invalid email")
+        if body.role not in ("guardian", "viewer", "owner"):
+            return error(400, "invalid role")
+        existing = session.execute(select(User).where(
+            User.tenant_id == user.tenant_id,
+            User.email == email)).scalar_one_or_none()
+        if existing is not None:
+            return error(409, "email already has an account")
+        raw = security.new_session_token()
+        invite = InviteToken(
+            tenant_id=user.tenant_id, email=email, role=Role(body.role),
+            token_hash=security.hash_session_token(raw),
+            invited_by_user_id=user.id,
+            expires_at=utcnow() + timedelta(hours=72))
+        session.add(invite)
+        ScopedSession(session, user.tenant_id).audit(
+            "guardian.invite", email, actor_user_id=user.id)
+        session.commit()
+        # The raw token is returned once; delivery to the invitee is
+        # out of band. It is never stored or logged.
+        return {"invited": email, "role": body.role,
+                "invite_token": raw,
+                "expires_at": invite.expires_at.isoformat()}
+
+    @app.post("/api/invites/accept",
+              dependencies=[Depends(require_csrf_header)])
+    def accept_invite(body: AcceptInviteBody,
+                      session: Session = Depends(db_session)):
+        invite = session.execute(select(InviteToken).where(
+            InviteToken.token_hash == security.hash_session_token(
+                body.token))).scalar_one_or_none()
+        if invite is None or invite.used_at is not None:
+            return error(400, "invalid or used invite")
+        if invite.expires_at < utcnow():
+            return error(400, "invite expired")
+        if len(body.password) < 12:
+            return error(400, "password too short")
+        existing = session.execute(select(User).where(
+            User.tenant_id == invite.tenant_id,
+            User.email == invite.email)).scalar_one_or_none()
+        if existing is not None:
+            return error(409, "email already has an account")
+        new_user = User(
+            tenant_id=invite.tenant_id, email=invite.email,
+            password_hash=security.hash_password(body.password),
+            role=invite.role)
+        session.add(new_user)
+        invite.used_at = utcnow()
+        session.flush()
+        ScopedSession(session, invite.tenant_id).audit(
+            "guardian.accept_invite", invite.email,
+            actor_user_id=new_user.id)
+        session.commit()
+        return {"accepted": invite.email, "role": invite.role.value}
+
+    @app.put("/api/guardians/{user_id}/role",
+             dependencies=[Depends(require_csrf_header)])
+    def change_role(user_id: int, body: RoleBody,
+                    user: User = Depends(current_user),
+                    session: Session = Depends(db_session)):
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        if body.role not in ("guardian", "viewer", "owner"):
+            return error(400, "invalid role")
+        target = session.get(User, user_id)
+        if target is None or target.tenant_id != user.tenant_id:
+            return error(404, "guardian not found")
+        if target.id == user.id:
+            return error(400, "cannot change your own role")
+        target.role = Role(body.role)
+        ScopedSession(session, user.tenant_id).audit(
+            "guardian.role_change",
+            f"{target.email} -> {body.role}", actor_user_id=user.id)
+        session.commit()
+        return user_json(target)
+
+    @app.post("/api/guardians/{user_id}/mfa-reset",
+              dependencies=[Depends(require_csrf_header)])
+    def mfa_reset(user_id: int, user: User = Depends(current_user),
+                  session: Session = Depends(db_session)):
+        denied = require_owner(user)
+        if denied is not None:
+            return denied
+        target = session.get(User, user_id)
+        if target is None or target.tenant_id != user.tenant_id:
+            return error(404, "guardian not found")
+        target.totp_secret = None
+        ScopedSession(session, user.tenant_id).audit(
+            "guardian.mfa_reset", target.email, actor_user_id=user.id)
+        session.commit()
+        return user_json(target)
 
     # -- Platform category dataset administration (M6) -----------------
     # Approved fallback for the commercial category feed: a
