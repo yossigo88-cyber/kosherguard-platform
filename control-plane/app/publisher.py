@@ -146,10 +146,12 @@ class Publisher:
 
         generation = str(revision)
         generation_dir = self.generations_dir / generation
+        created = False
         try:
             # A revision number is used once; an existing directory means
             # a serious bug or a replay - refuse, never overwrite.
             os.mkdir(str(generation_dir), 0o700)
+            created = True
             _write_file_atomic(generation_dir / "policy.json", policy_bytes, token)
             _write_file_atomic(generation_dir / "categories.json",
                                categories_bytes, token)
@@ -168,10 +170,15 @@ class Publisher:
             self._activate(generation, token)
             return generation
         except BaseException:
-            try:
-                shutil.rmtree(str(generation_dir))
-            except OSError:
-                pass
+            # Only remove the directory when THIS publish created it. If
+            # the mkdir failed because the generation already exists (a
+            # replay, a bug, or another publisher's data), the existing
+            # directory is not ours to delete.
+            if created:
+                try:
+                    shutil.rmtree(str(generation_dir))
+                except OSError:
+                    pass
             raise
 
     def _activate(self, generation: str, token: str) -> None:
