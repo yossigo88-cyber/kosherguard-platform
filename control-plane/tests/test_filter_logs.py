@@ -87,6 +87,19 @@ def bearer(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_mint_response_includes_expires_in_seconds(client):
+    """Native clients schedule token renewal from the response, not
+    from a mid-use 401: the mint must state its lifetime."""
+    dev = mk_device(client)
+    r = client.post(f"/api/devices/{dev}/dataset-credential",
+                    json={"scope": "doh"}, headers=HDR)
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert isinstance(body.get("expires_in_seconds"), int)
+    assert body["expires_in_seconds"] > 0
+    assert body["scope"] == "doh"
+
+
 class TestIngestion:
     def test_roundtrip(self, client):
         dev = mk_device(client)
