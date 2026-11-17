@@ -32,16 +32,23 @@ control-plane suite re-run green at 184+172):
    and approver rules as direct creation.
 3. Device update-state chain (Answer 23): GET /api/devices carries
    per device the desired published revision (server intent), the
-   push_chain (per-status command ledger counts - queued = push
-   requested, delivered = push accepted by the channel,
-   acknowledged/not_now = device answers - plus the latest command),
+   push_chain (per-status command ledger counts - queued = written
+   to the server queue with no delivery recorded, delivered/not_now =
+   accepted by the MDM server's queue awaiting device check-in,
+   acknowledged/error = device answers - plus the latest command;
+   the actual APNs lifecycle is not observed or recorded by this
+   server and is reported as unavailable, never inferred - that
+   observation remains an external deployment limitation),
    reported_vs_published (the latest stored DDM receipt's declaration
    states matched by identifier + server-token + active + valid
    against what the server currently serves that enrollment, with
    explicit no_enrollment / no_report_received /
    no_declarations_served / served_not_fully_reported /
-   all_served_reported_applied states), and receipt-based
-   connectivity with last device receipt. Every field is labeled as
+   all_served_reported_applied / comparison_unavailable states -
+   a failed comparison is never collapsed into "nothing served"),
+   and receipt-based connectivity with last device receipt.
+   Regression tests cover matching, stale-token, inactive, invalid,
+   declaration-free, cross-enrollment and comparison-error cases. Every field is labeled as
    server ledger record or stored receipt; actual on-device
    enforcement remains unverified. Deepened at commit
    a408645ab3b659bbdca2b8ceb42cd575ee1a7b1a after the auditor's
