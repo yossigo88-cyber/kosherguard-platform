@@ -119,5 +119,17 @@ tests). Other suites retain the earlier exact-SHA ledger, not a final-SHA
 rerun claim. Queue-failed approvals require a fresh request; active saved
 or published filtering exceptions block restore readiness; edge revocation
 feed propagation remains periodic (default60 seconds, no hard outage bound).
-Lint/type/security tools and UI visual verification remain unverified as
-detailed in the security-corrections report. No production/device claim changed.
+Lint/type/security tools remain unrun as detailed in the security-corrections
+report. The scoped UI visual check is now complete. No production/device claim changed.
+
+Final full-suite verification: fresh checkout2826cad29941ba4ec0fe7e8bbaa3ce3a5ae3a415
+passed1,277 tests across all eight suites:431+337+87+64+38+38+6+276.
+Real rendered seeded-app visual checks cover approval outcomes/new request
+and receipt-vs-live-presence labels. Independent followup review accepted
+all six code findings; corrected its erroneous documentation test reference.
+A later four-file label correction at456384d57c6bfe5212db886be8796e0e5862f1cf
+passed432 control-plane tests at a fresh checkout. Portal labels now report
+check-in history without asserting live presence; the offline API enum is
+no_report_over_24h. Updated screenshot inspected. Other suite results remain
+at2826cad. Any later ledger publication is documentation-only, separately
+identified in delivery. No Apple/native-device readiness claim is made.
