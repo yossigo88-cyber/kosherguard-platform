@@ -30,54 +30,75 @@ ACME_PAYLOAD = "com.apple.security.acme"
 # https://developer.apple.com/documentation/devicemanagement/toplevel
 REMOVAL_KEY = "PayloadRemovalDisallowed"
 
-# Only a fact reported by the device itself counts as supervision
-# evidence. Our own database flag, an operator checkbox or a customer
-# claim never does.
-ATTESTATION_SOURCES = frozenset({
-    # MDM DeviceInformation query, QueryResponses "IsSupervised"
-    "mdm-device-information-is-supervised",
+# Evidence items an operator must record before a protected artifact may
+# be generated. They come from Apple Configurator for Mac (Device window,
+# device info) and the iPhone's Settings text. They are human-recorded
+# facts, NOT device attestation: nothing here is cryptographically bound
+# to the hardware, and this code cannot detect a false declaration.
+#   https://support.apple.com/guide/apple-configurator-mac/use-the-device-window-cad0118f840/mac
+#   https://support.apple.com/guide/apple-configurator-mac/view-device-info-cad24f188539/mac
+REQUIRED_EVIDENCE = frozenset({
+    "configurator-device-window-supervised",
+    "settings-supervised-notice-seen",
+    "prepared-without-mdm-enrollment",
 })
-ATTESTATION_MAX_AGE = timedelta(minutes=15)
+DECLARATION_MAX_AGE = timedelta(days=7)
 
 
 class RemovalProtectionError(ValueError):
-    """Raised when removal protection is claimed without supervision proof."""
+    """Raised when removal protection is requested without a valid declaration."""
 
 
 @dataclass(frozen=True)
-class SupervisionAttestation:
-    """A device-reported supervision observation.
+class ManualSupervisionDeclaration:
+    """Operator-recorded precondition for the supervised manual route.
 
-    This is a declared, checked input, not a proof of Apple behavior: it
-    only proves that a DeviceInformation answer said IsSupervised=true
-    for this serial recently. It says nothing about whether iOS honors
-    the removal key for an enrollment profile (see
-    docs/reviews/SUPERVISED_MANUAL_ENROLLMENT_REVIEW.md).
+    Sequence it records: Configurator Prepare (Manual Configuration,
+    supervise, "Do not enroll in Device Management"), setup completed,
+    then an operator inspected the device in Configurator and the
+    Settings notice before this artifact was generated.
+
+    This is a caller-asserted, shape-validated declaration only. It does
+    not prove supervision, does not stop a malicious or mistaken caller,
+    and says nothing about whether iOS accepts or enforces the key on an
+    enrollment profile (untested on a real supervised iPhone).
     """
     serial_number: str
-    is_supervised: bool
-    source: str
-    observed_at: datetime
+    supervised: bool
+    recorded_by: str
+    recorded_at: datetime
+    evidence: frozenset
 
 
-def _check_attestation(att, expected_serial: str, now: datetime | None) -> None:
-    if not isinstance(att, SupervisionAttestation):
+def _check_declaration(decl, expected_serial: str, now: datetime | None) -> None:
+    if not isinstance(decl, ManualSupervisionDeclaration):
         raise RemovalProtectionError(
-            "removal protection needs a SupervisionAttestation; a bare "
-            "flag is not accepted")
-    if att.source not in ATTESTATION_SOURCES:
-        raise RemovalProtectionError("attestation source is not device-reported")
-    if att.is_supervised is not True:
+            "removal protection needs a ManualSupervisionDeclaration; a "
+            "bare flag is not accepted")
+    if decl.supervised is not True:
         raise RemovalProtectionError(
-            "device is not supervised: removal protection refused")
-    if not expected_serial or att.serial_number != expected_serial:
-        raise RemovalProtectionError("attestation serial does not match device")
-    now = now or datetime.now(timezone.utc)
-    if att.observed_at.tzinfo is None:
-        raise RemovalProtectionError("attestation time must be timezone-aware")
-    age = now - att.observed_at
-    if age < timedelta(0) or age > ATTESTATION_MAX_AGE:
-        raise RemovalProtectionError("attestation is stale or from the future")
+            "device not declared supervised: removal protection refused")
+    if not decl.recorded_by or not isinstance(decl.recorded_by, str):
+        raise RemovalProtectionError("declaration needs a recording operator")
+    if (not isinstance(expected_serial, str) or not expected_serial
+            or not isinstance(decl.serial_number, str)
+            or decl.serial_number != expected_serial):
+        raise RemovalProtectionError("declaration serial does not match device")
+    if not isinstance(decl.evidence, (set, frozenset)):
+        raise RemovalProtectionError("evidence must be a set of item names")
+    missing = REQUIRED_EVIDENCE - set(decl.evidence)
+    if missing:
+        raise RemovalProtectionError(
+            "missing evidence items: " + ", ".join(sorted(missing)))
+    if (not isinstance(decl.recorded_at, datetime)
+            or decl.recorded_at.tzinfo is None):
+        raise RemovalProtectionError(
+            "declaration time must be a timezone-aware datetime")
+    if now is not None and (not isinstance(now, datetime) or now.tzinfo is None):
+        raise RemovalProtectionError("now must be a timezone-aware datetime")
+    age = (now or datetime.now(timezone.utc)) - decl.recorded_at
+    if age < timedelta(0) or age > DECLARATION_MAX_AGE:
+        raise RemovalProtectionError("declaration is stale or from the future")
 
 
 def build_enrollment_profile(
@@ -87,7 +108,7 @@ def build_enrollment_profile(
     organization: str,
     device_name: str,
     identity_uuid: str | None = None,
-    removal_protection: SupervisionAttestation | None = None,
+    removal_protection: ManualSupervisionDeclaration | None = None,
     device_serial: str | None = None,
     now: datetime | None = None,
 ) -> bytes:
@@ -98,9 +119,10 @@ def build_enrollment_profile(
     topic is the APNs topic (the MDM push certificate's UID subject).
 
     removal_protection (default None = ordinary, removable profile) adds
-    the top-level PayloadRemovalDisallowed=true key, and only with a
-    fresh device-reported supervision attestation for device_serial.
-    Whether iOS honors the key on a profile that contains the MDM payload
+    the top-level PayloadRemovalDisallowed=true key, EXPERIMENTAL, only
+    with a ManualSupervisionDeclaration for device_serial. The
+    declaration is operator-asserted, not device attestation. Whether iOS
+    accepts or enforces the key on a profile containing the MDM payload
     is UNVERIFIED: no supervised iPhone test exists. Apple's documented
     enrollment-profile protection is ADE "Prevent unenrollment".
     """
@@ -110,7 +132,7 @@ def build_enrollment_profile(
     if not topic:
         raise ValueError("topic (APNs push topic) is required")
     if removal_protection is not None:
-        _check_attestation(removal_protection, device_serial or "", now)
+        _check_declaration(removal_protection, device_serial or "", now)
     identity_uuid = identity_uuid or str(uuid.uuid4()).upper()
     profile_uuid = str(uuid.uuid4()).upper()
 
@@ -159,6 +181,9 @@ def build_enrollment_profile(
     }
     if removal_protection is not None:
         profile[REMOVAL_KEY] = True
+        profile["PayloadDescription"] += (
+            " EXPERIMENTAL: requests removal protection for a manually "
+            "supervised device; enforcement unverified.")
     validate_profile_structure(profile)
     return plistlib.dumps(profile, fmt=plistlib.FMT_XML)
 
