@@ -472,3 +472,37 @@ def test_terminal_enrollment_refuses_ordinary_and_sensitive_commands(engine, ter
         assert c.post(f"/api/mdm/enrollments/{pk}/commands", json={
             "command": command, "reason": "terminal", "confirm": command,
             "totp_code": fresh_code(c, "a@example.com")}, headers=HDR).status_code == 409
+
+
+def test_sensitive_queue_failure_is_explicit_and_requires_new_approval(engine, monkeypatch):
+    from app.models import MDMCommand, SensitiveCommandApproval
+    from app import mdm_ops
+    from test_concurrency_pg import make_app, login as race_login, fresh_code, _request_erase
+    app = make_app(engine, "queue-failure")
+    aid = _request_erase(app)
+    c = TestClient(app); race_login(c, "b@example.com")
+    real_issue = mdm_ops.issue_command
+
+    def partial_failure(session, tenant_id, enrollment_pk, command, *args, **kwargs):
+        session.add(MDMCommand(tenant_id=tenant_id, enrollment_pk=enrollment_pk,
+                               command=command, payload="{}", status="queued"))
+        session.flush()
+        raise mdm_ops.MDMError("mock queue validation failure")
+
+    monkeypatch.setattr(mdm_ops, "issue_command", partial_failure)
+    body = {"totp_code": fresh_code(c, "b@example.com"), "confirm": "EraseDevice"}
+    r = c.post(f"/api/mdm/sensitive-approvals/{aid}/approve", json=body, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved_queue_failed"
+    assert "NEW request" in r.json()["decision_detail"]
+    assert c.post(f"/api/mdm/sensitive-approvals/{aid}/approve", json=body, headers=HDR).status_code == 409
+    with session_scope(engine) as s:
+        assert s.query(MDMCommand).count() == 0  # failed queue savepoint rolled back
+        assert s.get(SensitiveCommandApproval, aid).status == "approved_queue_failed"
+    monkeypatch.setattr(mdm_ops, "issue_command", real_issue)
+    replacement = _request_erase(app)
+    assert replacement != aid
+    r = c.post(f"/api/mdm/sensitive-approvals/{replacement}/approve", json=body, headers=HDR)
+    assert r.status_code == 200 and r.json()["status"] == "approved_command_queued"
+    with session_scope(engine) as s:
+        assert s.query(MDMCommand).count() == 1
