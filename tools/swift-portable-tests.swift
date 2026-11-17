@@ -197,6 +197,60 @@ func boundCreds(dataset token: String? = nil,
                    authority: store?.currentEpoch() ?? "")])
 }
 
+/// Sign-out/identity teardown must take the app-policy mirror (the
+/// remote shield gate) with it, and a late in-flight fetch must never
+/// resurrect a stale identity's gate.
+final class AppPolicyMirrorTeardownTests: XCTestCase {
+    func store() throws -> (FilterRuleStore, URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        return (FilterRuleStore(directory: dir), dir)
+    }
+    let endpointFP = String(repeating: "b", count: 64)
+    let otherFP = String(repeating: "c", count: 64)
+    func boot() -> FilterBootstrap {
+        FilterBootstrap(configFingerprint: String(repeating: "a", count: 64),
+                        endpointFingerprint: String(repeating: "b", count: 64))
+    }
+
+    func testSaveRequiresCurrentIdentity() throws {
+        let (store, dir) = try store()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // No bootstrap yet: nothing to bind to, save refused.
+        XCTAssertFalse(try store.saveAppPolicyMirrorIfCurrent(
+            Data("x".utf8), endpointFingerprint: endpointFP))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: store.appPolicyMirrorFile.path))
+        try store.saveBootstrap(boot())
+        // Matching identity saves; foreign identity is dropped.
+        XCTAssertTrue(try store.saveAppPolicyMirrorIfCurrent(
+            Data("x".utf8), endpointFingerprint: endpointFP))
+        XCTAssertFalse(try store.saveAppPolicyMirrorIfCurrent(
+            Data("y".utf8), endpointFingerprint: otherFP))
+        XCTAssertEqual(try Data(contentsOf: store.appPolicyMirrorFile),
+                       Data("x".utf8))
+    }
+
+    func testClearRemovesMirrorAndBlocksLateSave() throws {
+        let (store, dir) = try store()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try store.saveBootstrap(boot())
+        XCTAssertTrue(try store.saveAppPolicyMirrorIfCurrent(
+            Data("x".utf8), endpointFingerprint: endpointFP))
+        // Sign-out path: clear() rotates the epoch and removes the
+        // identity files; the mirror must be gone with them.
+        try store.clear()
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: store.appPolicyMirrorFile.path))
+        // The late in-flight fetch racing the sign-out loses: its
+        // save observes the missing identity and is refused.
+        XCTAssertFalse(try store.saveAppPolicyMirrorIfCurrent(
+            Data("z".utf8), endpointFingerprint: endpointFP))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: store.appPolicyMirrorFile.path))
+    }
+}
+
 final class RuleStoreTests: XCTestCase {
     func store() throws -> (FilterRuleStore, URL) {
         let dir = FileManager.default.temporaryDirectory
@@ -3696,6 +3750,23 @@ final class AppShieldReachabilityTests: XCTestCase {
         XCTAssertTrue(app.contains("appPolicyGeneration += 1"))
         XCTAssertTrue(app.contains(
             "refreshAppPolicyMirror(configuration: configuration,"))
+        // Mirror reads/writes go through the store's single path
+        // accessor - never a hand-derived sibling path.
+        XCTAssertTrue(view.contains("store.appPolicyMirrorFile"))
+        XCTAssertTrue(app.contains("store.appPolicyMirrorFile"))
+        // Save is the identity-checked, race-safe store call.
+        XCTAssertTrue(app.contains("saveAppPolicyMirrorIfCurrent("))
+        // Sign-out notifies observers so the gate re-evaluates NOW.
+        XCTAssertTrue(app.contains("onIdentityTeardown"))
+        XCTAssertTrue(app.contains("noteIdentityTeardown"))
+        // Identity teardown removes the mirror with the other
+        // identity files.
+        let store = try source(
+            "ios/Sources/URLFilter/FilterRuleStore.swift")
+        XCTAssertTrue(store.contains(
+            "[snapshotFile, floorFile, bootstrapFile,\n"
+                + "                     appPolicyMirrorFile]"),
+                      "teardown must remove the app-policy mirror")
     }
 
     func testAllEntitlementFilesConsistent() throws {

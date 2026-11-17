@@ -153,6 +153,13 @@ public struct FilterRuleStore {
     public var bootstrapFile: URL {
         directory.appendingPathComponent("filter-bootstrap.json")
     }
+    /// Device-local mirror of the control plane's application policy
+    /// (including the personal-shield remote gate). Identity data:
+    /// removed with every identity teardown so a signed-out or
+    /// re-anchored device never keeps a stale gate.
+    public var appPolicyMirrorFile: URL {
+        directory.appendingPathComponent("app-policy.json")
+    }
     /// Independent monotonic floor: survives corruption of the main
     /// snapshot file so a corrupt store can be safely replaced ONLY
     /// by a same-identity snapshot at or above the highest generation
@@ -583,7 +590,8 @@ public struct FilterRuleStore {
 
     /// MUST be called inside withLockedStore.
     private func removeIdentityFilesLocked() throws {
-        for file in [snapshotFile, floorFile, bootstrapFile] {
+        for file in [snapshotFile, floorFile, bootstrapFile,
+                     appPolicyMirrorFile] {
             if FileManager.default.fileExists(atPath: file.path) {
                 try FileManager.default.removeItem(at: file)
             }
@@ -800,6 +808,37 @@ public struct FilterRuleStore {
         for file in [canonicalPrefilterFile] + lockState.artifacts
         where FileManager.default.fileExists(atPath: file.path) {
             try FileManager.default.removeItem(at: file)
+        }
+    }
+
+    /// Saves the app-policy mirror ONLY if the store's current
+    /// identity still equals the fingerprint the policy was fetched
+    /// under, atomically under the store lock. A fetch that was in
+    /// flight across a sign-out or identity change loses the race:
+    /// teardown removes the bootstrap under the same lock, so the
+    /// stale save observes the missing/foreign identity and is
+    /// dropped instead of resurrecting the old gate. Returns true
+    /// when the mirror was written.
+    public func saveAppPolicyMirrorIfCurrent(
+        _ data: Data, endpointFingerprint: String
+    ) throws -> Bool {
+        try withLockedStore {
+            guard !endpointFingerprint.isEmpty,
+                  let boot = readBootstrap(),
+                  boot.endpointFingerprint == endpointFingerprint
+            else { return false }
+            let tmp = appPolicyMirrorFile.appendingPathExtension("tmp")
+            try data.write(to: tmp, options: .atomic)
+            if FileManager.default.fileExists(
+                atPath: appPolicyMirrorFile.path) {
+                _ = try? FileManager.default.replaceItemAt(
+                    appPolicyMirrorFile, withItemAt: tmp)
+            }
+            if FileManager.default.fileExists(atPath: tmp.path) {
+                try FileManager.default.moveItem(
+                    at: tmp, to: appPolicyMirrorFile)
+            }
+            return true
         }
     }
 

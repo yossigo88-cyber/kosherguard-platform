@@ -126,15 +126,25 @@ struct AppBlockingPolicyStore {
         self.snapshotFile = snapshotFile
     }
 
-    func save(_ policy: AppBlockingPolicy,
-              endpointFingerprint: String) throws {
+    /// The exact bytes save() would persist. Callers that must
+    /// write under an external lock (FilterRuleStore's
+    /// saveAppPolicyMirrorIfCurrent) encode first, then hand the
+    /// bytes over so the identity check and the write are atomic.
+    func encodedSnapshot(_ policy: AppBlockingPolicy,
+                         endpointFingerprint: String) throws -> Data {
         guard !endpointFingerprint.isEmpty else {
             throw FilterRuleStoreError.invalidSnapshot
         }
         let snapshot = AppPolicySnapshot(policy: policy,
                                 endpointFingerprint: endpointFingerprint,
                                 fetchedAt: Date())
-        let data = try JSONEncoder().encode(snapshot)
+        return try JSONEncoder().encode(snapshot)
+    }
+
+    func save(_ policy: AppBlockingPolicy,
+              endpointFingerprint: String) throws {
+        let data = try encodedSnapshot(
+            policy, endpointFingerprint: endpointFingerprint)
         let tmp = snapshotFile.appendingPathExtension("tmp")
         try data.write(to: tmp, options: .atomic)
         if FileManager.default.fileExists(atPath: snapshotFile.path) {

@@ -53,6 +53,10 @@ final class CredentialController {
     }
     private(set) var state: State = .notConfigured
     private(set) var lastError: String?
+    /// Wired by the app shell so sign-out resets observers that hold
+    /// identity-derived state (the remote shield gate) immediately.
+    /// UI-facing notification only; the coordinator owns teardown.
+    var onIdentityTeardown: (() -> Void)?
 
     private var auth: AuthSessionClient?
     private var issuance: CredentialIssuanceClient?
@@ -251,9 +255,14 @@ final class CredentialController {
         } catch {
             lastError = "Sign-out cleanup incomplete: \(error)"
         }
+        // The identity teardown deleted the app-policy mirror under
+        // the store lock; observers re-evaluate the shield gate
+        // immediately (unknown gate = purely local behavior).
+        onIdentityTeardown?()
         state = auth == nil ? .notConfigured : .signedOut
     }
 }
+
 
 /// Reachable user action for filter-data sync: reads MDM-managed
 /// configuration, the Keychain-stored session/credential, pulls the
@@ -280,6 +289,17 @@ final class FilterSyncViewModel {
     /// on every completed policy sync.
     private(set) var appPolicyGeneration = 0
     private var controller: FilterSyncController?
+
+    /// Sign-out/identity-teardown hook (wired from
+    /// CredentialController): the mirrored app policy - including
+    /// the remote shield gate - is deleted with the identity, and
+    /// the app-blocking section must re-evaluate NOW, not at the
+    /// next app restart.
+    func noteIdentityTeardown() {
+        Task { @MainActor [weak self] in
+            self?.appPolicyGeneration += 1
+        }
+    }
     private var configObserver: NSObjectProtocol?
 
     init() {
@@ -359,6 +379,10 @@ final class FilterSyncViewModel {
             await MainActor.run {
                 self.rebuildController(configuration: confirmed,
                                        store: store)
+                // The lifecycle may have invalidated the identity
+                // (and with it the app-policy mirror): re-evaluate
+                // the shield gate even when no new fetch follows.
+                self.appPolicyGeneration += 1
             }
         }
     }
@@ -414,21 +438,29 @@ final class FilterSyncViewModel {
         let fingerprint = FilterSyncController.bootstrap(
             for: configuration, tenantID: nil)?.endpointFingerprint
             ?? ""
-        let policyFile = store.snapshotFile
-            .deletingLastPathComponent()
-            .appendingPathComponent("app-policy.json")
+        let policyFile = store.appPolicyMirrorFile
         Task {
             guard let cookie = CredentialBundle.load(
                 from: keychain)?.session, !cookie.isEmpty,
                 !fingerprint.isEmpty
             else { return }
-            if let policy = try? await AppBlockingPolicyClient(
+            guard let policy = try? await AppBlockingPolicyClient(
                 baseURL: baseURL).fetch(
                     deviceID: deviceID,
                     sessionCookie: cookie),
-               (try? AppBlockingPolicyStore(snapshotFile: policyFile)
-                    .save(policy,
-                          endpointFingerprint: fingerprint)) != nil {
+               let data = try? AppBlockingPolicyStore(
+                   snapshotFile: policyFile)
+                    .encodedSnapshot(policy,
+                                     endpointFingerprint: fingerprint)
+            else { return }
+            // Atomic vs sign-out/identity teardown: the store drops
+            // the save when its current identity no longer matches
+            // the fingerprint this policy was fetched under, so a
+            // late in-flight fetch can never resurrect the old
+            // identity's gate after sign-out.
+            let saved = (try? store.saveAppPolicyMirrorIfCurrent(
+                data, endpointFingerprint: fingerprint)) ?? false
+            if saved {
                 await MainActor.run { self.appPolicyGeneration += 1 }
             }
         }
@@ -475,8 +507,21 @@ final class FilterSyncViewModel {
 
 @main
 struct KosherGuardApp: App {
-    @State private var credentials = CredentialController()
-    @State private var sync = FilterSyncViewModel()
+    @State private var credentials: CredentialController
+    @State private var sync: FilterSyncViewModel
+
+    init() {
+        let credentials = CredentialController()
+        let sync = FilterSyncViewModel()
+        // Sign-out deletes the identity-bound app-policy mirror under
+        // the store lock; the shield section re-evaluates the remote
+        // gate immediately, not at the next app restart.
+        credentials.onIdentityTeardown = { [weak sync] in
+            sync?.noteIdentityTeardown()
+        }
+        _credentials = State(wrappedValue: credentials)
+        _sync = State(wrappedValue: sync)
+    }
 
     var body: some Scene {
         WindowGroup {

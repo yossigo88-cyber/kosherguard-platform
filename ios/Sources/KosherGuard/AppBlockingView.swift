@@ -214,10 +214,8 @@ final class AppShieldViewModel {
             for: configuration, tenantID: nil)?.endpointFingerprint,
             let store = FilterRuleStore.appGroupStore()
         else { return nil }
-        let policyFile = store.snapshotFile
-            .deletingLastPathComponent()
-            .appendingPathComponent("app-policy.json")
-        return AppBlockingPolicyStore(snapshotFile: policyFile)
+        return AppBlockingPolicyStore(
+            snapshotFile: store.appPolicyMirrorFile)
             .load(endpointFingerprint: fingerprint)?.shieldActive
     }
 
