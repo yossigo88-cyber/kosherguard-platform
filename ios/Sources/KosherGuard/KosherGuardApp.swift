@@ -1,6 +1,8 @@
 // STATUS: UNCOMPILED, UNSIGNED, UNTESTED - see ios/README.md.
 import SwiftUI
+#if canImport(URLFilter)
 import URLFilter
+#endif
 
 /// Guardian-facing status: what the filter is doing on THIS device,
 /// stated honestly. "Protection active" requires an actually-running
@@ -95,6 +97,7 @@ final class CredentialController {
             // Dead session: clear it so the next attempt signs in
             // fresh instead of replaying a rejected cookie.
             try? store.delete(key: "session")
+            try? store.delete(key: "credential.dataset")
             lastError = "Session rejected; sign in again."
             state = .failed
         } catch {
@@ -105,7 +108,7 @@ final class CredentialController {
 
     /// Sign out server-side and clear every stored credential.
     func signOut() async {
-        if let cookie = try? store.read(key: "session"), let cookie {
+        if let cookie = try? store.read(key: "session") {
             try? await auth?.signOut(sessionCookie: cookie)
         }
         try? store.delete(key: "session")
