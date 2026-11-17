@@ -222,9 +222,18 @@ def test_native_not_sent_to_nanomdm_or_reconciled(engine,runtime,fleet):
         assert command.status=="queued" and adapter.calls==[]
         assert reconcile(s,fleet[0],[{"command_id":command.id,"status":"Acknowledged"}]).skipped==1
         assert command.status=="queued"
-        for name in ["DeclarativeManagement","InstallApplication","EraseDevice"]:
+        for name in ["DeclarativeManagement","EraseDevice"]:
             with pytest.raises(mdm_ops.MDMError):
                 mdm_ops.issue_command(s,fleet[0],pk,name,{},None,adapter=adapter)
+        # Managed-app delivery IS implemented on the native transport
+        # (command_codec InstallApplication with optional managed
+        # Configuration). A valid payload queues for the device's next
+        # check-in; a malformed payload is refused and stays out of the
+        # ledger.
+        ok=mdm_ops.issue_command(s,fleet[0],pk,"InstallApplication",{"ITunesStoreID":123456789,"Configuration":{"deviceID":fleet[2][0],"controlPlaneBaseURL":"https://cp.example.test"}},None,adapter=adapter)
+        assert ok.status=="queued" and adapter.calls==[]
+        with pytest.raises(mdm_ops.MDMError):
+            mdm_ops.issue_command(s,fleet[0],pk,"InstallApplication",{"ITunesStoreID":"not-a-number"},None,adapter=adapter)
 
 
 def test_other_tenant_command_cannot_ack(engine,runtime,fleet):
