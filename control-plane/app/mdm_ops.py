@@ -10,6 +10,7 @@ never from a successful enqueue or send.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import os
 import uuid
@@ -32,20 +33,74 @@ class MDMError(RuntimeError):
         self.status = status
 
 
+# States a command may be queued against. 'pending' is the local
+# placeholder before the first device check-in (the command waits in
+# the server queue, honestly); 'enrolled' is live. Offboarded or
+# otherwise terminal/unknown states NEVER accept commands, and neither
+# does an enrollment whose device was offboarded.
+COMMANDABLE_STATES = ("pending", "enrolled")
+
+
 def get_enrollment(session: Session, tenant_id: int,
-                   enrollment_pk: int) -> MDMEnrollment:
+                   enrollment_pk: int,
+                   *, for_command: bool = False) -> MDMEnrollment:
     row = session.get(MDMEnrollment, enrollment_pk)
     if row is None or row.tenant_id != tenant_id:
         raise MDMError("enrollment not found", 404)
+    if for_command:
+        if row.state not in COMMANDABLE_STATES:
+            raise MDMError(
+                f"enrollment is {row.state}; commands require a current, "
+                "non-terminal enrollment", 409)
+        device = session.get(Device, row.device_id)
+        if device is None or device.tenant_id != tenant_id or device.state != "active":
+            raise MDMError(
+                "device is offboarded; commands are no longer accepted "
+                "for it", 409)
     return row
 
 
 def create_enrollment(session: Session, tenant_id: int, device_id: int,
                       supervision_requested: bool = False,
                       device_udid: str | None = None) -> MDMEnrollment:
-    device = session.get(Device, device_id)
+    """Legacy enrollment creation, under the SAME one-current-
+    enrollment invariant as ticket redemption: the device row is locked
+    FOR UPDATE (serializing against concurrent ticket redemptions and
+    creations), an offboarded device is refused, a current enrollment
+    with a bound identity conflicts, and an unbound placeholder is
+    reused rather than duplicated."""
+    device = session.scalar(select(Device).where(
+        Device.id == device_id).with_for_update())
     if device is None or device.tenant_id != tenant_id:
         raise MDMError("device not found", 404)
+    if device.state != "active":
+        raise MDMError(
+            f"device is {device.state}; reactivate before enrolling", 409)
+    current = list(session.scalars(select(MDMEnrollment).where(
+        MDMEnrollment.device_id == device_id,
+        MDMEnrollment.tenant_id == tenant_id,
+        MDMEnrollment.state.in_(["pending", "enrolled"]))))
+    if current:
+        bound = [r for r in current if r.device_udid]
+        if bound or (device_udid and any(
+                r.device_udid and r.device_udid != device_udid
+                for r in current)):
+            raise MDMError(
+                "device already has a current enrollment", 409)
+        # Unbound placeholder: reuse it instead of creating a second
+        # current enrollment.
+        row = current[0]
+        if device_udid:
+            row.device_udid = device_udid
+        row.supervision_requested = (
+            supervision_requested or row.supervision_requested)
+        session.flush()
+        session.add(AuditEvent(
+            tenant_id=tenant_id, actor_user_id=None,
+            action="mdm.enroll.create",
+            detail=f"enrollment {row.id} for device {device_id} "
+                   "(existing placeholder reused)"))
+        return row
     row = MDMEnrollment(
         tenant_id=tenant_id,
         device_id=device_id,
@@ -89,7 +144,12 @@ def issue_command(session: Session, tenant_id: int, enrollment_pk: int,
                 f"{command} requires two-person approval; direct issuance refused")
     elif command not in SUPPORTED_COMMANDS:
         raise MDMError(f"unsupported command: {command}")
-    enrollment = get_enrollment(session, tenant_id, enrollment_pk)
+    # Validity is checked NOW (tenant ownership, non-terminal
+    # enrollment state, device not offboarded) - including when an
+    # approved destructive command is finally queued, which can be long
+    # after the request was made.
+    enrollment = get_enrollment(session, tenant_id, enrollment_pk,
+                                for_command=True)
     row = MDMCommand(
         tenant_id=tenant_id,
         enrollment_pk=enrollment.id,
@@ -107,11 +167,12 @@ def issue_command(session: Session, tenant_id: int, enrollment_pk: int,
                 enrollment.enrollment_id, command, payload or {})
         except Exception as exc:  # adapter failure is not a device answer
             row.status = "queued"
-            row.result_detail = f"delivery failed: {exc}"
+            row.result_detail = (
+                f"delivery failed: {sanitize_adapter_error(exc)}")
             session.flush()
             return row
         row.status = result.status
-        row.result_detail = result.detail
+        row.result_detail = ("adapter response recorded: " + str(result.status))
         if result.status == "acknowledged":
             row.applied = True
         session.flush()
@@ -119,6 +180,26 @@ def issue_command(session: Session, tenant_id: int, enrollment_pk: int,
                            action="mdm.command.issue",
                            detail=f"{command} -> enrollment {enrollment.id}"))
     return row
+
+
+_SECRETISH = re.compile(
+    r"(?i)(bearer\s+|token|api[-_]?key|secret|password|credential|"
+    r"authorization)(\s*[=:]\s*)(\S+)")
+
+
+def sanitize_adapter_error(exc: Exception) -> str:
+    """Adapter exception text can carry credentials (API keys in URLs
+    or headers, bearer tokens). What is stored in the command ledger is
+    the exception class plus a REDACTED, truncated message: useful for
+    diagnosis, never secret-bearing."""
+    # Free-form adapter messages can embed PEMs, URLs or unknown secret
+    # formats. Deny by default rather than guessing every secret syntax.
+    message = str(exc).lower()
+    category = next((word for word in ("unreachable", "timeout", "refused", "tls")
+                     if word in message), "unclassified")
+    return (f"{exc.__class__.__name__}: adapter delivery failed "
+            f"({category}; details withheld)")
+
 
 
 def list_commands(session: Session, tenant_id: int,
