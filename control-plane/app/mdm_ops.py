@@ -159,7 +159,22 @@ def issue_command(session: Session, tenant_id: int, enrollment_pk: int,
     )
     session.add(row)
     session.flush()
-    if adapter is not None:
+    # Native device-channel enrollments consume this same ledger directly.
+    # Never hand native credentials/commands to the independent NanoMDM path.
+    from .models import MDMProvision
+    native = session.scalar(select(MDMProvision).where(
+        MDMProvision.enrollment_pk == enrollment_pk,
+        MDMProvision.tenant_id == tenant_id))
+    if native is not None:
+        from mdm.command_codec import encode_command
+        try:
+            encode_command(command, payload or {})
+        except ValueError as exc:
+            session.delete(row)
+            raise MDMError("command is not implemented by native device transport", 409) from exc
+        from .native_mdm import schedule_push
+        schedule_push(session, tenant_id=tenant_id, enrollment_pk=enrollment_pk)
+    if adapter is not None and native is None:
         row.status = "delivered"
         try:
             result = adapter.deliver_command(
