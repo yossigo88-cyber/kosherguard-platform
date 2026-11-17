@@ -175,3 +175,24 @@ def test_alembic_schema_matches_model_metadata(tmp_path):
         return tables
 
     assert shape(str(db_a)) == shape(str(db_b))
+
+
+def test_fresh_postgresql_migrations_roundtrip(tmp_path, monkeypatch):
+    import pgserver
+    from sqlalchemy import create_engine, inspect, text
+    server = pgserver.get_server(str(tmp_path / "pg-migrations"))
+    url = server.get_uri().replace("postgresql://", "postgresql+psycopg://", 1)
+    cfg = Config(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "..", "alembic"))
+    monkeypatch.setenv("KG_DATABASE_URL", url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    inspector = inspect(engine)
+    assert ALL_TABLES <= set(inspector.get_table_names())
+    assert "uq_mdm_enrollments_current_device" in {x["name"] for x in inspector.get_indexes("mdm_enrollments")}
+    with engine.connect() as con:
+        assert con.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0025"
+    command.downgrade(cfg, "0024")
+    command.upgrade(cfg, "head")
+    assert "pending_cleanup_path" in {c["name"] for c in inspect(engine).get_columns("credential_artifacts")}
+    engine.dispose()
