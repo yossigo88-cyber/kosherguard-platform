@@ -90,12 +90,24 @@ def build_dataset(rules: list[URLRule], version: int,
 
 
 def load_categories(path: str) -> list[URLRule]:
-    """Convert the category pipeline's categories.json into block rules."""
-    with open(path) as fh:
+    """Convert the pipeline's domains -> categories schema into block rules.
+
+    Validate through the filtering engine, just like category-pipeline/build.py.
+    Reject an unrelated schema instead of silently generating an empty dataset.
+    """
+    import sys
+    from pathlib import Path
+    engine_src = str(Path(__file__).resolve().parents[2] /
+                     "filtering-engine" / "src")
+    if engine_src not in sys.path:
+        sys.path.insert(0, engine_src)
+    from category_db import CategoryDB, CategoryDBError
+
+    with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
-    rules = []
-    for category, entry in data.get("categories", {}).items():
-        for domain in entry.get("domains", []):
-            rules.append(URLRule(url=domain, verdict="block",
-                                 category=category))
-    return rules
+    if not isinstance(data, dict) or not isinstance(data.get("domains"), dict):
+        raise CategoryDBError("category input must contain a domains object")
+    validated = CategoryDB(data["domains"]).to_dict()["domains"]
+    return [URLRule(url=domain, verdict="block", category=category)
+            for domain, categories in validated.items()
+            for category in categories]
