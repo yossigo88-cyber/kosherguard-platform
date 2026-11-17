@@ -3,22 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KosherGuard - Family-safe internet, managed from day one</title>
+<title>KosherGuard - The best filtering solution for our technical generation</title>
 <style>
 :root { --ink:#16202b; --accent:#1f6f5f; --paper:#f7f5f0; }
 * { box-sizing: border-box; margin: 0; }
 body { font-family: Georgia, 'Times New Roman', serif; color: var(--ink); background: var(--paper); line-height: 1.6; }
-header { padding: 1.2rem 6vw; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd5c5; }
+header { padding: 1.2rem 6vw; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd5c5; flex-wrap: wrap; gap: .6rem; }
 .logo { font-size: 1.4rem; font-weight: bold; color: var(--accent); }
-nav a { margin-left: 1.4rem; color: var(--ink); text-decoration: none; }
+nav a { margin-left: 1.2rem; color: var(--ink); text-decoration: none; }
 nav a.cta { background: var(--accent); color: #fff; padding: .45rem 1rem; border-radius: 6px; }
 .hero { padding: 5rem 6vw 3rem; max-width: 62rem; }
 .hero h1 { font-size: 2.6rem; line-height: 1.2; margin-bottom: 1rem; }
 .hero p { font-size: 1.15rem; max-width: 44rem; }
+.tagline { color: var(--accent); font-style: italic; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: 1.2rem; padding: 2.5rem 6vw 4rem; }
 .card { background: #fff; border: 1px solid #e2dccb; border-radius: 10px; padding: 1.4rem; }
 .card h3 { color: var(--accent); margin-bottom: .5rem; }
+section.block { padding: 2rem 6vw; max-width: 62rem; }
 footer { padding: 1.5rem 6vw; border-top: 1px solid #ddd5c5; font-size: .9rem; color: #5a6570; }
+footer a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -27,14 +30,28 @@ footer { padding: 1.5rem 6vw; border-top: 1px solid #ddd5c5; font-size: .9rem; c
   <nav>
     <a href="#how">How it works</a>
     <a href="#features">Features</a>
+    <a href="enrollment.html">Enrollment</a>
+    <a href="support.html">Support</a>
+    <a href="status.html">Status</a>
+    <a href="#contact">Contact</a>
     <a class="cta" href="/portal/">Family sign in</a>
+    <a href="/web/">Administrator sign in</a>
   </nav>
 </header>
 <section class="hero" id="how">
   <h1>Family-safe internet, managed from day one.</h1>
+  <p class="tagline">The best filtering solution for our technical generation.</p>
   <p>KosherGuard is building its own filtering engine and managed iPhone
   protection, with family-set policies enforced by our network edge.
   We are in development and not yet launched.</p>
+</section>
+<section class="block" id="how-it-works">
+  <h2>How it works</h2>
+  <p>Families enroll supervised iPhones, choose policies per device, and
+  KosherGuard compiles those policies to its filtering edge. Changes
+  publish only after review, and every change is audited. A device
+  policy can never be made less restrictive than the protected family
+  baseline by accident.</p>
 </section>
 <section class="cards" id="features">
   <div class="card"><h3>Own filtering engine</h3>
@@ -48,12 +65,22 @@ footer { padding: 1.5rem 6vw; border-top: 1px solid #ddd5c5; font-size: .9rem; c
   <div class="card"><h3>Family control</h3>
     <p>Multiple guardians per family, per-device policies, and a clear
     audit trail of every change.</p></div>
-  <div class="card"><h3>Tighten-only policies</h3>
-    <p>A device policy can never be made less restrictive than the
-    family default by accident.</p></div>
+  <div class="card"><h3>Protected baseline</h3>
+    <p>KosherGuard administrators control a protected baseline. Families
+    manage delegated settings and approved exceptions; ordinary
+    dashboard controls cannot weaken that baseline.</p></div>
+</section>
+<section class="block" id="contact">
+  <h2>Contact</h2>
+  <p>KosherGuard is invitation-only during its pilot. To request an
+  invitation or ask a question, use the support request option inside
+  the family portal, or reach the team through the support channel
+  listed on the <a href="support.html">support page</a>.</p>
 </section>
 <footer>KosherGuard is under active development. Nothing on this page is a
   live service yet; device management features described here are goals
-  pending Apple approval, enrollment eligibility, and device testing.</footer>
+  pending Apple approval, enrollment eligibility, and device testing.
+  <a href="privacy.html">Privacy (draft)</a> &middot;
+  <a href="terms.html">Terms (draft)</a></footer>
 </body>
 </html>
