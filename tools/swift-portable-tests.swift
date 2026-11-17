@@ -3405,3 +3405,49 @@ final class AppBlockingPolicyTests: XCTestCase {
         XCTAssertNil(store.load(endpointFingerprint: "fp-1"))
     }
 }
+
+final class AppBlockingPolicyClientTests: XCTestCase {
+    let base = URL(string: "https://fixture.example")!
+    func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testFetchHitsDeviceRouteWithSession() async throws {
+        FixtureProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path,
+                           "/api/devices/7/app-policy")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"),
+                           "kg_session=live")
+            return (200, [:], Data(
+                #"{"mode":"blocklist","bundle_ids":["com.example.game"],"saved":true}"#
+                    .utf8))
+        }
+        let policy = try await AppBlockingPolicyClient(
+            baseURL: base, session: session())
+            .fetch(deviceID: 7, sessionCookie: "live")
+        XCTAssertEqual(policy.mode, .blocklist)
+        XCTAssertEqual(policy.bundleIDs, ["com.example.game"])
+    }
+
+    func testErrorsMap() async throws {
+        FixtureProtocol.handler = { _ in (401, [:], Data()) }
+        let client = AppBlockingPolicyClient(baseURL: base,
+                                             session: session())
+        do {
+            _ = try await client.fetch(deviceID: 7, sessionCookie: "x")
+            XCTFail("401 fetch succeeded")
+        } catch AppBlockingPolicyClient.FetchError.unauthorized {}
+        FixtureProtocol.handler = { _ in (404, [:], Data()) }
+        do {
+            _ = try await client.fetch(deviceID: 7, sessionCookie: "x")
+            XCTFail("404 fetch succeeded")
+        } catch AppBlockingPolicyClient.FetchError.deviceNotFound {}
+        FixtureProtocol.handler = { _ in (200, [:], Data("junk".utf8)) }
+        do {
+            _ = try await client.fetch(deviceID: 7, sessionCookie: "x")
+            XCTFail("malformed fetch succeeded")
+        } catch AppBlockingPolicyClient.FetchError.malformedResponse {}
+    }
+}

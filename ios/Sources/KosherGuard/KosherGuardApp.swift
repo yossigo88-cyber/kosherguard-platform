@@ -368,6 +368,39 @@ final class FilterSyncViewModel {
         } else {
             canSync = true
         }
+        // Pull-based app policy mirror (Stage 10): refresh the
+        // device-local copy of the control plane's application
+        // policy, bound to the current endpoint identity. On the
+        // supervised route the MDM profile is the enforcement; this
+        // mirror feeds the personally-owned route's visibility and
+        // future shield application. A fetch failure changes nothing
+        // (fail safe: the last good policy stays).
+        if let baseURL = configuration.controlPlaneBaseURL,
+           let deviceID = configuration.deviceID,
+           let store {
+            let keychain = KeychainCredentialStore(
+                accessGroup: KeychainCredentialStore.sharedAccessGroup)
+            let fingerprint = FilterSyncController.bootstrap(
+                for: configuration, tenantID: nil)?.endpointFingerprint
+                ?? ""
+            let policyFile = store.snapshotFile
+                .deletingLastPathComponent()
+                .appendingPathComponent("app-policy.json")
+            Task {
+                guard let cookie = CredentialBundle.load(
+                    from: keychain)?.session, !cookie.isEmpty,
+                    !fingerprint.isEmpty
+                else { return }
+                if let policy = try? await AppBlockingPolicyClient(
+                    baseURL: baseURL).fetch(
+                        deviceID: deviceID,
+                        sessionCookie: cookie) {
+                    try? AppBlockingPolicyStore(snapshotFile: policyFile)
+                        .save(policy,
+                              endpointFingerprint: fingerprint)
+                }
+            }
+        }
     }
 
     private func apply(_ state: FilterSyncController.State) {

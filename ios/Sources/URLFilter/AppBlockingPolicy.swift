@@ -3,6 +3,9 @@
 // ManagedSettings/FamilyControls application of a policy is
 // UNCOMPILED (no Apple SDK) - see AppShieldController.swift.
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// The control plane's per-device application policy
 /// (GET/PUT /api/devices/{id}/app-policy: {"mode", "bundle_ids",
@@ -145,5 +148,56 @@ struct AppBlockingPolicyStore {
 
     func clear() {
         try? FileManager.default.removeItem(at: snapshotFile)
+    }
+}
+
+/// Pull-based remote policy updates: the device polls the control
+/// plane's per-device application policy with the guardian session
+/// (same auth pattern as FilterRulesClient). The personally-owned
+/// route can only MIRROR this for visibility; enforcement of the
+/// bundle-ID list is the supervised MDM route (see the capability
+/// split above).
+struct AppBlockingPolicyClient {
+
+    enum FetchError: Error, Equatable {
+        case unauthorized
+        case deviceNotFound
+        case unexpectedStatus(Int)
+        case malformedResponse
+    }
+
+    let baseURL: URL
+    let session: URLSession
+
+    init(baseURL: URL, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
+    }
+
+    func fetch(deviceID: Int,
+               sessionCookie: String) async throws -> AppBlockingPolicy {
+        var req = URLRequest(url: baseURL
+            .appendingPathComponent("api/devices")
+            .appendingPathComponent(String(deviceID))
+            .appendingPathComponent("app-policy"))
+        req.httpMethod = "GET"
+        req.setValue("1", forHTTPHeaderField: "X-KosherGuard-Request")
+        req.setValue("kg_session=\(sessionCookie)",
+                     forHTTPHeaderField: "Cookie")
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw FetchError.malformedResponse
+        }
+        switch http.statusCode {
+        case 200: break
+        case 401, 403: throw FetchError.unauthorized
+        case 404: throw FetchError.deviceNotFound
+        default: throw FetchError.unexpectedStatus(http.statusCode)
+        }
+        guard let policy = try? JSONDecoder().decode(
+            AppBlockingPolicy.self, from: data)
+        else { throw FetchError.malformedResponse }
+        return policy
     }
 }
