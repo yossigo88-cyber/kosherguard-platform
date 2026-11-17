@@ -79,6 +79,7 @@ def approval_json(a: SensitiveCommandApproval, session=None) -> dict:
         "decided_by_user_id": a.decided_by_user_id,
         "expires_at": a.expires_at.isoformat(),
         "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+        "decision_detail": a.decision_detail,
     }
     if session is not None:
         # An approver must see WHO asked and WHICH device is targeted
