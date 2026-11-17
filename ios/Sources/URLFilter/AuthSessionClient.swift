@@ -1,5 +1,8 @@
 // STATUS: UNCOMPILED, UNSIGNED, UNTESTED - see ios/README.md.
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Native session acquisition for the control plane. The published
 /// server has no separate native-token exchange; the same JSON login
@@ -14,11 +17,16 @@ import Foundation
 ///
 /// No credential is persisted here; see KeychainCredentialStore for
 /// the storage layer.
-struct AuthSessionClient {
+public struct AuthSessionClient {
     let baseURL: URL
     let session: URLSession
 
-    enum AuthError: Error, Equatable {
+    public init(baseURL: URL, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
+    }
+
+    public enum AuthError: Error, Equatable {
         /// Bad password OR missing/invalid TOTP code - the server
         /// returns the same 401 for both by design.
         case invalidCredentials
@@ -28,14 +36,19 @@ struct AuthSessionClient {
         case malformedResponse
     }
 
-    struct Credentials {
+    public struct Credentials {
         let email: String
         let password: String
         let totpCode: String?
+        public init(email: String, password: String, totpCode: String?) {
+            self.email = email
+            self.password = password
+            self.totpCode = totpCode
+        }
     }
 
     /// Sign in and return the session cookie VALUE (not persisted).
-    func signIn(_ credentials: Credentials) async throws -> String {
+    public func signIn(_ credentials: Credentials) async throws -> String {
         var req = URLRequest(url: baseURL
             .appendingPathComponent("api/auth/login"))
         req.httpMethod = "POST"
@@ -51,9 +64,7 @@ struct AuthSessionClient {
 
         // The session cookie must be captured from THIS response, so
         // the shared cookie store must not swallow it first.
-        let config = session.configuration
         let (data, response) = try await session.data(for: req)
-        _ = config
         guard let http = response as? HTTPURLResponse else {
             throw AuthError.malformedResponse
         }
@@ -67,18 +78,21 @@ struct AuthSessionClient {
         case 429: throw AuthError.rateLimited
         default: throw AuthError.unexpectedStatus(http.statusCode)
         }
-        guard let fields = http.allHeaderFields as? [String: String],
-              let setCookie = fields["Set-Cookie"],
-              let cookie = setCookie.split(separator: ";").first,
-              cookie.hasPrefix("kg_session=") else {
+        let fields = http.allHeaderFields.reduce(into: [String: String]()) {
+            result, field in
+            result[String(describing: field.key)] = String(describing: field.value)
+        }
+        let cookies = HTTPCookie.cookies(withResponseHeaderFields: fields,
+                                         for: req.url!)
+        guard let cookie = cookies.first(where: { $0.name == "kg_session" }) else {
             throw AuthError.noSessionCookie
         }
         _ = data
-        return String(cookie.dropFirst("kg_session=".count))
+        return cookie.value
     }
 
     /// Sign out, invalidating the session server-side.
-    func signOut(sessionCookie: String) async throws {
+    public func signOut(sessionCookie: String) async throws {
         var req = URLRequest(url: baseURL
             .appendingPathComponent("api/auth/logout"))
         req.httpMethod = "POST"
