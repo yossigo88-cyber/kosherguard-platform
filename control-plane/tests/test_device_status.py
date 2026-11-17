@@ -104,15 +104,28 @@ class TestDeviceStatusChain:
         assert enr["supervision_verified"] is True
         assert enr["last_seen_at"] is not None
         assert d["never-seen"]["enrollment"] is None
-        # last confirmed update = latest stored receipt (the DDM
-        # report 5 min ago is newer than the ack 30 min ago)
-        last = d["fresh-iphone"]["last_confirmed_update"]
+        # last device receipt = latest stored receipt (the DDM
+        # report 5 min ago is newer than the ack 30 min ago); it is
+        # NOT labeled a confirmed policy application
+        last = d["fresh-iphone"]["last_device_receipt"]
         assert last is not None
-        assert "receipt" in d["fresh-iphone"]["last_confirmed_update_basis"]
-        assert d["never-seen"]["last_confirmed_update"] is None
-        # pending command count from the command ledger
-        assert d["fresh-iphone"]["pending_commands"] == 1
-        assert d["stale-ipad"]["pending_commands"] == 0
+        assert "not a confirmed policy application" in \
+            d["fresh-iphone"]["last_device_receipt_basis"]
+        assert d["never-seen"]["last_device_receipt"] is None
+        # per-change push chain from the server command ledger
+        chain = d["fresh-iphone"]["push_chain"]
+        assert chain["pending"] == 1
+        assert chain["by_status"] == {"acknowledged": 1, "queued": 1}
+        assert chain["latest_command"]["command"] == "ProfileList"
+        assert chain["latest_command"]["status"] == "queued"
+        assert d["stale-ipad"]["push_chain"]["pending"] == 0
+        # reported-vs-published: no app policy assigned in this
+        # fixture, so nothing is served; an unenrolled device has no
+        # enrollment state at all
+        assert d["fresh-iphone"]["reported_vs_published"] == \
+            "no_declarations_served"
+        assert d["never-seen"]["reported_vs_published"] == \
+            "no_enrollment"
 
     def test_honest_labels_present(self, engine):
         c = TestClient(make_app(engine))
@@ -122,3 +135,5 @@ class TestDeviceStatusChain:
             assert "not live presence" in row["connectivity_basis"]
             assert "not verified" in row["enforcement_note"]
             assert "published_revision" in row
+            assert "not verified enforcement" in \
+                row["reported_vs_published_basis"]
