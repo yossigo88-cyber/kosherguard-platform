@@ -11,7 +11,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import (
+from sqlalchemy import (LargeBinary, 
     DateTime, Enum, ForeignKey, Index, Integer, String, Text,
     UniqueConstraint, text,
 )
@@ -783,3 +783,80 @@ class EnrollmentTicket(Base):
         DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class MDMProvision(Base):
+    """Native transport enrollment. No private identity/profile bytes stored.
+
+    Independent from legacy ticket redemption and NanoMDM credentials. Global
+    current UDID uniqueness prevents assigning one physical identity to two
+    tenants. Parent MDMEnrollment/Device remain lifecycle source of truth.
+    """
+    __tablename__ = "mdm_provisions"
+    __table_args__ = (
+        Index("uq_mdm_provision_current_udid", "udid", unique=True,
+              sqlite_where=text("revoked_at IS NULL"),
+              postgresql_where=text("revoked_at IS NULL")),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    enrollment_pk: Mapped[int] = mapped_column(ForeignKey("mdm_enrollments.id"), nullable=False, unique=True)
+    udid: Mapped[str] = mapped_column(String(120), nullable=False)
+    serial: Mapped[str] = mapped_column(String(120), nullable=False)
+    mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    topic: Mapped[str] = mapped_column(String(200), nullable=False)
+    stage: Mapped[str] = mapped_column(String(30), nullable=False, default="issued")
+    declaration_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    ticket_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    ticket_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    served_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    machineinfo_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    cert_der: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    cert_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    cert_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pending_cert_der: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    pending_cert_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    pending_cert_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    push_state: Mapped[str] = mapped_column(String(30), nullable=False, default="idle")
+    push_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    push_next_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    identity_health: Mapped[str] = mapped_column(String(30), nullable=False, default="not_issued")
+    push_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class MDMAppleInventory(Base):
+    """Attended inventory approval, not Apple/device attestation."""
+    __tablename__ = "mdm_apple_inventory"
+    __table_args__ = (UniqueConstraint("serial"), UniqueConstraint("udid"), UniqueConstraint("device_id"))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), nullable=False)
+    serial: Mapped[str] = mapped_column(String(120), nullable=False)
+    udid: Mapped[str] = mapped_column(String(120), nullable=False)
+    approved_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class MDMWebActivation(Base):
+    """Fresh guardian session-bound ADE attempt. Only encrypted CMS stored."""
+    __tablename__ = "mdm_web_activations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    enrollment_pk: Mapped[int] = mapped_column(ForeignKey("mdm_enrollments.id"), nullable=False, unique=True)
+    nonce_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    session_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    ceremony_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    encrypted_attempt: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MDMWebCeremony(Base):
+    """Bounded short-lived anonymous ADE web ceremony, no profile/key bytes."""
+    __tablename__="mdm_web_ceremonies"
+    id: Mapped[int] = mapped_column(Integer,primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64),nullable=False,unique=True)
+    encrypted_state: Mapped[str] = mapped_column(Text,nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),nullable=False)
