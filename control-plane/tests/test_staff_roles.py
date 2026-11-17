@@ -391,6 +391,18 @@ class TestTwoPersonApproval:
         with session_scope(engine) as s:
             assert s.get(SensitiveCommandApproval, aid).status == "expired"
 
+    def test_approval_list_shows_requester_and_device(self, engine):
+        """An approver must see WHO requested and WHICH device is
+        targeted before approving - not only a request id."""
+        req = TestClient(make_app(engine))
+        r = self._request_erase(req, "parent@example.com")
+        assert r.status_code == 202
+        rows = req.get("/api/mdm/sensitive-approvals").json()["approvals"]
+        a = rows[0]
+        assert a["requested_by_email"] == "parent@example.com"
+        assert a["device"] is not None
+        assert "iphone-1" in a["device"] and "enr-1" in a["device"]
+
 
 import mfa_support  # noqa: E402
 from mfa_support import mfa_login  # noqa: E402
