@@ -872,15 +872,17 @@ async function refreshApprovals() {
   if (r.status === 403) { panel.classList.add("hidden"); return; }
   const rows = r.body.approvals || [];
   document.querySelector("#approvals-table tbody").innerHTML = rows.map(a =>
-    `<tr><td>${a.id}</td><td>${esc(a.operation)}</td><td>${esc(a.status)}</td>` +
+    `<tr><td>${a.id}</td><td>${esc(a.operation)}</td><td>${esc(a.device || "-")}</td>` +
+    `<td>${esc(a.requested_by_email || "user " + a.requested_by_user_id)}</td>` +
+    `<td>${esc(a.status)}</td>` +
     `<td>${esc(a.reason || "")}</td><td>${esc(a.expires_at.slice(0, 16).replace("T", " "))}</td>` +
-    `<td>${a.status === "pending" ? `<button class="link" data-decide="${a.id}" data-op="${esc(a.operation)}">decide</button>` : ""}</td></tr>`).join("");
+    `<td>${a.status === "pending" ? `<button class="link" data-decide="${a.id}" data-op="${esc(a.operation)}" data-device="${esc(a.device || "-")}" data-by="${esc(a.requested_by_email || "user " + a.requested_by_user_id)}">decide</button>` : ""}</td></tr>`).join("");
 }
 
 document.querySelector("#approvals-table tbody").addEventListener("click", (e) => {
   const b = e.target.closest("[data-decide]");
   if (!b) return;
-  $("ap-id").textContent = b.dataset.decide + " (" + b.dataset.op + ")";
+  $("ap-id").textContent = b.dataset.decide + " (" + b.dataset.op + " on " + b.dataset.device + ", requested by " + b.dataset.by + ")";
   $("ap-confirm").value = "";
   $("ap-totp").value = "";
   $("approval-act").classList.remove("hidden");
