@@ -95,7 +95,26 @@ The earlier eight-suite1,272 result is still6399667 only. Followup adds
 explicit queue-failed approval state/savepoint rollback and safe new-request
 flow, exception-aware restore readiness, complete fixture isolation, and
 actual publication-overlay race assertions. See the full report for each
-regression and remaining lint/type/UI-visual and edge-propagation limits.
+regression and remaining lint/type and edge-propagation limits.
 Revocation cleanup republishes the last published snapshot minus revoked
 exceptions; it does not publish saved drafts. Active filtering exceptions
 block restore readiness until both saved and pinned published overlays clear.
+
+## Final full verification and visual check
+
+Exact checkout `2826cad29941ba4ec0fe7e8bbaa3ce3a5ae3a415`: all eight
+suites passed1,277 tests (CP431, engine337, DNS87, MDM64, proxy38, URL38,
+category6, dashboard276). Full logs and JUnit retained; dashboard split
+130+34+67+45. Real seeded-app Chrome screenshots were inspected for manual
+and queue-failed approval text, the new pending request path, and device
+receipt vs live-presence labels. This closes the earlier visual-check gap,
+not native-device verification. Independent review accepted the six code
+followups; its final wrong-test-filename doc correction is applied. The
+security report lists all42 changed files and the exact per-SHA ledger.
+Later label correction456384d57c6bfe5212db886be8796e0e5862f1cf passed432
+control-plane tests at a fresh exact checkout. Other component suite runs
+remain tied to2826cad. Primary portal labels now describe check-in history
+only, with no Online/Offline claim. The API enum offline is replaced by
+no_report_over_24h (external consumers must update their mapping). A new
+rendered screenshot verifies the labels and distinct policy/command receipt
+column. Publication after456384d changes documentation only.
