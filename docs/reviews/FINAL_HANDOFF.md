@@ -21,7 +21,7 @@ Full issue-by-issue findings, code paths, tests, limitations and changed
 files: [security-corrections report](SECURITY_CORRECTIONS_2026-11-17.md).
 Product coverage: [requirements matrix](../REQUIREMENTS_COVERAGE.md).
 The final delivery message names the final published SHA and separates
-candidate-SHA runs from any later documentation/UI-only commits.
+candidate-SHA runs from later code and documentation commits.
 
 ## Corrected security behavior
 
@@ -86,3 +86,16 @@ No merge, force-push, branch deletion, deployment, DNS/live-site change,
 purchase, real Apple credential change, or real-device operation occurred.
 Main remains `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a` at verification.
 This is not a production-ready or iPhone-release-ready product.
+
+## Independent-review followup verification
+
+Code SHA `9d6d17b2d2e29dda0b5d66ea4523cf7ca337309c`: fresh GitHub checkout,
+complete control-plane431 passed, including20 PostgreSQL matrix tests.
+The earlier eight-suite1,272 result is still6399667 only. Followup adds
+explicit queue-failed approval state/savepoint rollback and safe new-request
+flow, exception-aware restore readiness, complete fixture isolation, and
+actual publication-overlay race assertions. See the full report for each
+regression and remaining lint/type/UI-visual and edge-propagation limits.
+Revocation cleanup republishes the last published snapshot minus revoked
+exceptions; it does not publish saved drafts. Active filtering exceptions
+block restore readiness until both saved and pinned published overlays clear.
