@@ -71,9 +71,9 @@ def run_once(engine, settings, now=None) -> bool:
                     # no publish delegation or the owner is unavailable,
                     # demoted or MFA-unverified. The marker is server-set
                     # (the jobs API cannot create it), the actor stays
-                    # the real revoker, and the publication ships the
-                    # tenant's current saved state under the ordinary
-                    # publication invariants (tighten-only vs baseline).
+                    # the real revoker. Cleanup republishes only the LAST
+                    # PUBLISHED snapshot minus revoked exceptions; it does
+                    # not ship saved drafts or perform a new tighten proof.
                     actor_email = f"system:exception-revoke job {job.id}"
                 else:
                     if (actor is None or actor.tenant_id != job.tenant_id or
