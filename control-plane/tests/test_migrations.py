@@ -77,6 +77,8 @@ def test_upgrade_from_prior_schema_preserves_rows(tmp_path):
 
 
 ALL_TABLES = {
+    "mdm_apple_inventory", "mdm_web_activations", "mdm_web_ceremonies",
+    "mdm_provisions",
     "tenants", "users", "auth_sessions", "audit_events",
     "login_attempts", "policies", "policy_versions", "devices",
     "device_assignments", "publication_states", "mdm_enrollments",
@@ -190,8 +192,10 @@ def test_fresh_postgresql_migrations_roundtrip(tmp_path, monkeypatch):
     inspector = inspect(engine)
     assert ALL_TABLES <= set(inspector.get_table_names())
     assert "uq_mdm_enrollments_current_device" in {x["name"] for x in inspector.get_indexes("mdm_enrollments")}
+    assert "uq_mdm_provision_current_udid" in {x["name"] for x in inspector.get_indexes("mdm_provisions")}
+    assert {"cert_der", "cert_sha256", "machineinfo_sha256", "revoked_at", "push_ciphertext"} <= {x["name"] for x in inspector.get_columns("mdm_provisions")}
     with engine.connect() as con:
-        assert con.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0025"
+        assert con.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0026"
     command.downgrade(cfg, "0024")
     command.upgrade(cfg, "head")
     assert "pending_cleanup_path" in {c["name"] for c in inspect(engine).get_columns("credential_artifacts")}
