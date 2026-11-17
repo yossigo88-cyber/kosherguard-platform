@@ -16,6 +16,7 @@ import os
 from sqlalchemy import select, delete, or_
 from sqlalchemy.orm import Session
 
+from .db import lock_tenant
 from .models import Device, FilterDecision, IssuedCredential, Tenant
 from datetime import datetime, timedelta, timezone
 import re
@@ -73,38 +74,47 @@ def record_decisions(session: Session, claims: dict,
     if len(decisions) > MAX_BATCH:
         raise FilterLogError(
             f"batch too large (max {MAX_BATCH})", 400)
-    tenant_id = int(claims["tenant_id"])
-    # A valid HMAC signature is not enough: the token's jti must still
-    # be live in the issuance registry - issued to this tenant, unrevoked
-    # and unexpired - or a revoked/expired credential could keep writing
-    # until its natural expiry.
+    # Signature verification can precede a long lock wait. Authorization must
+    # be re-read AFTER serialization, never trusted from a pre-lock ORM cache.
+    # All device lifecycle writers use tenant -> device -> credential order.
+    # Hold these locks through the caller's commit, including every log insert.
+    try:
+        tenant_id = int(claims["tenant_id"])
+        device_id = int(claims["device_id"])
+        token_exp = int(claims["exp"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise FilterLogError("credential requires tenant/device/expiry binding", 403)
+    if expected_source is None:
+        raise FilterLogError("unsupported credential scope", 403)
+    lock_tenant(session, tenant_id)
+    dev = session.scalar(select(Device).where(
+        Device.id == device_id, Device.tenant_id == tenant_id)
+        .with_for_update().execution_options(populate_existing=True))
+    if dev is None or dev.state != "active":
+        raise FilterLogError("credential device is not active", 403)
     jti = claims.get("jti")
     cred = (session.scalar(select(IssuedCredential).where(
-        IssuedCredential.jti == jti)) if jti else None)
+        IssuedCredential.jti == jti).with_for_update()
+        .execution_options(populate_existing=True)) if jti else None)
     now = datetime.now(timezone.utc)
     if cred is None or cred.tenant_id != tenant_id:
-        raise FilterLogError("credential is not in the issuance registry",
-                             403)
+        raise FilterLogError("credential is not in the issuance registry", 403)
+    if cred.device_id != dev.id:
+        raise FilterLogError("credential is bound to a different device", 403)
     if cred.revoked_at is not None:
         raise FilterLogError("credential has been revoked", 403)
     exp = cred.expires_at
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
-    if exp <= now:
+    if exp <= now or token_exp <= now.timestamp():
         raise FilterLogError("credential has expired", 403)
-    if claims.get("scope") and cred.scope != claims["scope"]:
+    if cred.scope != claims.get("scope"):
         raise FilterLogError("credential scope mismatch", 403)
-    if claims.get("exp") is not None and int(exp.timestamp()) != int(claims["exp"]):
+    if int(exp.timestamp()) != token_exp:
         raise FilterLogError("credential expiry mismatch", 403)
-    device_pk = None
-    if claims.get("device_id") is not None:
-        dev = session.get(Device, int(claims["device_id"]))
-        if dev is None or dev.tenant_id != tenant_id:
-            raise FilterLogError("credential binds an unknown device", 403)
-        if cred.device_id != dev.id:
-            raise FilterLogError("credential is bound to a different "
-                                 "device", 403)
-        device_pk = dev.id
+    if cred.policy_id != claims.get("policy_id"):
+        raise FilterLogError("credential policy binding mismatch", 403)
+    device_pk = dev.id
     purge_expired(session, tenant_id=tenant_id)
     accepted = 0
     for raw in decisions:
@@ -209,7 +219,9 @@ def purge_expired(session: Session, tenant_id=None, now=None) -> int:
     if tenant_id is not None:
         tenants = tenants.where(Tenant.id == tenant_id)
     removed = 0
-    for tenant in session.scalars(tenants):
+    for tenant in session.scalars(tenants.order_by(Tenant.id)).all():
+        lock_tenant(session, tenant.id)
+        session.refresh(tenant)
         days = tenant.blocked_log_retention_days
         if not isinstance(days, int) or not 1 <= days <= 30:
             days = 7
