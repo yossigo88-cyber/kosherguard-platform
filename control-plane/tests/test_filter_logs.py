@@ -227,9 +227,10 @@ class TestEdgeStatus:
         # health is never inferred from configuration or issuance
         assert s["health"] == "unknown"
         assert "issuance" in s["health_note"]
-        assert (s["dns_reporting"] ==
-                "connected - ingestion route live, no dns decisions "
-                "reported yet")
+        # no connectivity is claimed without evidence: the label says
+        # exactly what is known (the ingestion route accepts reports)
+        assert s["dns_reporting"].startswith("no dns decisions reported yet")
+        assert "connected" not in s["dns_reporting"]
 
         dev = mk_device(client)
         token = mint(client, dev)
@@ -251,7 +252,9 @@ class TestEdgeStatus:
                                          "action": "block"}]},
                     headers=bearer(doh))
         s = client.get("/api/filter-status").json()
-        assert s["dns_reporting"] == "connected - dns decisions received"
+        # receipt is reported as receipt, never as connectivity
+        assert s["dns_reporting"].startswith("dns decisions received")
+        assert "connected" not in s["dns_reporting"]
 
     def test_status_requires_sign_in(self, client):
         c2 = TestClient(client.app)
