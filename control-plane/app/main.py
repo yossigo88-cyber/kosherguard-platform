@@ -38,7 +38,7 @@ from .staff_routes import (ALL_STAFF, fresh_check,
 from . import schedule_ops, security
 from mdm.adapter import DESTRUCTIVE_COMMANDS
 from .config import Settings
-from .db import ScopedSession, make_engine
+from .db import ScopedSession, lock_tenant, make_engine
 from .models import (StaffRole, SensitiveCommandApproval, AuthSession, LoginAttempt,
                      PendingMfaEnrollment, Role, User, Tenant)
 
@@ -130,10 +130,7 @@ class AppCommandBody(BaseModel):
 
 
 
-class CredentialBody(BaseModel):
-    kind: str
-    label: str
-    content_base64: str
+
 
 
 class MintBody(BaseModel):
@@ -205,8 +202,14 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         client = request.client.host if request.client else "unknown"
         return f"{email.strip().lower()}|{client}"
 
+    def _attempt_row(session: Session, key: str):
+        # SELECT ... FOR UPDATE: concurrent failures against the same
+        # key serialize on the row instead of losing increments.
+        return session.scalar(select(LoginAttempt).where(
+            LoginAttempt.key == key).with_for_update())
+
     def is_locked(session: Session, key: str) -> bool:
-        row = session.get(LoginAttempt, key)
+        row = _attempt_row(session, key)
         if row is None:
             return False
         first = row.first_failure_at
@@ -219,12 +222,23 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return row.failures >= MAX_FAILURES
 
     def record_failure(session: Session, key: str) -> None:
-        row = session.get(LoginAttempt, key)
-        if row is None:
-            session.add(LoginAttempt(key=key, failures=1,
-                                     first_failure_at=utcnow()))
-        else:
+        row = _attempt_row(session, key)
+        if row is not None:
             row.failures += 1
+            session.flush()
+            return
+        # First failure for this key: two racing transactions can both
+        # find no row. The savepoint keeps the loser's transaction
+        # usable; it then locks and increments the winner's row.
+        from sqlalchemy.exc import IntegrityError
+        try:
+            with session.begin_nested():
+                session.add(LoginAttempt(key=key, failures=1,
+                                         first_failure_at=utcnow()))
+        except IntegrityError:
+            row = _attempt_row(session, key)
+            if row is not None:
+                row.failures += 1
         session.flush()
 
     def require_csrf_header(request: Request) -> None:
@@ -283,12 +297,19 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             from fastapi import HTTPException
             raise HTTPException(status_code=403,
                 detail="read-only staff role: viewing authorized information only")
-        # Serialize tenant configuration writes with publication/default
-        # changes. The lock lives through the same request DB transaction.
-        if request.method in {"POST", "PUT", "DELETE", "PATCH"} and request.url.path.startswith(("/api/policies", "/api/devices", "/api/groups", "/api/publications")):
-            from .models import PublicationState
-            session.scalar(select(PublicationState).where(
-                PublicationState.tenant_id == user.tenant_id).with_for_update())
+        # Serialize tenant configuration writes against each other and
+        # against publication/default changes: every mutating call on
+        # these paths takes a FOR UPDATE lock on the TENANT row (which
+        # always exists, unlike a publication-state row), held by the
+        # request's DB transaction until commit. Exception create/
+        # revoke and exception-request decisions ride the same lock so
+        # a publish can never capture a half-changed exception set.
+        if request.method in {"POST", "PUT", "DELETE", "PATCH"} and request.url.path.startswith((
+                "/api/policies", "/api/devices", "/api/groups",
+                "/api/publications", "/api/exceptions",
+                "/api/exception-requests", "/api/credentials",
+                "/api/offboarding", "/api/mdm")):
+            lock_tenant(session, user.tenant_id)
         return user
 
     @app.middleware("http")
@@ -326,6 +347,10 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 record_failure(session, key)
                 session.commit()
                 return error(401, "invalid credentials")
+        # Opportunistic upgrade of pre-hardening password hashes to the
+        # current PBKDF2 work factor on successful sign-in.
+        if security.password_needs_upgrade(user.password_hash):
+            user.password_hash = security.hash_password(body.password)
         row = session.get(LoginAttempt, key)
         if row is not None:
             session.delete(row)
@@ -609,6 +634,27 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                     raise policy_ops.PolicyError(
                         "cannot disable the selected default policy; "
                         "select another default first", 409)
+                # Disabling a policy that is actively assigned to a
+                # device or group would silently strip its filtering
+                # from those devices. Refuse until the assignments are
+                # moved.
+                from sqlalchemy import func as _func
+                from .models import DeviceAssignment, DeviceGroup
+                assigned_devices = session.scalar(select(
+                    _func.count()).select_from(DeviceAssignment).where(
+                        DeviceAssignment.tenant_id == user.tenant_id,
+                        DeviceAssignment.policy_id == policy.id,
+                        DeviceAssignment.active.is_(True)))
+                assigned_groups = session.scalar(select(
+                    _func.count()).select_from(DeviceGroup).where(
+                        DeviceGroup.tenant_id == user.tenant_id,
+                        DeviceGroup.policy_id == policy.id))
+                if assigned_devices or assigned_groups:
+                    raise policy_ops.PolicyError(
+                        "cannot disable a policy that is assigned to "
+                        f"{assigned_devices or 0} device(s) and "
+                        f"{assigned_groups or 0} group(s); reassign "
+                        "them first", 409)
         except policy_ops.PolicyError as exc:
             return error(exc.status, str(exc))
         policy.name = body.name
@@ -843,12 +889,27 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                                  if row.last_seen_at else None),
                 "created_at": row.created_at.isoformat()}
 
+    _SECRETISH = ("password", "secret", "token", "credential", "key",
+                  "pin", "passcode")
+
+    def _redact_payload(value):
+        """Command payloads can carry secret material (e.g. a Wi-Fi
+        password inside a profile). The stored payload is untouched;
+        API responses redact any secretish key, recursively."""
+        if isinstance(value, dict):
+            return {k: ("[redacted]" if any(
+                s in str(k).lower() for s in _SECRETISH)
+                else _redact_payload(v)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_redact_payload(v) for v in value]
+        return value
+
     def command_json(row):
         import json as _json
         return {"id": row.id, "enrollment_pk": row.enrollment_pk,
                 "command": row.command, "status": row.status,
                 "applied": row.applied,
-                "payload": _json.loads(row.payload or "{}"),
+                "payload": _redact_payload(_json.loads(row.payload or "{}")),
                 "result_detail": row.result_detail,
                 "created_at": row.created_at.isoformat()}
 
@@ -899,6 +960,16 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
             if user.role != Role.owner and user.staff_role not in (
                     StaffRole.owner.value, StaffRole.security_admin.value):
                 return error(403, "destructive commands are not available to this role")
+            # The approval request must name a REAL, commandable
+            # enrollment of this tenant: recording a pending erase/
+            # release request against a nonexistent, replaced or
+            # offboarded enrollment would leave an approvable request
+            # pointing at nothing - or at the wrong device.
+            try:
+                mdm_ops.get_enrollment(session, user.tenant_id,
+                                       enrollment_pk, for_command=True)
+            except mdm_ops.MDMError as exc:
+                return error(exc.status, str(exc))
             bad = fresh_check(error, user, body.totp_code, body.confirm, body.command)
             if bad is not None:
                 return bad
@@ -987,7 +1058,12 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                            session: Session = Depends(db_session)):
         """Platform-admin customer list: tenant names and counts only -
         never another tenant's policies, devices or user details."""
-        denied = require_staff(error, user, *ALL_STAFF)
+        # Answer 29's existing five-role contract explicitly permits
+        # support/read-only staff this limited names-and-counts overview.
+        # It grants no cross-tenant device/policy/credential access.
+        denied = require_staff(error, user, StaffRole.owner,
+                               StaffRole.security_admin,
+                               StaffRole.support_admin, StaffRole.read_only)
         if denied is not None:
             return denied
         from sqlalchemy import func
@@ -1295,6 +1371,14 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                     user = session.get(User, auth_row.user_id)
             if user is None:
                 return error(401, "authentication required")
+            # The cookie path must enforce the SAME MFA rule as
+            # current_user: a password-only session may not read the
+            # revocation feed.
+            if (user.role in (Role.owner, Role.guardian)
+                    or user.is_platform_admin
+                    or user.staff_role is not None):
+                if not user.totp_secret or not auth_row.mfa_verified:
+                    return error(403, "verified MFA required")
             denied = require_guardian(user)
             if denied is not None:
                 return denied
@@ -1312,117 +1396,20 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     # on the server filesystem only. Fixture-only during this build:
     # artifacts are stamped with settings.environment and the screen
     # warns on any non-production build. Content is never returned.
+    from . import credential_ops
     from .credential_ops import (KINDS, CredentialError, artifact_json,
-                                 decode_content, delete_secret,
-                                 fingerprint, write_secret)
+                                 decode_content, fingerprint)
     from .models import CredentialArtifact
-
-    def credential_routes():
-        @app.get("/api/credentials")
-        def list_credentials(user: User = Depends(current_user),
-                             session: Session = Depends(db_session)):
-            rows = session.execute(select(CredentialArtifact).where(
-                CredentialArtifact.tenant_id == user.tenant_id
-            ).order_by(CredentialArtifact.id)).scalars().all()
-            return {"environment": settings.environment,
-                    "fixture_only": settings.environment != "production",
-                    "credentials": [artifact_json(r) for r in rows]}
-
-        @app.post("/api/credentials",
-                  dependencies=[Depends(require_csrf_header)])
-        def upload_credential(body: CredentialBody,
-                              user: User = Depends(current_user),
-                              session: Session = Depends(db_session)):
-            denied = require_owner(user)
-            if denied is not None:
-                return denied
-            if body.kind not in KINDS:
-                return error(400, f"kind must be one of {', '.join(KINDS)}")
-            label = body.label.strip()
-            if not label:
-                return error(400, "label is required")
-            try:
-                raw = decode_content(body.content_base64)
-            except CredentialError as exc:
-                return error(400, str(exc))
-            try:
-                rel = write_secret(settings.credentials_root,
-                                   user.tenant_id, raw)
-            except CredentialError as exc:
-                return error(503, str(exc))
-            row = CredentialArtifact(
-                tenant_id=user.tenant_id, kind=body.kind, label=label,
-                sha256=fingerprint(raw), byte_size=len(raw),
-                storage_path=rel, environment=settings.environment,
-                uploaded_by_user_id=user.id)
-            session.add(row)
-            session.flush()
-            ScopedSession(session, user.tenant_id).audit(
-                "credential.upload", f"{row.kind} '{row.label}' "
-                f"(sha256 {row.sha256[:12]}..., {row.byte_size} bytes, "
-                f"env={row.environment})", actor_user_id=user.id)
-            session.commit()
-            return artifact_json(row)
-
-        @app.post("/api/credentials/{credential_id}/rotate",
-                  dependencies=[Depends(require_csrf_header)])
-        def rotate_credential(credential_id: int, body: CredentialBody,
-                              user: User = Depends(current_user),
-                              session: Session = Depends(db_session)):
-            denied = require_owner(user)
-            if denied is not None:
-                return denied
-            row = session.get(CredentialArtifact, credential_id)
-            if row is None or row.tenant_id != user.tenant_id:
-                return error(404, "credential not found")
-            if row.status != "active":
-                return error(409, "credential is revoked")
-            try:
-                raw = decode_content(body.content_base64)
-            except CredentialError as exc:
-                return error(400, str(exc))
-            rel = write_secret(settings.credentials_root,
-                               user.tenant_id, raw)
-            delete_secret(settings.credentials_root, row.storage_path)
-            row.storage_path = rel
-            row.sha256 = fingerprint(raw)
-            row.byte_size = len(raw)
-            row.version += 1
-            row.rotated_at = utcnow()
-            ScopedSession(session, user.tenant_id).audit(
-                "credential.rotate", f"{row.kind} '{row.label}' "
-                f"-> version {row.version}", actor_user_id=user.id)
-            session.commit()
-            return artifact_json(row)
-
-        @app.delete("/api/credentials/{credential_id}",
-                    dependencies=[Depends(require_csrf_header)])
-        def revoke_credential(credential_id: int,
-                              user: User = Depends(current_user),
-                              session: Session = Depends(db_session)):
-            denied = require_owner(user)
-            if denied is not None:
-                return denied
-            row = session.get(CredentialArtifact, credential_id)
-            if row is None or row.tenant_id != user.tenant_id:
-                return error(404, "credential not found")
-            if row.status != "active":
-                return error(409, "credential already revoked")
-            delete_secret(settings.credentials_root, row.storage_path)
-            row.status = "revoked"
-            row.revoked_at = utcnow()
-            ScopedSession(session, user.tenant_id).audit(
-                "credential.revoke", f"{row.kind} '{row.label}' "
-                f"(secret bytes deleted)", actor_user_id=user.id)
-            session.commit()
-            return artifact_json(row)
-
-    credential_routes()
 
     def require_owner(user: User) -> JSONResponse | None:
         if user.role != Role.owner:
             return error(403, "owner role required")
         return None
+
+    from .credential_routes import register_credential_routes
+    register_credential_routes(app, settings=settings, current_user=current_user,
+        db_session=db_session, require_csrf_header=require_csrf_header,
+        require_owner=require_owner, error=error)
 
     def user_json(row):
         return {"id": row.id, "email": row.email, "role": row.role.value,
@@ -1455,7 +1442,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     register_restore_routes(app, error=error, current_user=current_user,
         db_session=db_session, require_csrf_header=require_csrf_header,
-        require_guardian=require_guardian)
+        require_guardian=require_guardian, fresh_check=fresh_check,
+        settings=settings)
     register_support_routes(app, error=error, current_user=current_user,
         db_session=db_session, require_csrf_header=require_csrf_header,
         require_staff=require_staff)
@@ -1635,6 +1623,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     @app.get("/api/exceptions")
     def list_exceptions(user: User = Depends(current_user),
                         session: Session = Depends(db_session)):
+        # Exception details (reason, approver, loosened domains) are
+        # sensitive: visible to the same roles that may create them.
+        denied = require_guardian(user, "exceptions")
+        if denied is not None:
+            return denied
         from . import exception_ops
         from .models import PolicyException
         rows = session.scalars(select(PolicyException).where(
@@ -1719,8 +1712,16 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                         system_action="exception-revoke")
                 session.commit()
             except (ValueError, IntegrityError):
+                # The rollback undoes the revocation itself - the
+                # exception is still ACTIVE. Say exactly that; the old
+                # message ("revoked, but...") claimed a revocation that
+                # never happened.
                 session.rollback()
-                return error(500, "revoked, but republication could not be queued")
+                return error(500, "exception was NOT revoked: the "
+                             "required republication job could not be "
+                             "queued, so the revocation was rolled back "
+                             "and the exception remains active. Retry "
+                             "once publication queueing is restored.")
         from . import exception_ops
         return exception_ops.exception_json(row)
 
