@@ -83,6 +83,9 @@ def run_once(engine, settings, now=None) -> bool:
                     if actor.role == Role.guardian and "publish" not in json.loads(actor.delegated_settings):
                         raise PermissionError("publication delegation revoked")
                     actor_email = job.actor_email
+                # Same tenant -> publication-state lock order as API writes.
+                from .db import lock_tenant
+                lock_tenant(session, job.tenant_id)
                 state = session.scalar(select(PublicationState).where(
                     PublicationState.tenant_id == job.tenant_id
                 ).with_for_update())
@@ -153,6 +156,15 @@ def main(argv=None):
             from .filter_log_ops import purge_expired
             with sessionmaker(bind=engine).begin() as maintenance:
                 purge_expired(maintenance)
+            # Retry credential secret deletes stranded by a crash after
+            # the database row was already retired.
+            try:
+                from .credential_ops import retry_pending_cleanups
+                with sessionmaker(bind=engine).begin() as maintenance:
+                    retry_pending_cleanups(maintenance,
+                                           settings.credentials_root)
+            except Exception:
+                pass
             worked = run_once(engine, settings)
             if args.once:
                 break
