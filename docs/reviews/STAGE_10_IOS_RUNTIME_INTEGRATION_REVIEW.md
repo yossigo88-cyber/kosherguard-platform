@@ -7,8 +7,21 @@ certificate, entitlement or device was touched.**
 **Repository:** https://github.com/yossigo88-cyber/kosherguard-platform
 **Working branch:** `stage-10-ios-runtime-integration`
 **Base (published, verified):** `e99a1a4c8a656c90ff6c34faeecbbe4473205ad0`
-**HEAD at this report:** `ad64101f364cac09f7055811c31139a0aaf7d1d8`
-(7 commits ahead of base; 27 files changed, +2425/-135)
+**HEAD at this report:** `acfa56ccae8b066db74e94f170b5b2210d9200c7`
+(8 commits ahead of base; 27 files changed, +2425/-135 at code HEAD
+`ad64101f364cac09f7055811c31139a0aaf7d1d8`; the 8th commit is this
+report itself)
+
+Full commit list (oldest first):
+
+1. `54e46569fb2b8cd1a364c47a856ef63303b75477` url-filter-server: Apple-format prefilter construction
+2. `cfd31481fdcda71e251a5b3a17b47bb133608e7f` ios: portable runtime components for URL Filter and DNS proxy paths
+3. `ce9ffeda1041d12f71a6aeff8d268804997d9d78` ios: URL Filter control provider and DNS proxy extension (Apple-only, uncompiled)
+4. `0b80e03854dcdc4b1876b32d70b6814cc2bde081` tests: portable coverage for stage-10 runtime components
+5. `89a898bde57370ab3b45a9a0971c6bffc3f333a6` control-plane: assert mint response carries expires_in_seconds
+6. `f070ecc1afdca8232d5508c3f531a70a0068fa20` ios: application-blocking policy model and Screen Time shield controller
+7. `ad64101f364cac09f7055811c31139a0aaf7d1d8` ios: pull-based app-policy fetch wired into the app lifecycle
+8. `acfa56ccae8b066db74e94f170b5b2210d9200c7` docs: this report
 **Report date:** 2026-11-17
 
 Every "tested" claim below names the suite, the count and how to
@@ -250,4 +263,4 @@ account or costs money.
 - Check that no Apple-only file is presented anywhere in the repo
   as compiled or device-verified.
 - Full diff: `git diff e99a1a4c8a656c90ff6c34faeecbbe4473205ad0..
-  ad64101f364cac09f7055811c31139a0aaf7d1d8` (7 commits).
+  acfa56ccae8b066db74e94f170b5b2210d9200c7` (8 commits).
