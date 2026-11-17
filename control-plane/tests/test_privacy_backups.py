@@ -32,3 +32,17 @@ def test_backup_excludes_and_old_restore_strips_activity(engine, tmp_path, monke
     with engine.connect() as c:
         assert c.scalar(text('SELECT count(*) FROM filter_decisions'))==0
         assert c.scalar(text('SELECT count(*) FROM tenants'))==1
+
+
+def test_backup_recovery_procedure_documented():
+    """The Answer-37 backup/restore procedure doc exists and stays
+    honest: scripts named, service-stopped gate, no pre-deployment
+    SLA, RTO/RPO labeled future targets only."""
+    doc = (ROOT / 'docs/deployment/BACKUP_RECOVERY.md').read_text()
+    assert 'pg_backup.sh' in doc and 'pg_restore.sh' in doc
+    assert '--service-stopped' in doc
+    assert 'no SLA' in doc or 'no availability target or SLA' in doc
+    assert 'FUTURE planning' in doc
+    assert 'filter_decisions' in doc
+    # Restore targets a scratch database, never straight into live.
+    assert 'Never restore into the live database' in doc
