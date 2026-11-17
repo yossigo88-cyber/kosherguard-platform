@@ -12,7 +12,8 @@ import enum
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint,
+    DateTime, Enum, ForeignKey, Index, Integer, String, Text,
+    UniqueConstraint, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -179,9 +180,20 @@ class MDMEnrollment(Base):
     enrollment_id is the NanoMDM enrollment identifier once a real
     enrollment exists; until then it is a locally generated placeholder
     and the record carries state 'pending'.
+
+    The partial unique index enforces ONE current (pending/enrolled)
+    enrollment per device at the database level, so concurrent ticket
+    redemptions or legacy creations cannot produce duplicates even
+    when their read-check-write interleaves.
     """
     __tablename__ = "mdm_enrollments"
-    __table_args__ = (UniqueConstraint("tenant_id", "enrollment_id"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "enrollment_id"),
+        Index("uq_mdm_enrollments_current_device", "device_id",
+              unique=True,
+              sqlite_where=text("state IN ('pending','enrolled')"),
+              postgresql_where=text("state IN ('pending','enrolled')")),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
         ForeignKey("tenants.id"), nullable=False, index=True)
@@ -370,8 +382,16 @@ class PendingMfaEnrollment(Base):
 
 class InviteToken(Base):
     """Guardian invitation. Stores only the token hash; the raw token
-    is shown once to the inviting owner to deliver out of band."""
+    is shown once to the inviting owner to deliver out of band. The
+    partial unique index makes one ACTIVE invitation per
+    tenant+email a database guarantee, not a read-check-write hope."""
     __tablename__ = "invite_tokens"
+    __table_args__ = (
+        Index("uq_invite_tokens_active_email", "tenant_id", "email",
+              unique=True,
+              sqlite_where=text("used_at IS NULL"),
+              postgresql_where=text("used_at IS NULL")),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
         ForeignKey("tenants.id"), nullable=False, index=True)
@@ -410,6 +430,11 @@ class CredentialArtifact(Base):
     environment: Mapped[str] = mapped_column(String(40), nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="active")
+    # Set when a secret-file deletion failed AFTER the metadata change
+    # committed (rotate/revoke); retried by the cleanup task. A row is
+    # never reported as having its bytes deleted while this is set.
+    pending_cleanup_path: Mapped[str | None] = mapped_column(
+        String(500), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     uploaded_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True)
@@ -559,7 +584,7 @@ class SensitiveCommandApproval(Base):
     payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="pending")
+        String(40), nullable=False, default="pending")
     requested_by_user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), nullable=False)
     decided_by_user_id: Mapped[int | None] = mapped_column(
@@ -590,6 +615,17 @@ class RestoreAttestation(Base):
         ForeignKey("devices.id"), nullable=False, index=True)
     attested_by_user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), nullable=False)
+    # The enrollment cycle this attestation belongs to: an attestation
+    # recorded for a previous enrollment never satisfies readiness for
+    # a NEW restore/re-enrollment cycle.
+    enrollment_pk: Mapped[int | None] = mapped_column(
+        ForeignKey("mdm_enrollments.id"), nullable=True)
+    # Provenance of the claim. Only "manual_guardian" exists in this
+    # build: a guardian attested the Apple-side state. No independently
+    # verified Apple-side state exists (no Apple credentials), and the
+    # readiness endpoint says so instead of implying one.
+    attestation_kind: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="manual_guardian")
     attested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
 
