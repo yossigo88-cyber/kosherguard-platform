@@ -3627,6 +3627,61 @@ final class AppShieldReachabilityTests: XCTestCase {
         }
     }
 
+    /// Every entitlements file must declare exactly the keys its
+    /// target's code requires - nothing missing, nothing extra to
+    /// audit. Keys checked against the sources that use them.
+    func testAllEntitlementFilesConsistent() throws {
+        func keys(_ rel: String) throws -> Set<String> {
+            let text = try source(rel)
+            var out = Set<String>()
+            for line in text.components(separatedBy: .newlines) {
+                if let m = line.firstMatch(of: #/<key>([^<]+)</key>/#) {
+                    out.insert(String(m.1))
+                }
+            }
+            return out
+        }
+        let app = try keys("ios/Configuration/App.entitlements")
+        XCTAssertTrue(app.contains("com.apple.developer.family-controls"))
+        XCTAssertTrue(app.contains(
+            "com.apple.developer.networking.networkextension"))
+        XCTAssertTrue(app.contains("com.apple.security.application-groups"))
+        // URL Filter extension: url-filter-provider + the shared group
+        // (its prefilter source reads the shared container).
+        let urlExt = try keys(
+            "ios/Configuration/URLFilterExtension.entitlements")
+        XCTAssertTrue(urlExt.contains(
+            "com.apple.developer.networking.networkextension"),
+                      "URL Filter extension must declare its provider "
+                      + "entitlement")
+        XCTAssertTrue(urlExt.contains(
+            "com.apple.security.application-groups"))
+        // DNS proxy extension: dns-proxy provider capability.
+        let dnsExt = try keys(
+            "ios/Configuration/DNSProxyExtension.entitlements")
+        XCTAssertTrue(dnsExt.contains(
+            "com.apple.developer.networking.networkextension"))
+        // Every file declares the shared app group the code reads
+        // (FilterRuleStore.appGroupIdentifier is the single literal).
+        let filterExt = try keys(
+            "ios/Configuration/FilterExtension.entitlements")
+        XCTAssertTrue(filterExt.contains(
+            "com.apple.security.application-groups"))
+        // No entitlements file may declare an application group other
+        // than the single shared one the code uses.
+        for rel in ["ios/Configuration/App.entitlements",
+                    "ios/Configuration/URLFilterExtension.entitlements",
+                    "ios/Configuration/DNSProxyExtension.entitlements",
+                    "ios/Configuration/FilterExtension.entitlements",
+                    "ios/Configuration/FilterControlExtension.entitlements"] {
+            let text = try source(rel)
+            for m in text.matches(of: #/<string>(group\.[^<]+)</string>/#) {
+                XCTAssertEqual(String(m.1), "group.com.kosherguard.shared",
+                               "\(rel) declares an unexpected app group")
+            }
+        }
+    }
+
     /// Every entitlement the new flow needs must be declared in the
     /// app target's entitlements file (still requiring Apple's
     /// approval; declared != granted).

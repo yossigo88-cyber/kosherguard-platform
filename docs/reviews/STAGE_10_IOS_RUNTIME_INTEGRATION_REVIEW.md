@@ -378,11 +378,24 @@ Verified against Apple's documentation (sources in section 6):
   devices. Therefore remote "block app X by bundle ID" is
   IMPOSSIBLE on personally-owned devices; the route that exists is
   an on-device `FamilyActivityPicker` selection applied as a shield
-  (`AppShieldController.swift`, UNCOMPILED, requires the
+  (`AppShieldController.swift` + the reachable UI in
+  `AppBlockingView.swift`, both UNCOMPILED, requiring the
   `com.apple.developer.family-controls` entitlement). The control
   plane's policy is mirrored to the device
   (`AppBlockingPolicyClient`, pull-based) for dashboard visibility
   and consistency, not for token mapping.
+
+  EXPLICIT SCOPE LIMIT: on this route there is NO administrator
+  remote allow/block/category synchronization into actual shielding.
+  The mirrored server policy cannot drive the shield (no bundle-ID
+  to token mapping exists), and nothing in this build translates it
+  into a picker selection or applies it. Remote policy updates for
+  app restrictions are therefore a SUPERVISED-route capability
+  only. What the personally-owned route provides is local,
+  consented, on-device selection + shield with the server policy
+  visible alongside it - a real feature, but not remote
+  administration, and it is not described as one anywhere in the
+  UI, docs, or API.
 - **Internet denial is not launch blocking.** DNS/filter rules stop
   an app's traffic; the app still launches offline. The two
   mechanisms are complementary and configured separately.
@@ -439,6 +452,7 @@ account or costs money.
 | Task | Requires | Blocks |
 | --- | --- | --- |
 | Compile the iOS targets | A Mac with current Xcode | Any claim that the app builds |
+| Resolve the URL Filter `NSExtensionPointIdentifier` PLACEHOLDER | The Xcode 26 "URL Filter App Extension" template (no Apple document names the value; checked 2026-11-17) | Any claim that Xcode wiring is complete; the extension target cannot load with a placeholder identifier |
 | Run on a real device | Spare iPhone; supervision for the URL Filter / dns-proxy / MDM routes | Any claim of working on-device filtering |
 | `dns-proxy` entitlement | Apple's managed-entitlement approval for the App ID | DNS proxy on any device |
 | `family-controls` entitlement | App ID capability (account holder action) | Screen Time shields |
