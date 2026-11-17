@@ -118,3 +118,20 @@ only, with no Online/Offline claim. The API enum offline is replaced by
 no_report_over_24h (external consumers must update their mapping). A new
 rendered screenshot verifies the labels and distinct policy/command receipt
 column. Publication after456384d changes documentation only.
+
+## Ingestion/offboarding follow-up (November 17, 2026)
+
+The additional filtering-log race was reproduced against a0444d2 using real
+PostgreSQL: a prevalidated report could insert after completed offboarding.
+Code/test candidate `21c071f79ea9e0544aae3d41ce4797bf08d8547a` serializes
+ingestion with lifecycle/revocation/privacy deletion, refreshes authorization
+after waiting, rejects inactive-device reminting, and rechecks publication
+worker authority after tenant-lock waits. A fresh exact-candidate checkout
+passed the complete control-plane suite: **451 passed**, including 19 new
+real-PG regressions and the existing 20-case PG matrix. This does not relabel
+the earlier eight-suite aggregate as an exact-head rerun.
+
+See [the ingestion/offboarding review](INGESTION_OFFBOARDING_REVIEW_2026-11-17.md) for the forced interleavings,
+changed files, commands, related-path review and remaining limits. Final
+delivery separately identifies the final docs head and its full exact-SHA run.
+Not production or iPhone-release ready; no merge, deploy or real-device work.
