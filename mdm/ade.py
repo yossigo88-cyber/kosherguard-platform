@@ -54,3 +54,27 @@ def build_sync_plan(tenant_id: int, profile_name: str,
                        serials=list(serials))
     plan.validate_against(known_serials)
     return plan
+
+
+def build_ade_profile(*, url: str, organization: str, prevent_unenrollment=True, configuration_web_url=None):
+    """Apple Define Profile request body, not an Apple assignment result.
+
+    Requires Apple Business eligibility, eligible assigned devices and an
+    authorized NanoDEP service before execution. Recovery depends on Apple's
+    continuing assignment/activation, not an on-device persistence trick.
+    """
+    from .identity import https_url
+    https_url(url)
+    if type(prevent_unenrollment) is not bool or not organization:
+        raise ADEError("organization and boolean prevent_unenrollment required")
+    profile = {"profile_name": organization, "url": url,
+            "is_supervised": True, "is_mandatory": True,
+            "is_mdm_removable": not prevent_unenrollment,
+            "await_device_configured": False}
+    if configuration_web_url is not None:
+        from urllib.parse import urlsplit
+        https_url(configuration_web_url)
+        if urlsplit(configuration_web_url).hostname != urlsplit(url).hostname:
+            raise ADEError("web enrollment and final profile must use the same host")
+        profile["configuration_web_url"] = configuration_web_url
+    return profile
