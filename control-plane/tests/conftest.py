@@ -29,8 +29,13 @@ def engine(pg_uri):
     url = pg_uri.replace("postgresql://", "postgresql+psycopg://", 1)
     eng = create_engine(url)
     db_module.create_schema(eng)
-    yield eng
-    with eng.begin() as conn:
-        for table in ("support_requests", "restore_attestations", "category_source_updates", "category_sources", "offboarding_cases", "enrollment_tickets", "sensitive_command_approvals", "category_rules", "invite_tokens", "mdm_commands", "mdm_enrollments", "login_attempts", "audit_events", "auth_sessions", "users", "tenants"):
-            conn.execute(text(f"TRUNCATE {table} CASCADE"))
-    eng.dispose()
+    try:
+        yield eng
+    finally:
+        # All model tables, not a hand-maintained subset. Keep sequences
+        # advancing so tests cannot accidentally rely on hardcoded IDs.
+        names = ", ".join('"' + t.name + '"'
+                          for t in db_module.Base.metadata.sorted_tables)
+        with eng.begin() as conn:
+            conn.execute(text(f"TRUNCATE {names} CASCADE"))
+        eng.dispose()
