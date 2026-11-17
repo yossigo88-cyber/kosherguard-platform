@@ -1,5 +1,8 @@
 // STATUS: UNCOMPILED, UNSIGNED, UNTESTED - see ios/README.md.
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// RFC 8484 DNS-over-HTTPS client that attaches a scoped per-device
 /// credential as an Authorization header - the mechanism in
