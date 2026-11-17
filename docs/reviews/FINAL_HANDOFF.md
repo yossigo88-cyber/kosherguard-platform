@@ -9,15 +9,15 @@ against a fresh clone.
 
 ## Verification state at delivery
 
-1,202 automated tests, all green at head across eight components:
-control-plane 356, filtering-engine 337, dns-edge 87, mdm 64,
+1,210 automated tests, all green at head across eight components:
+control-plane 364, filtering-engine 337, dns-edge 87, mdm 64,
 proxy-edge 38, url-filter-server 38, category-pipeline 6, dashboard 276.
 
 Independent-coverage-audit closure: the read-only requirements audit
 run against this branch's earlier head found three buildable gaps. All
 three are closed in code on this branch (commit
 44e48b1d9483b985984931a15cbdbd1c00542cb6, 13 new tests, full
-control-plane suite re-run green at 184+172):
+control-plane suite re-run green at 192+172):
 1. Customer-tenant onboarding: staff-owner-only POST
    /api/staff/tenants creates the customer tenant plus a 7-day owner
    invitation (raw token returned once, stored hashed, audited), with
@@ -52,7 +52,7 @@ control-plane suite re-run green at 184+172):
    server ledger record or stored receipt; actual on-device
    enforcement remains unverified. Deepened at commit
    a408645ab3b659bbdca2b8ceb42cd575ee1a7b1a after the auditor's
-   recheck; suite re-verified green at that head (184+172).
+   recheck; suite re-verified green at that head (192+172).
 Three committed load-test harnesses with measured numbers and CI smoke
 tests (docs/reviews/LOAD_TEST.md). UI flows verified end-to-end with a
 local headless browser against the real application (synthetic accounts,
