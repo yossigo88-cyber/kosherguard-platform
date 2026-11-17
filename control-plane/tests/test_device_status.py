@@ -264,3 +264,22 @@ class TestReportedVsPublished:
         row = reported_state(c)
         assert row["push_chain"]["apns"] == "unavailable"
         assert "not observed" in row["push_chain"]["apns_basis"]
+
+
+def test_old_enrollment_commands_do_not_affect_current_status(engine):
+    app = make_app(engine)
+    c = TestClient(app)
+    mfa_login(c, json={"email": "owner@example.com", "password": PASSWORD}, headers=HDR)
+    with session_scope(engine) as s:
+        old = s.query(MDMEnrollment).filter_by(enrollment_id="enr-fresh").one()
+        old.state = "replaced"
+        s.flush()
+        new = MDMEnrollment(tenant_id=old.tenant_id, device_id=old.device_id,
+                            enrollment_id="new-current", state="enrolled")
+        s.add(new)
+    row = devices_by_name(c)["fresh-iphone"]
+    # No command in the new cycle, despite ack+queued commands in the old.
+    assert row["last_device_receipt"] is None
+    assert row["push_chain"]["pending"] == 0
+    assert row["push_chain"]["by_status"] == {}
+    assert row["push_chain"]["latest_command"] is None
