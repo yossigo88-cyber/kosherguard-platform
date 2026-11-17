@@ -1605,6 +1605,69 @@ final class BuildConfigGuardTests: XCTestCase {
                       failures.joined(separator: "\n"))
     }
 
+    /// Every object ID in the project must be unique (a duplicate ID
+    /// silently rebinds an unrelated object), every build file's
+    /// fileRef must resolve, and the embed phase may only copy
+    /// extension PRODUCTS, never source build files.
+    func testXcodeProjectStructuralIntegrity() throws {
+        let root = try repoRoot()
+        let pbx = try String(contentsOf: root.appendingPathComponent(
+            "ios/KosherGuard.xcodeproj/project.pbxproj"),
+            encoding: .utf8)
+        // Definitions: lines that start (after whitespace) with the
+        // ID followed by " = {isa =".
+        var definitions: [String: Int] = [:]
+        var duplicates: [String] = []
+        for line in pbx.components(separatedBy: .newlines) {
+            guard line.contains(" = {isa = "),
+                  let match = line.firstMatch(of:
+                    #/^\s*(KG[0-9a-fA-F]{22})[ \t]/#)
+            else { continue }
+            let id = String(match.1)
+            definitions[id, default: 0] += 1
+            if definitions[id] == 2 { duplicates.append(id) }
+        }
+        XCTAssertTrue(duplicates.isEmpty,
+                      "duplicate object IDs: \(duplicates)")
+        // Every fileRef / target / targetProxy reference resolves to
+        // a definition.
+        var unresolved: [String] = []
+        for line in pbx.components(separatedBy: .newlines) {
+            for match in line.matches(of:
+                #/(?:fileRef|target|targetProxy|productReference|containerPortal) = (KG[0-9a-fA-F]{22})/#) {
+                let ref = String(match.1)
+                if definitions[ref] == nil { unresolved.append(ref) }
+            }
+        }
+        XCTAssertTrue(unresolved.isEmpty,
+                      "unresolved references: \(unresolved)")
+        // The embed phase copies only wrapper.app-extension products.
+        for line in pbx.components(separatedBy: .newlines)
+        where line.contains("PBXCopyFilesBuildPhase") {
+            for match in line.matches(of:
+                #/(KG[0-9a-fA-F]{22}) \/\* [^*]*\.appex in Embed [^*]*\*\//#) {
+                let buildFile = String(match.1)
+                // Find the build file's fileRef and that product's type.
+                guard let bfLine = pbx.components(separatedBy: .newlines)
+                    .first(where: {
+                        $0.hasPrefix("\t\t" + buildFile + " ") }),
+                      let refMatch = bfLine.firstMatch(of:
+                        #/fileRef = (KG[0-9a-fA-F]{22})/#),
+                      let productLine = pbx.components(
+                        separatedBy: .newlines).first(where: {
+                        $0.hasPrefix("\t\t" + String(refMatch.1) + " ") })
+                else {
+                    XCTFail("embed entry \(buildFile) does not resolve")
+                    continue
+                }
+                XCTAssertTrue(
+                    productLine.contains("wrapper.app-extension"),
+                    "embed entry \(buildFile) is not an app-extension "
+                    + "product: \(productLine)")
+            }
+        }
+    }
+
     /// The shared keychain access group literal in code must match
     /// the keychain-access-groups entitlement of every target, and
     /// the app group entitlement must match the store's app-group id.
@@ -3157,6 +3220,9 @@ final class DNSProxyRelayTests: XCTestCase {
         zeroQuestions[5] = 0
         XCTAssertThrowsError(
             try DNSProxyRelay.validate(query: zeroQuestions))
+        var notify = query()
+        notify[2] |= 0x20 // opcode 4 (NOTIFY): not a resolver lookup
+        XCTAssertThrowsError(try DNSProxyRelay.validate(query: notify))
         var oversized = query()
         oversized.append(Data(repeating: 0,
                               count: DNSProxyRelay.maximumQueryBytes))
@@ -3250,6 +3316,31 @@ final class URLFilterPrefilterSourceTests: XCTestCase {
         XCTAssertEqual(a.tag, SHA256.hash(data: a.data).map {
             String(format: "%02x", $0)
         }.joined(), "tag is the SHA-256 of the bit array")
+    }
+
+    func testLoadResultDistinguishesInvalidFromUnchanged() throws {
+        let file = try writeSnapshot()
+        defer { try? FileManager.default.removeItem(at: file) }
+        let source = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: fingerprint)
+        guard case .artifact = source.loadResult() else {
+            return XCTFail("valid artifact not returned")
+        }
+        let tag = try XCTUnwrap(source.load()).tag
+        XCTAssertEqual(source.loadResult(existingTag: tag), .unchanged)
+        // Foreign identity with the SAME tag on record: invalid,
+        // never "unchanged" - a previous identity's prefilter must
+        // not be silently retained.
+        XCTAssertEqual(source.loadResult(existingTag: tag),
+                       .unchanged)
+        let foreign = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: "other")
+        XCTAssertEqual(foreign.loadResult(existingTag: tag), .invalid)
+        let missing = URLFilterPrefilterSource(
+            artifactFile: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString),
+            endpointFingerprint: fingerprint)
+        XCTAssertEqual(missing.loadResult(), .invalid)
     }
 
     func testUnchangedTagMeansNoUpdate() throws {
