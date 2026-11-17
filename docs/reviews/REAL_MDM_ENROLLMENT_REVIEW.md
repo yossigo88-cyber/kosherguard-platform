@@ -161,7 +161,7 @@ Successive source checkpoints independently reviewed before publication. Confirm
 
 ### Evidence locations
 
-The implementation source is the changed files on this branch. A generated companion source/diff ledger includes complete changed implementation files and the full base-to-worktree diff, excluding review artifacts themselves to avoid recursive self-inclusion. It contains no runtime secrets, generated keys, certificates or transcript/tool records. Final publication checks must compare all file bytes to the tested source and report the actual final SHA; no test is attributed to a commit that was not actually checked out and run.
+The implementation source is the changed files on this branch. The companion source/diff index links the actual committed source and verified base-to-tested-head comparison, without duplicating implementation files. It contains no runtime secrets, generated keys, certificates or transcript/tool records. Final publication checks must compare all file bytes to the tested source and report the actual final SHA; no test is attributed to a commit that was not actually checked out and run.
 
 ## Every changed file
 
@@ -199,14 +199,20 @@ The implementation source is the changed files on this branch. A generated compa
 - mdm/tests/test_nanodep.py
 - docs/MDM_ENROLLMENT_AND_PUSH.md (historical status banner and corrected ADE-only nonremoval wording)
 - docs/reviews/REAL_MDM_ENROLLMENT_REVIEW.md (this report)
-- docs/reviews/REAL_MDM_ENROLLMENT_SOURCE_AND_DIFF.md (generated complete source/diff evidence)
+- docs/reviews/REAL_MDM_ENROLLMENT_SOURCE_AND_DIFF.md (permanent source and diff index)
 
-Secret hygiene: all38 changed text/source files scanned for PEM private-key blocks, GitHub token prefixes and AWS key prefixes, with no matches. No .pem/.key/.p12/.pfx/.db runtime artifacts added. This targeted scan is not a claim of a full external secrets-audit product.
+Secret hygiene: all35 changed text/source files scanned for PEM private-key blocks, GitHub token prefixes and AWS key prefixes, with no matches. No .pem/.key/.p12/.pfx/.db runtime artifacts added. This targeted scan is not a claim of a full external secrets-audit product.
 
-### Evidence file index
+## Verified publication and exact-head tests
 
-The complete source/diff companion is divided at section boundaries with a small index; no content omitted. Additional changed files:
+Tested published code SHA: `ddbe40a066d6fa890704b2fb1e4103fed66bde3d`. Fresh single-branch clone of full-platform-build, all35 published files byte-equal to reviewed local source at that checkout (before documentation-only index/report finalization). No prefixed upload files or partial evidence files were committed.
 
-- docs/reviews/REAL_MDM_ENROLLMENT_EVIDENCE_PART_1.md
-- docs/reviews/REAL_MDM_ENROLLMENT_EVIDENCE_PART_2.md
-- docs/reviews/REAL_MDM_ENROLLMENT_EVIDENCE_PART_3.md
+Actual fresh-checkout commands, each exit0:
+
+- `python3 -m pytest $(find control-plane/tests -maxdepth 1 -name 'test_*.py' | sort | head -21) -q`:228 passed,2 warnings,82.39s.
+- `python3 -m pytest $(find control-plane/tests -maxdepth 1 -name 'test_*.py' | sort | tail -n +22) -q`:262 passed,2 warnings,91.58s.
+- `python3 -m pytest mdm -q`:114 passed,7.56s.
+
+All control-plane490 and MDM114 passed on the exact published SHA. Later commits only finalize this report and source/diff index; they do not change runtime code or tests and are not falsely attributed as separately executed test SHAs. Final delivery supplies the final documentation commit SHA.
+
+No merge, main modification, deployment, Apple request/certificate generation, purchase or real-device operation occurred. All Apple/hardware/authorization and unattended-recovery limitations above remain.
