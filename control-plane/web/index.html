@@ -357,6 +357,21 @@ body.ro section.panel:not(#account-panel):not(#signout-panel) button { display: 
       <thead><tr><th>ID</th><th>Email</th><th>Staff role</th><th>MFA</th></tr></thead>
       <tbody></tbody>
     </table>
+    <h3 style="margin-top:1.2rem">Add a customer</h3>
+    <p class="muted">Creates the customer tenant and an invitation for
+    its first owner (invitation-only pilot; staff-assisted onboarding).
+    The invite token is shown once here - deliver it to the customer
+    out of band. It is never stored or logged.</p>
+    <form id="tenant-onboard-form">
+      <label>Customer / family name <input id="to-name" required maxlength="200"></label>
+      <label>First owner email <input id="to-email" type="email" required maxlength="320"></label>
+      <button type="submit">Create customer and invitation</button>
+      <span class="error" id="to-error"></span>
+    </form>
+    <div id="to-result" class="hidden" style="margin-top:.6rem">
+      <p><strong>Invitation created.</strong> Tenant ID <span id="to-tenant"></span>,expires <span id="to-expires"></span>.</p>
+      <p>Invite token (shown once): <code id="to-token" style="word-break:break-all"></code></p>
+    </div>
     <h3 style="margin-top:1.2rem">Set a staff role</h3>
     <form id="staff-role-form">
       <label>User ID <input id="sf-user-id" required inputmode="numeric"></label>
