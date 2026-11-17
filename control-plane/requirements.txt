@@ -5,3 +5,5 @@ pyotp>=2.9
 psycopg[binary]>=3.1
 uvicorn>=0.30
 httpx>=0.27  # test client transport
+cryptography>=45,<51  # PKCS#12 identity issuance and CMS profile signing
+h2>=4,<5  # HTTP/2 in customer-operated APNs worker
