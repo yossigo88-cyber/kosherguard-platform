@@ -177,14 +177,15 @@ kept out of the ordinary passing suites.
 
 - Corrected: ios/README.md (status lines, removed false doh-refusal and
   "server rejects 400" claims).
-- Flagged, NOT resolved (product decision for the owner):
-  docs/design/DOH_IOS_TRANSPORT.md states a user rule against bearer
-  credentials in DoH URLs. No user-channel evidence for that rule was
-  found in this review; the document's claim is unverified. The current
-  server mints doh-scoped credentials and the iOS client attaches them
-  as Authorization headers (the document's option 1). Whether the
-  claimed rule exists and how it constrains the DoH transport is left
-  to the owner.
+- Verified: docs/design/DOH_IOS_TRANSPORT.md and dns-edge/doh_identity.py
+  attribute to the user a rule against bearer credentials in DoH URLs.
+  The rule is genuine user evidence (WhatsApp 2026-11-16 02:25 EST,
+  build authorization: no long-lived bearer credentials in DoH URLs or
+  query strings; evaluate client certificates or appropriately
+  protected scoped credentials). The implemented design complies:
+  credentials are short-lived, scoped ("doh"), and attached as an
+  Authorization header - never in the URL; dns-edge ignores
+  URL-transported tokens by construction.
 - website/privacy.html and website/terms.html remain DRAFTs pending
   professional legal review, as their banners state; no changes made.
 - All other docs: no accuracy claims were re-verified in this pass;
