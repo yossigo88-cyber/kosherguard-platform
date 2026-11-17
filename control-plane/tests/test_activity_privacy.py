@@ -14,12 +14,13 @@ def _live_claims(s, t):
     direct unit callers register one."""
     dev = Device(tenant_id=t.id, name='privacy-device')
     s.add(dev); s.flush()
+    expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
     s.add(IssuedCredential(tenant_id=t.id, device_id=dev.id,
                            jti='privacy-jti', scope='proxy',
-                           expires_at=datetime.now(timezone.utc) + timedelta(hours=1)))
+                           expires_at=expires_at))
     s.flush()
     return {'tenant_id': t.id, 'scope': 'proxy', 'jti': 'privacy-jti',
-            'device_id': dev.id}
+            'device_id': dev.id, 'exp': int(expires_at.timestamp())}
 
 
 def test_allowed_never_stored_and_free_text_not_copied(engine):
@@ -44,7 +45,7 @@ def test_record_decisions_refuses_revoked_or_unknown_credential(engine):
         dec=[{'domain':'blocked.example','action':'block'}]
         # unknown jti
         with _pytest.raises(FilterLogError):
-            record_decisions(s,{'tenant_id':t.id,'scope':'proxy','jti':'nope'},dec)
+            record_decisions(s,{**claims, 'jti':'nope'},dec)
         # revoked
         cred=s.scalar(select(IssuedCredential))
         cred.revoked_at=datetime.now(timezone.utc);s.flush()
