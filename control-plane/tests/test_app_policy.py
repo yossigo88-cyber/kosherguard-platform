@@ -6,11 +6,13 @@ the queueing contract matters; on-device behavior of the generated
 payloads is BUILT-UNVERIFIED (see mdm/app_management.py).
 """
 
+import json
 import os
 import sys
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -19,7 +21,11 @@ from app import security  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.db import session_scope  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.models import Role, Tenant, User  # noqa: E402
+from app.models import (DeviceAppPolicy, MDMCommand, Role, Tenant,  # noqa: E402
+                        User)
+
+from mdm.app_management import (LEGACY_PROFILE_IDENTIFIERS,  # noqa: E402
+                                PROFILE_IDENTIFIER)
 
 PASSWORD = "a long enough password"
 HDR = {"X-KosherGuard-Request": "1"}
@@ -67,7 +73,7 @@ class TestAppPolicy:
         r = client.get(f"/api/devices/{dev}/app-policy")
         assert r.status_code == 200
         assert r.json() == {"mode": "blocklist", "bundle_ids": [],
-                            "saved": False}
+                            "saved": False, "applied": False}
 
     def test_put_get_roundtrip(self, client):
         dev = mk_device(client)
@@ -152,7 +158,7 @@ class TestAppPolicyApply:
         assert payload["PayloadType"] == "Configuration"
         content = payload["PayloadContent"][0]
         assert content["PayloadType"] == "com.apple.applicationaccess"
-        assert content["whiteListedAppBundleIDs"] == ["com.good.one"]
+        assert content["allowListedAppBundleIDs"] == ["com.good.one"]
 
 
 class TestAppCommands:
@@ -259,5 +265,141 @@ class TestAppCommands:
         assert c.post("/api/devices/1/app-commands",
                       json={"action": "list"},
                       headers=HDR).status_code == 401
+
+class TestAppPolicyLifecycle:
+    """Review finding A1: stable profile identity, mode-switch
+    replacement, legacy-identifier cleanup and the unapply
+    (RemoveProfile) path that lifts restrictions from the device."""
+
+    def _commands(self, engine):
+        with session_scope(engine) as s:
+            rows = s.scalars(
+                select(MDMCommand).order_by(MDMCommand.id)).all()
+            return [(r.command, json.loads(r.payload or "{}"))
+                    for r in rows]
+
+    def _policy_identifier(self, engine, device_id):
+        with session_scope(engine) as s:
+            row = s.scalars(select(DeviceAppPolicy).where(
+                DeviceAppPolicy.device_id == device_id)).first()
+            return None if row is None else row.profile_identifier
+
+    def _set_profile_identifier(self, engine, device_id, identifier):
+        with session_scope(engine) as s:
+            row = s.scalars(select(DeviceAppPolicy).where(
+                DeviceAppPolicy.device_id == device_id)).first()
+            row.profile_identifier = identifier
+
+    def _save_and_apply(self, client, dev, mode="blocklist",
+                        ids=("com.bad.app",)):
+        r = client.put(f"/api/devices/{dev}/app-policy",
+                       json={"mode": mode, "bundle_ids": list(ids)},
+                       headers=HDR)
+        assert r.status_code == 200, r.json()
+        r = client.post(f"/api/devices/{dev}/app-policy/apply",
+                        json={}, headers=HDR)
+        assert r.status_code == 200, r.json()
+
+    def test_apply_records_stable_identifier(self, client, engine):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        self._save_and_apply(client, dev, "allowlist", ("com.good.one",))
+        assert self._policy_identifier(engine, dev) == \
+            PROFILE_IDENTIFIER
+        r = client.get(f"/api/devices/{dev}/app-policy")
+        assert r.json()["applied"] is True
+        installs = [p for c, p in self._commands(engine)
+                    if c == "InstallProfile"]
+        assert len(installs) == 1
+        assert installs[0]["profile"]["PayloadIdentifier"] == \
+            PROFILE_IDENTIFIER
+
+    def test_mode_switch_replaces_profile_no_stale(self, client, engine):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        self._save_and_apply(client, dev, "blocklist", ("com.bad.app",))
+        self._save_and_apply(client, dev, "allowlist", ("com.good.one",))
+        cmds = self._commands(engine)
+        installs = [p for c, p in cmds if c == "InstallProfile"]
+        removals = [p for c, p in cmds if c == "RemoveProfile"]
+        # Same stable identifier on both installs means the second
+        # replaces the first on device; no stale profile remains, so
+        # no removal is needed.
+        assert len(installs) == 2
+        assert removals == []
+        assert all(p["profile"]["PayloadIdentifier"] == PROFILE_IDENTIFIER
+                   for p in installs)
+        content = installs[-1]["profile"]["PayloadContent"][0]
+        assert content["allowListedAppBundleIDs"] == ["com.good.one"]
+
+    def test_legacy_identifier_cleaned_up_on_apply(self, client, engine):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        self._save_and_apply(client, dev)
+        legacy = LEGACY_PROFILE_IDENTIFIERS[0]
+        self._set_profile_identifier(engine, dev, legacy)
+        r = client.post(f"/api/devices/{dev}/app-policy/apply",
+                        json={}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        cmds = self._commands(engine)
+        removals = [p for c, p in cmds if c == "RemoveProfile"]
+        assert removals == [{"Identifier": legacy}]
+        # Removal is queued before the replacement install.
+        assert [c for c, _ in cmds][-2:] == ["RemoveProfile",
+                                             "InstallProfile"]
+        assert self._policy_identifier(engine, dev) == \
+            PROFILE_IDENTIFIER
+
+    def test_unapply_queues_remove_profile_and_clears(self, client,
+                                                      engine):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        self._save_and_apply(client, dev)
+        r = client.post(f"/api/devices/{dev}/app-policy/unapply",
+                        json={}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        assert r.json()["command"] == "RemoveProfile"
+        assert r.json()["payload"] == {"Identifier": PROFILE_IDENTIFIER}
+        r = client.get(f"/api/devices/{dev}/app-policy")
+        # Intent is kept (can re-apply); applied state is cleared.
+        assert r.json()["saved"] is True
+        assert r.json()["applied"] is False
+        assert self._policy_identifier(engine, dev) is None
+        # A second unapply has nothing to lift.
+        r = client.post(f"/api/devices/{dev}/app-policy/unapply",
+                        json={}, headers=HDR)
+        assert r.status_code == 409
+
+    def test_unapply_targets_recorded_legacy_identifier(self, client,
+                                                        engine):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        self._save_and_apply(client, dev)
+        legacy = LEGACY_PROFILE_IDENTIFIERS[1]
+        self._set_profile_identifier(engine, dev, legacy)
+        r = client.post(f"/api/devices/{dev}/app-policy/unapply",
+                        json={}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        assert r.json()["payload"] == {"Identifier": legacy}
+
+    def test_unapply_without_applied_policy_409(self, client):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        # Saved but never applied.
+        r = client.put(f"/api/devices/{dev}/app-policy",
+                       json={"mode": "blocklist",
+                             "bundle_ids": ["com.bad.app"]}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        r = client.post(f"/api/devices/{dev}/app-policy/unapply",
+                        json={}, headers=HDR)
+        assert r.status_code == 409
+
+    def test_unapply_without_saved_policy_409(self, client):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        r = client.post(f"/api/devices/{dev}/app-policy/unapply",
+                        json={}, headers=HDR)
+        assert r.status_code == 409
+
 
 from mfa_support import mfa_login

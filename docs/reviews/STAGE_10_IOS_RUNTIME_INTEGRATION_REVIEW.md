@@ -73,7 +73,7 @@ discovering expiry as a mid-use 401.
 
 **Test totals at HEAD (all reproduced locally, commands in
 section 4): url-filter-server 50 passed; control-plane 500 passed;
-portable Swift 125 passed.**
+portable Swift 127 passed.**
 
 ## 2. Baseline test-evidence correction (environment vs code)
 
@@ -93,9 +93,9 @@ an environment artifact, not a code regression.
 | --- | --- | --- |
 | Apple prefilter builder | `url-filter-server/app/apple_prefilter.py` (new), `dataset.py`, `server.py`, deleted `bloom.py` | TESTED (50 passed) |
 | Cross-language vectors | `tools/gen-apple-prefilter-vectors.py`, `tools/apple-prefilter-vectors.json` | TESTED from both languages |
-| iOS portable runtime | `ios/Sources/URLFilter/ApplePrefilter.swift`, `DohTokenProvider.swift`, `DNSProxyRelay.swift`, `URLFilterPrefilterSource.swift`, `AppBlockingPolicy.swift`; updates to `PrefilterUpdater`, `AppConfiguration`, `CredentialIssuanceClient`, `URLFilterConfiguration` | COMPILED + XCTESTED on Linux Swift 6.0.3 (125 passed) |
-| iOS Apple-only adapters | `ios/Sources/FilterExtension/URLFilterControlProvider.swift`, `ios/Sources/DNSProxyExtension/DNSProxyProvider.swift`, `ios/Sources/KosherGuard/AppShieldController.swift`, app wiring in `KosherGuardApp.swift` | UNCOMPILED - no Apple SDK. API names verified against Apple's documentation pages (section 6); device behavior unverified |
-| Xcode project | `project.pbxproj`, `DNSProxyExtension-Info.plist`, `DNSProxyExtension.entitlements` | Statically guarded (membership closure + entitlement consistency tests); never opened in Xcode |
+| iOS portable runtime | `ios/Sources/URLFilter/ApplePrefilter.swift`, `DohTokenProvider.swift`, `DNSProxyRelay.swift`, `URLFilterPrefilterSource.swift`, `AppBlockingPolicy.swift`; updates to `PrefilterUpdater`, `AppConfiguration`, `CredentialIssuanceClient` | COMPILED + XCTESTED on Linux Swift 6.0.3 (127 passed) |
+| iOS Apple-only adapters | `ios/Sources/URLFilterExtension/URLFilterControlProvider.swift`, `ios/Sources/DNSProxyExtension/DNSProxyProvider.swift`, `ios/Sources/KosherGuard/AppShieldController.swift`, `ios/Sources/URLFilter/URLFilterConfiguration.swift` (the `NEURLFilterManager` enable call - every line of it is UNVERIFIED, including the setConfiguration signature match against the WWDC25 sample), app wiring in `KosherGuardApp.swift` | UNCOMPILED - no Apple SDK. API names verified against Apple's documentation/sample sources (section 6); device behavior unverified |
+| Xcode project | `project.pbxproj` (rebuilt after review: unique `KG5a...` object IDs for all stage-10 objects, minimal per-target source closures, dedicated KosherGuardURLFilter extension target), `DNSProxyExtension-Info.plist`, `DNSProxyExtension.entitlements`, `URLFilterExtension-Info.plist`, `URLFilterExtension.entitlements`, `App-Info.plist` (NSPIRConfiguration) | Statically guarded (ID uniqueness, reference resolution, embed-phase product-only, membership closure, entitlement consistency tests); never opened in Xcode |
 | Control plane | `app/main.py` (`expires_in_seconds`), `tests/test_filter_logs.py` | TESTED (500 passed) |
 
 Nothing in `deploy/`, DNS infrastructure, `main`, or the published
@@ -109,11 +109,13 @@ test dependencies (including `psycopg[binary]`, `pgserver`, `mmh3`).
 - URL filter server: `cd url-filter-server && python3 -m pytest tests -q`
   -> **50 passed**
 - Control plane (run from repo root; `test_ade_web` imports `mdm`):
-  `python3 -m pytest control-plane/tests -q` -> **500 passed**
+  `python3 -m pytest control-plane/tests -q` -> **500 passed**;
+  `mdm/tests`: 129 passed (incl. the app-management payload tests);
+  `control-plane/tests/test_app_policy.py`: 19 passed
 - Portable iOS logic (real SPM build, pinned swift-crypto, real
   XCTest - no API shims):
   `KG_REPO_ROOT=$PWD bash tools/run-swift-portable-tests.sh`
-  -> **125 passed**, including:
+  -> **127 passed**, including:
   - Apple prefilter cross-language vectors: every FNV-1a, Murmur3
     (5 seeds), Punycode, per-item hash position, bit-array bytes and
     SHA-256 tag recomputed in Swift and required equal to the
@@ -133,8 +135,143 @@ test dependencies (including `psycopg[binary]`, `pgserver`, `mmh3`).
     client error mapping.
   - Static build guards: every type referenced by a target's member
     sources is defined by a member of the same target (private
-    declarations correctly excluded); keychain/app-group entitlement
-    literals match the code.
+    declarations correctly excluded); pbxproj object IDs are unique,
+    all references resolve, and the embed phase copies only
+    extension products; keychain/app-group entitlement literals
+    match the code.
+
+## 4a. Review-driven corrections (2026-11-17, independent review)
+
+The first review round found and this revision fixed:
+
+1. **NSPIRConfiguration missing.** Apple's PIR onboarding
+   documentation requires a top-level `NSPIRConfiguration`
+   dictionary in the APP's Info.plist (`PIRServerURL` required,
+   `PrivacyPassIssuerURL` optional, hosts only); from iOS/macOS
+   27.3 the system rejects any mismatch with the runtime values.
+   Added to `App-Info.plist` with PLACEHOLDER hosts
+   (`*.kosherguard.example.com`) that must be replaced with the
+   real deployment hosts at Apple onboarding - until then the URL
+   Filter cannot be enabled anywhere, and
+   `URLFilterConfiguration.enable` now validates the runtime values
+   against the plist and throws on mismatch (fail closed). The
+   MDM-pushed managed configuration's PIR pair must name the SAME
+   hosts; the plist value is the static anchor and the managed
+   value the dynamic confirmation, not two independent sources.
+2. **Duplicate pbxproj object IDs** from the hand edit: the whole
+   project file was regenerated from the base commit with a
+   distinct ID namespace (`KG5a...`) for every stage-10 object, and
+   a new structural guard test now fails on duplicate IDs,
+   unresolved references, or non-product entries in the embed
+   phase.
+3. **Wrong embed entry / target dumps.** The embed phase now copies
+   only the two extension PRODUCTS (verified by the guard), and the
+   DNSProxy target's sources were cut to its computed dependency
+   closure (13 files) instead of the whole URLFilter directory.
+4. **URL Filter packaging.** `NEURLFilterControlProvider` is a
+   PROTOCOL conforming to `AppExtension`, implemented as the entry
+   point of its own extension target - it cannot share the
+   `NEFilterControlProvider` extension. New target
+   `KosherGuardURLFilter` (bundle ID
+   `com.kosherguard.app.URLFilterExtension`), entitlement value
+   `url-filter-provider` (Apple capability approval required -
+   confirmed by developer-forum export failures without it). The
+   NSExtensionPointIdentifier in `URLFilterExtension-Info.plist` is
+   a marked PLACEHOLDER: Apple's public sources name the Xcode 26
+   "URL Filter app extension template" but do not publish the
+   identifier it generates; the template's value must replace it
+   before any build claim.
+5. **Stale-prefilter retention.** `URLFilterPrefilterSource` now
+   returns a tri-state (artifact / unchanged / invalid); the
+   control provider THROWS on invalid at every fetch, so a previous
+   identity's prefilter is never silently retained as "unchanged".
+   Revocation of the filter itself remains the app lifecycle's job
+   (disable on invalidation); this is now documented in the
+   provider's header.
+6. **Nits fixed:** DNS relay rejects non-zero opcodes;
+   `DohTokenProvider` no longer reports a spurious failure when
+   `invalidate()` lands between its two cache reads (loops to a
+   fresh mint); the guardian UI's filter status was hardcoded
+   "Not installed" - it now reflects what the app actually
+   attempted (enabled/disabled/failed), still honestly short of
+   claiming a running system filter.
+7. **Legacy applicationaccess keys (pre-existing, now
+   load-bearing).** Verified against Apple's published
+   device-management schema mirror (GitHub apple/device-management,
+   release branch; secondary to Apple Developer documentation): the
+   current payload documents ONLY `allowListedAppBundleIDs`
+   (supervised, deprecated iOS 27.0). The allowlist builder now
+   emits that documented key. NO blocklist key exists in the
+   current schema - blocklist mode emits the historical
+   `blacklistedAppBundleIDs` and is explicitly UNDOCUMENTED,
+   gated on supervised-device proof before any launch-blocking
+   claim. Allowlist mode (or the iOS 27 declarative
+   `app.settings` configuration) is the recommended path.
+8. **FamilyControls consent.** `AppShieldController` requires the
+   system authorization prompt (`AuthorizationCenter.
+   requestAuthorization(for: .individual)`) which Apple always
+   presents to the device user on first use; shielding cannot start
+   without that consent, and a denial must surface as "not
+   protected", never silently. Documented in the file header.
+
+## 4b. App-policy lifecycle correction (2026-11-17, review finding A1)
+
+The second review pass found one ordinary (not security-emergency)
+defect in the app-policy MDM delivery path, fixed in this checkpoint:
+
+**Finding.** `application_access_profile` embedded the mode in the
+profile `PayloadIdentifier` (`...appaccess.{mode}`) with a fresh UUID
+each apply, and no RemoveProfile/unapply path existed anywhere. A
+blocklist<->allowlist switch would install a SECOND profile under a
+different identifier, leaving the first profile's restrictions on the
+device with no mechanism to lift them.
+
+**Fix.**
+- `mdm/app_management.py`: one stable `PROFILE_IDENTIFIER`
+  (`com.kosherguard.profile.appaccess`) and payload identifier across
+  modes - InstallProfile with a matching identifier replaces the
+  on-device profile, so a mode switch or bundle-list change updates
+  restrictions in place. New `remove_profile_command()` builds the
+  RemoveProfile payload (Identifier-only, matching the command codec's
+  contract); the legacy per-mode identifiers are kept as
+  `LEGACY_PROFILE_IDENTIFIERS` for cleanup.
+- `DeviceAppPolicy.profile_identifier` (new nullable column, alembic
+  0027) records the exact identifier last queued for install; NULL
+  means not applied.
+- `app_ops.apply_policy`: when the recorded identifier differs from
+  the stable one (a device carrying a legacy per-mode profile), a
+  RemoveProfile for the old identifier is queued BEFORE the new
+  InstallProfile, and the recorded identifier is updated only after
+  the install command is queued (queueing failure leaves state
+  unchanged).
+- New `app_ops.unapply_policy` + `POST .../app-policy/unapply` route:
+  queues RemoveProfile against the exact recorded identifier, clears
+  the applied marker, keeps the stored intent for re-apply. Same
+  guards as apply: tenant scoping, guardian role, owner-only, CSRF
+  header, audit event (`app_policy.unapply`).
+- Dashboard: the policy box gains an explicit "Unapply policy" button
+  (confirm dialog explains it lifts the device restrictions via
+  RemoveProfile). Verified no conflation: the existing "Remove managed
+  app" control targets `RemoveApplication` (app uninstall) with its
+  own data-loss warning, a separate action from profile un-apply.
+
+**Tests (13 new).** mdm: stable identifier across modes, remove
+command shape and validation (5). Control plane: apply records the
+stable identifier and `applied` state; mode switch issues two
+InstallProfiles under one identifier and zero RemoveProfiles; legacy
+identifier triggers cleanup RemoveProfile ordered before the
+replacement install; unapply queues RemoveProfile with the recorded
+identifier and clears state (second unapply 409); unapply targets a
+recorded legacy identifier exactly; unapply without an applied/saved
+policy is 409; migration test updated to 0027 and asserts the new
+column (8).
+
+**Remaining honesty note.** The blocklist payload key remains
+`blacklistedAppBundleIDs` (historical, undocumented in the current
+applicationaccess schema; section 4a item 6). Whether a current iOS
+device still honors it is device-gate work (section 7), as is every
+InstallProfile/RemoveProfile delivery claim: nothing here asserts
+on-device behavior.
 
 ## 5. Application blocking: the honest capability split
 
@@ -172,8 +309,14 @@ Verified against Apple's documentation (sources in section 6):
 - `NEURLFilterControlProvider.fetchPrefilter(existingPrefilterTag:)`
   and `NEURLFilterPrefilter` documentation (prefilter construction:
   FNV-1a 32 + MurmurHash3-32 double hashing, Punycode, SHA-256 tag
-  suggestion) - apple-docs mirror of the NetworkExtension
-  documentation, read 2026-11-17.
+  suggestion; NEURLFilterControlProvider is a protocol conforming to
+  AppExtension) - third-party apple-docs mirror of the
+  NetworkExtension documentation, read 2026-11-17. The protocol-form
+  and signature claims are corroborated by Apple's official sources:
+  the WWDC25 session 234 transcript (developer.apple.com) and Apple's
+  apple/pir-service-example GitHub repository
+  (TestingInstructionsNEURLFilter.md). The mirror alone was never
+  treated as authoritative.
 - `developer.apple.com/documentation/managedsettings/shieldsettings`
   and `.../shieldsettings/activitycategorypolicy` (`.none`,
   `.all(except:)`, `.specific(_:)`; applications/webDomains token
@@ -186,7 +329,19 @@ Verified against Apple's documentation (sources in section 6):
   apple/device-management release branch.
 - URL Filter overview (`url-filters.md`) and WWDC25 session 234
   (supervised-only system-wide filter; MDM URL Filter configuration
-  requires supervision; CloudKit Identity & Trust registration).
+  requires supervision; CloudKit Identity & Trust registration;
+  setConfiguration sample; url-filter-provider entitlement; dedicated
+  URL Filter extension target).
+- PIR onboarding (apple/live-caller-id-lookup-example Onboarding.md):
+  NSPIRConfiguration Info.plist declaration, enforcement from
+  iOS/macOS 27.3, host-only URLs, DNS TXT ownership record
+  `apple-url-filter=<app bundle id>`, test record
+  `www.apple.com/url-filter-test`.
+- Application restrictions schema: apple/device-management GitHub
+  repository (Apple's published schema mirror, release branch),
+  com.apple.applicationaccess.yaml - allowListedAppBundleIDs only;
+  secondary to Apple Developer documentation; payload stays
+  BUILT-UNVERIFIED regardless.
 - Prior grounded research in this repo:
   `docs/reviews/SUPERVISED_MANUAL_ENROLLMENT_REVIEW.md`,
   `docs/design/DOH_IOS_TRANSPORT.md`,

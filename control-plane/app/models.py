@@ -251,6 +251,14 @@ class DeviceAppPolicy(Base):
                                             default="[]")
     actor_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True)
+    # PayloadIdentifier of the applicationaccess profile last queued
+    # for install on this device. NULL means no policy profile is
+    # (known to be) applied: unapply is rejected and apply skips the
+    # legacy-identifier cleanup. Tracks the exact identifier so a mode
+    # switch or unapply never leaves a stale profile on the device
+    # (review finding A1).
+    profile_identifier: Mapped[str | None] = mapped_column(
+        String(255), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow,
         nullable=False)

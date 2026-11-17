@@ -123,6 +123,20 @@ $("app-apply").addEventListener("click", async () => {
   showAppCmd(await api(`/api/devices/${id}/app-policy/apply`,
     {method: "POST", headers: HDR, body: "{}"}));
 });
+$("app-unapply").addEventListener("click", async () => {
+  const id = $("app-device").value;
+  if (!window.confirm(
+      "Unapply the app policy from this device?\n\n" +
+      "This queues a RemoveProfile command that lifts the app " +
+      "allow/block restrictions from the device. The saved policy " +
+      "stays and can be re-applied. Continue?")) {
+    $("app-cmd-result").innerHTML =
+      '<p class="muted">Unapply cancelled; nothing was queued.</p>';
+    return;
+  }
+  showAppCmd(await api(`/api/devices/${id}/app-policy/unapply`,
+    {method: "POST", headers: HDR, body: "{}"}));
+});
 $("app-install").addEventListener("click", async () => {
   const id = $("app-device").value;
   const storeId = parseInt($("app-store-id").value, 10);

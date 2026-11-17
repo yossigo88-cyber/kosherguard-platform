@@ -1163,6 +1163,25 @@ def create_app(settings: Settings, engine=None, native_mdm_runtime=None) -> Fast
         session.commit()
         return command_json(row)
 
+    @app.post("/api/devices/{device_id}/app-policy/unapply",
+              dependencies=[Depends(require_csrf_header)])
+    def unapply_app_policy(device_id: int,
+                           user: User = Depends(current_user),
+                           session: Session = Depends(db_session)):
+        denied = require_guardian(user, "apps")
+        if denied is not None:
+            return denied
+        if user.role != Role.owner:
+            return error(403,"app baseline changes are owner-only until a tightening proof exists")
+        try:
+            row = app_ops.unapply_policy(session, user.tenant_id,
+                                         device_id, user.id,
+                                         adapter=make_adapter())
+        except app_ops.AppOpsError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return command_json(row)
+
     @app.post("/api/devices/{device_id}/app-commands",
               dependencies=[Depends(require_csrf_header)])
     def queue_app_command(device_id: int, body: AppCommandBody,

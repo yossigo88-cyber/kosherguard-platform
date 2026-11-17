@@ -5,6 +5,8 @@ import pytest
 
 from mdm.app_management import (
     APP_MODES,
+    LEGACY_PROFILE_IDENTIFIERS,
+    PROFILE_IDENTIFIER,
     AppManagementError,
     application_access_payload,
     application_access_profile,
@@ -12,6 +14,7 @@ from mdm.app_management import (
     app_settings_declaration,
     managed_application_list_command,
     remove_application_command,
+    remove_profile_command,
     validate_bundle_id,
     validate_bundle_ids,
 )
@@ -45,11 +48,11 @@ class TestApplicationAccessPayload:
         p = application_access_payload("blocklist", ["com.bad.app"])
         assert p["PayloadType"] == "com.apple.applicationaccess"
         assert p["blacklistedAppBundleIDs"] == ["com.bad.app"]
-        assert "whiteListedAppBundleIDs" not in p
+        assert "allowListedAppBundleIDs" not in p
 
     def test_allowlist_uses_whitelist_key(self):
         p = application_access_payload("allowlist", ["com.good.app"])
-        assert p["whiteListedAppBundleIDs"] == ["com.good.app"]
+        assert p["allowListedAppBundleIDs"] == ["com.good.app"]
         assert "blacklistedAppBundleIDs" not in p
 
     def test_rejects_unknown_mode(self):
@@ -68,6 +71,33 @@ class TestApplicationAccessPayload:
             "com.apple.applicationaccess"
         assert prof["PayloadUUID"] != \
             prof["PayloadContent"][0]["PayloadUUID"]
+
+    def test_profile_identifier_is_stable_across_modes(self):
+        # Review finding A1: one identifier means InstallProfile
+        # replaces the on-device profile on a mode switch instead of
+        # stacking a second profile whose restrictions can never be
+        # lifted.
+        block = application_access_profile("blocklist", ["com.bad.app"])
+        allow = application_access_profile("allowlist", ["com.good.app"])
+        assert block["PayloadIdentifier"] == PROFILE_IDENTIFIER
+        assert allow["PayloadIdentifier"] == PROFILE_IDENTIFIER
+        assert block["PayloadContent"][0]["PayloadIdentifier"] == \
+            allow["PayloadContent"][0]["PayloadIdentifier"]
+        assert PROFILE_IDENTIFIER not in LEGACY_PROFILE_IDENTIFIERS
+
+
+class TestRemoveProfileCommand:
+    def test_default_identifier_is_the_stable_profile(self):
+        assert remove_profile_command() == {"Identifier": PROFILE_IDENTIFIER}
+
+    def test_explicit_legacy_identifier(self):
+        cmd = remove_profile_command(LEGACY_PROFILE_IDENTIFIERS[0])
+        assert cmd == {"Identifier": LEGACY_PROFILE_IDENTIFIERS[0]}
+
+    @pytest.mark.parametrize("bad", ["", "   ", None, 42])
+    def test_rejects_empty_identifier(self, bad):
+        with pytest.raises(AppManagementError):
+            remove_profile_command(bad)
 
 
 class TestAppCommands:

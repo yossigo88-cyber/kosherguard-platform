@@ -2,7 +2,8 @@
 
 Wires the stored per-device app policy to the MDM command lifecycle:
 applying a policy queues an InstallProfile command carrying the
-com.apple.applicationaccess profile; install/remove/query actions queue
+com.apple.applicationaccess profile, un-applying queues RemoveProfile
+against the recorded identifier; install/remove/query actions queue
 the matching MDM command. Everything goes through mdm_ops.issue_command
 so tenant scoping, the supported-command allowlist, audit and the
 no-destructive-commands rule all apply unchanged.
@@ -58,17 +59,24 @@ def _active_enrollment(session: Session, tenant_id: int,
     return row
 
 
-def get_policy(session: Session, tenant_id: int,
-               device_id: int) -> dict:
-    _device(session, tenant_id, device_id)
-    row = session.scalars(
+def _policy_row(session: Session, tenant_id: int,
+                device_id: int) -> DeviceAppPolicy | None:
+    return session.scalars(
         select(DeviceAppPolicy).where(
             DeviceAppPolicy.tenant_id == tenant_id,
             DeviceAppPolicy.device_id == device_id)).first()
+
+
+def get_policy(session: Session, tenant_id: int,
+               device_id: int) -> dict:
+    _device(session, tenant_id, device_id)
+    row = _policy_row(session, tenant_id, device_id)
     if row is None:
-        return {"mode": "blocklist", "bundle_ids": [], "saved": False}
+        return {"mode": "blocklist", "bundle_ids": [], "saved": False,
+                "applied": False}
     return {"mode": row.mode, "bundle_ids": json.loads(row.bundle_ids),
-            "saved": True, "updated_at": row.updated_at.isoformat()}
+            "saved": True, "applied": row.profile_identifier is not None,
+            "updated_at": row.updated_at.isoformat()}
 
 
 def put_policy(session: Session, tenant_id: int, device_id: int,
@@ -81,10 +89,7 @@ def put_policy(session: Session, tenant_id: int, device_id: int,
                 f"mode must be one of {app_management.APP_MODES}", 400)
     except app_management.AppManagementError as exc:
         raise AppOpsError(str(exc), 400) from exc
-    row = session.scalars(
-        select(DeviceAppPolicy).where(
-            DeviceAppPolicy.tenant_id == tenant_id,
-            DeviceAppPolicy.device_id == device_id)).first()
+    row = _policy_row(session, tenant_id, device_id)
     if row is None:
         row = DeviceAppPolicy(tenant_id=tenant_id, device_id=device_id,
                               mode=mode, bundle_ids=json.dumps(ids),
@@ -104,20 +109,74 @@ def put_policy(session: Session, tenant_id: int, device_id: int,
 
 def apply_policy(session: Session, tenant_id: int, device_id: int,
                  actor_user_id: int, adapter=None):
-    """Queue an InstallProfile command carrying the current policy."""
-    policy = get_policy(session, tenant_id, device_id)
-    if not policy["saved"]:
+    """Queue an InstallProfile command carrying the current policy.
+
+    The profile uses the stable PROFILE_IDENTIFIER, so re-applying
+    (including a blocklist<->allowlist mode switch) replaces the
+    on-device profile instead of stacking a second one. If this policy
+    was last queued under a different identifier (the legacy per-mode
+    identifiers), a RemoveProfile for the old identifier is queued
+    first so the stale restrictions are actually lifted (review
+    finding A1). The identifier last queued is recorded on the policy
+    row only after the install command is queued; a queueing failure
+    leaves the record unchanged.
+    """
+    _device(session, tenant_id, device_id)
+    row = _policy_row(session, tenant_id, device_id)
+    if row is None:
         raise AppOpsError(
             "no saved application policy for this device", 409)
     enrollment = _active_enrollment(session, tenant_id, device_id)
-    profile = app_management.application_access_profile(
-        policy["mode"], policy["bundle_ids"])
+    stable = app_management.PROFILE_IDENTIFIER
     try:
-        return mdm_ops.issue_command(
+        if row.profile_identifier and row.profile_identifier != stable:
+            mdm_ops.issue_command(
+                session, tenant_id, enrollment.id, "RemoveProfile",
+                {"Identifier": row.profile_identifier},
+                actor_user_id, adapter=adapter)
+        profile = app_management.application_access_profile(
+            row.mode, json.loads(row.bundle_ids))
+        result = mdm_ops.issue_command(
             session, tenant_id, enrollment.id, "InstallProfile",
             {"profile": profile}, actor_user_id, adapter=adapter)
     except mdm_ops.MDMError as exc:
         raise AppOpsError(str(exc), exc.status) from exc
+    row.profile_identifier = stable
+    session.flush()
+    return result
+
+
+def unapply_policy(session: Session, tenant_id: int, device_id: int,
+                   actor_user_id: int, adapter=None):
+    """Queue a RemoveProfile command lifting the applied policy.
+
+    This is the only path that removes the on-device applicationaccess
+    restrictions; without it a saved policy can never be taken off the
+    device (review finding A1). The removal targets the exact
+    identifier recorded when the policy was last applied. The stored
+    policy intent (mode and bundle ids) is kept so it can be
+    re-applied; profile_identifier is cleared to mark it not applied.
+    """
+    _device(session, tenant_id, device_id)
+    row = _policy_row(session, tenant_id, device_id)
+    if row is None or not row.profile_identifier:
+        raise AppOpsError(
+            "no applied application policy for this device", 409)
+    enrollment = _active_enrollment(session, tenant_id, device_id)
+    try:
+        result = mdm_ops.issue_command(
+            session, tenant_id, enrollment.id, "RemoveProfile",
+            {"Identifier": row.profile_identifier},
+            actor_user_id, adapter=adapter)
+    except mdm_ops.MDMError as exc:
+        raise AppOpsError(str(exc), exc.status) from exc
+    row.profile_identifier = None
+    session.flush()
+    session.add(AuditEvent(
+        tenant_id=tenant_id, actor_user_id=actor_user_id,
+        action="app_policy.unapply",
+        detail=f"device {device_id} profile removed"))
+    return result
 
 
 _APP_COMMANDS = {

@@ -6,22 +6,25 @@ supervised device. Behavior on device - especially of the application
 access restrictions below - must be confirmed during the device testing
 phase (spec Part 17) before customer rollout.
 
-Application access restrictions (verified against Apple sources,
-2026-11-16): the com.apple.applicationaccess payload's bundle-ID
-allow/block keys - current names allowListedAppBundleIDs /
-blockedAppBundleIDs, older names whiteListedAppBundleIDs /
-blacklistedAppBundleIDs (what this build generates) - are the
-longstanding restrictions-profile mechanism. They are deprecated as of
-iOS 27 / iPadOS 27 (per Microsoft's Intune documentation of Apple's
-restriction lifecycle and Citrix's endpoint-management docs) in favor
-of the App settings declarative configuration, which Apple Support
-(depd65c456fa, 2026-09-17) documents as requiring iOS/iPadOS 27+,
-supervision, and Automated Device Enrollment. KosherGuard's target
-deployment is ADE + supervised from Day One, so the App settings
-declaration is the correct long-term mechanism; this legacy-payload
-builder is the compatible fallback whose on-device behavior - on both
-current and older OS versions - must be confirmed in the spec Part 17
-device-testing phase before customer rollout.
+Application access restrictions (verified against Apple's current
+official schema, apple/device-management release branch
+mdm/profiles/com.apple.applicationaccess.yaml, read 2026-11-17):
+
+- ALLOWLIST mode emits the DOCUMENTED key allowListedAppBundleIDs
+  (iOS 15.0+, supervised only, deprecated iOS 27.0 in favor of the
+  declarative com.apple.configuration.app.settings configuration).
+- BLOCKLIST mode has NO key in the current schema: the historical
+  blacklistedAppBundleIDs name (and the presumed current
+  blockedAppBundleIDs) appear nowhere in the release YAML. This
+  builder emits the historical blacklistedAppBundleIDs key and the
+  payload is therefore UNDOCUMENTED for that mode - it must be
+  treated as unverified until a supervised test device proves the
+  key is still honored (spec Part 17), and operators should prefer
+  allowlist mode or the iOS 27 declarative configuration. This is
+  not a claim of working launch blocking.
+
+All applicationaccess behavior remains BUILT-UNVERIFIED on device;
+no payload here has been validated against a supervised device.
 
 Destructive commands (EraseDevice and friends) are not part of this
 build and are not added here.
@@ -35,6 +38,20 @@ import uuid
 BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 
 APP_MODES = ("blocklist", "allowlist")
+
+# Stable profile identity (review finding A1): the applicationaccess
+# profile uses ONE identifier regardless of mode. InstallProfile with a
+# matching PayloadIdentifier replaces the installed profile, so a
+# blocklist<->allowlist switch (or any bundle-id change) updates the
+# on-device restrictions instead of stacking a second profile.
+# The earlier per-mode identifiers are kept as LEGACY so apply can
+# clean up a device that still carries one.
+PROFILE_IDENTIFIER = "com.kosherguard.profile.appaccess"
+PAYLOAD_IDENTIFIER = "com.kosherguard.appaccess"
+LEGACY_PROFILE_IDENTIFIERS = (
+    "com.kosherguard.profile.appaccess.blocklist",
+    "com.kosherguard.profile.appaccess.allowlist",
+)
 
 
 class AppManagementError(ValueError):
@@ -75,7 +92,7 @@ def application_access_payload(mode: str, bundle_ids) -> dict:
     payload = {
         "PayloadType": "com.apple.applicationaccess",
         "PayloadVersion": 1,
-        "PayloadIdentifier": f"com.kosherguard.appaccess.{mode}",
+        "PayloadIdentifier": PAYLOAD_IDENTIFIER,
         "PayloadUUID": str(uuid.uuid4()).upper(),
         "PayloadDisplayName": (
             "KosherGuard application allowlist"
@@ -83,7 +100,7 @@ def application_access_payload(mode: str, bundle_ids) -> dict:
             "KosherGuard application blocklist"),
     }
     if mode == "allowlist":
-        payload["whiteListedAppBundleIDs"] = ids
+        payload["allowListedAppBundleIDs"] = ids
     else:
         payload["blacklistedAppBundleIDs"] = ids
     return payload
@@ -96,7 +113,7 @@ def application_access_profile(mode: str, bundle_ids,
     return {
         "PayloadType": "Configuration",
         "PayloadVersion": 1,
-        "PayloadIdentifier": f"com.kosherguard.profile.appaccess.{mode}",
+        "PayloadIdentifier": PROFILE_IDENTIFIER,
         "PayloadUUID": str(uuid.uuid4()).upper(),
         "PayloadDisplayName": content["PayloadDisplayName"],
         "PayloadOrganization": organization,
@@ -152,6 +169,18 @@ def install_application_command(*, itunes_store_id: int | None = None,
                 f"configuration must be JSON-serializable: {exc}") from exc
         payload["Configuration"] = configuration
     return payload
+
+
+def remove_profile_command(identifier: str = PROFILE_IDENTIFIER) -> dict:
+    """RemoveProfile command payload: lifts the installed
+    applicationaccess profile (and with it the app restrictions) from
+    the device. MDM matches the installed profile by PayloadIdentifier,
+    so the identifier must be the exact one that was queued for
+    install. Without this there is no way to un-apply a policy.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise AppManagementError("profile identifier must be non-empty")
+    return {"Identifier": identifier.strip()}
 
 
 def remove_application_command(bundle_id: str) -> dict:
