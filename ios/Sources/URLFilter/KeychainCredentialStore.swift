@@ -11,16 +11,17 @@ import Security
 /// unlock state only (kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly:
 /// no iCloud sync, no migration to a new device - a scoped credential
 /// belongs to THIS device).
-struct KeychainCredentialStore {
+public struct KeychainCredentialStore {
+    public init() {}
     let service = "com.kosherguard.credentials"
 
-    enum StoreError: Error {
+    public enum StoreError: Error {
         case saveFailed(OSStatus)
         case readFailed(OSStatus)
         case deleteFailed(OSStatus)
     }
 
-    func save(key: String, value: String) throws {
+    public func save(key: String, value: String) throws {
         let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -41,7 +42,7 @@ struct KeychainCredentialStore {
         }
     }
 
-    func read(key: String) throws -> String? {
+    public func read(key: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -59,7 +60,7 @@ struct KeychainCredentialStore {
         return String(data: data, encoding: .utf8)
     }
 
-    func delete(key: String) throws {
+    public func delete(key: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
