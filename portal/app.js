@@ -28,9 +28,9 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
 });
 
 const CONNECTIVITY_LABELS = {
-  recently_reporting: "Online (reported within the hour)",
-  stale: "Stale (reported 1-24h ago)",
-  offline: "Offline (no report for over 24h)",
+  recently_reporting: "Reported within the hour",
+  stale: "Last report 1-24h ago",
+  no_report_over_24h: "No report for over 24h",
   never_reported: "Never reported"
 };
 
