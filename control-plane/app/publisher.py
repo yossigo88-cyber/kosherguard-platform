@@ -278,11 +278,22 @@ class Publisher:
                 raise PublicationError("supplemental document permissions")
         return manifest
 
-    def current(self) -> dict | None:
-        """Manifest of the active generation, or None when unpublished."""
+    def current_generation_dir(self):
+        """Directory of the active generation, or None when unpublished.
+
+        Caller must still pass the result through verify_generation()
+        before trusting any file in it.
+        """
         if not self.current_link.is_symlink():
             return None
         generation_dir = (self.root / os.readlink(str(self.current_link))).resolve()
         if generation_dir.parent != self.generations_dir.resolve():
             raise PublicationError("current points outside generations/")
+        return generation_dir
+
+    def current(self) -> dict | None:
+        """Manifest of the active generation, or None when unpublished."""
+        generation_dir = self.current_generation_dir()
+        if generation_dir is None:
+            return None
         return self.verify_generation(generation_dir)
