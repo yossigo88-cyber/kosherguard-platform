@@ -23,6 +23,9 @@ th, td { text-align:left; padding:.45rem .35rem; border-bottom:1px solid #e8edf5
 .muted { color:#556; font-size:.9em; }
 .hidden { display:none; }
 h2 { margin-bottom:.4rem; }
+@media (max-width: 640px) {
+  table { display: block; overflow-x: auto; }
+}
 </style>
 </head>
 <body>
@@ -325,7 +328,7 @@ h2 { margin-bottom:.4rem; }
     executes exactly the recorded operation on the recorded device -
     nothing else. Requests expire and are single-use.</p>
     <table id="approvals-table">
-      <thead><tr><th>ID</th><th>Operation</th><th>Status</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>Operation</th><th>Device</th><th>Requested by</th><th>Status</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <div id="approval-act" class="hidden">
@@ -469,4 +472,4 @@ h2 { margin-bottom:.4rem; }
 </main>
 <script src="/web/app.js"></script>
 </body>
-</html>
+  </html>
