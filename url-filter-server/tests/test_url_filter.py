@@ -270,3 +270,34 @@ class TestDeviceAuthRevocationAndBinding:
         pa = verify_token(self.KEY, a, "dataset")
         pb = verify_token(self.KEY, b, "dataset")
         assert pa["jti"] != pb["jti"]
+
+    def test_401_body_reveals_no_failure_reason(self):
+        """Expired, tampered, wrong-scope, and missing tokens must all
+        receive the identical generic 401 body: no oracle about which
+        check failed."""
+        from app.server import create_app
+        from app.device_auth import issue_token
+        ds = build_dataset(sample_rules(), version=1)
+        c = TestClient(create_app(ds, device_token_key=self.KEY))
+        bodies = set()
+        r = c.get("/v1/dataset/manifest")
+        assert r.status_code == 401
+        bodies.add(r.text)
+        tok = issue_token(self.KEY, "dev-1", "t", "dataset")
+        r = c.get("/v1/dataset/manifest",
+                  headers={"Authorization": f"Bearer {tok}x"})
+        assert r.status_code == 401
+        bodies.add(r.text)
+        expired = issue_token(self.KEY, "dev-1", "t", "dataset",
+                              lifetime_seconds=1, now=1000)
+        r = c.get("/v1/dataset/manifest",
+                  headers={"Authorization": f"Bearer {expired}"})
+        assert r.status_code == 401
+        bodies.add(r.text)
+        wrong_scope = issue_token(self.KEY, "dev-1", "t", "doh")
+        r = c.get("/v1/dataset/manifest",
+                  headers={"Authorization": f"Bearer {wrong_scope}"})
+        assert r.status_code == 401
+        bodies.add(r.text)
+        assert len(bodies) == 1, f"401 bodies differ by reason: {bodies}"
+        assert "unauthorized" in bodies.pop()
