@@ -39,6 +39,50 @@ not claimed as executed. Swift/Xcode compilation and physical-device
 checks were unavailable and remain unverified. Benchmarks are existing
 historical measurements, not newly rerun capacity evidence.
 
+## Independent-review followup
+
+Published followup code: `9d6d17b2d2e29dda0b5d66ea4523cf7ca337309c`.
+A fresh GitHub checkout at this exact SHA passed the complete control-plane
+suite: **431 passed**, including20 real PostgreSQL race tests and migration
+roundtrips. Full pytest log and JUnit XML were retained. All10 changed
+followup code/test files were byte-compared with GitHub. Other components'
+1,272-total ledger above remains tied to6399667, not this later SHA.
+
+- EraseDevice queue failure is `approved_queue_failed`, with no queued
+  command and no automatic retry. Queue creation runs inside a savepoint:
+  a partial insert followed by MDMError rolls back. The consumed approval
+  cannot be replayed (409); a NEW request and second approver are required.
+  The regression injects that exact partial-insert failure, verifies zero
+  commands, then verifies a fresh request queues exactly one command.
+- Restore readiness now includes `filtering_exceptions_clear`. An active
+  device/group allow_domains or disable_policy window blocks release,
+  whether present in saved state or in the pinned published overlay.
+  Revocation alone does not green readiness while the old generation still
+  carries the exception. Cleanup publication restores readiness. Four new
+  tests cover both scope types and both exception kinds through that cycle.
+- Revocation cleanup ships the LAST PUBLISHED snapshot minus revoked
+  exceptions, never unrelated saved drafts. Comments in worker and exception
+  routes now say this precisely. Exception endpoints were moved unchanged
+  into exception_routes.py with explicit injected dependencies to keep the
+  registration module manageable; the full suite covers the extraction.
+- The create/publish PostgreSQL race now compares actual overlay contents
+  with audit order established under the tenant lock. A later publication
+  must always include the committed exception. Fixture teardown truncates
+  all model tables, not a hand-maintained subset; sequences keep advancing.
+- Removed the unused sanitizer regex. Diagnostic text is withheld; the
+  remaining output is exception class and allowlisted category only.
+
+Revocation distribution is periodic, not instantaneous. Runtime defaults
+refresh edge revocation feeds every60 seconds. Network failures, process
+outage, configuration mistakes or stale feed state can extend that delay;
+there is no verified hard global deadline. Ingestion consults the current
+issuance registry directly; already running edges rely on their configured
+feed. This is a remaining operational limitation, not instantaneous logout.
+No configured lint/type/security checker was available: compileall and
+JavaScript syntax checks do not substitute for mypy/ruff/bandit. The UI
+change is a small decision-detail conditional; visual browser behavior was
+not independently exercised and is not claimed as verified.
+
 ## Findings and corrections by original handoff part
 
 ### 1. Sensitive commands
