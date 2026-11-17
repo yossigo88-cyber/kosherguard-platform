@@ -110,3 +110,14 @@ Xcode compilation/signing, real-device testing, or deployment.
 
 See the exact-SHA ledger above and the security-corrections report.
 No historical test total is a claim about an untested later commit.
+
+## Independent-review followup ledger
+
+At code SHA `9d6d17b2d2e29dda0b5d66ea4523cf7ca337309c`, a fresh GitHub
+checkout passed431 control-plane tests (including20 PostgreSQL matrix
+tests). Other suites retain the earlier exact-SHA ledger, not a final-SHA
+rerun claim. Queue-failed approvals require a fresh request; active saved
+or published filtering exceptions block restore readiness; edge revocation
+feed propagation remains periodic (default60 seconds, no hard outage bound).
+Lint/type/security tools and UI visual verification remain unverified as
+detailed in the security-corrections report. No production/device claim changed.
