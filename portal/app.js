@@ -57,12 +57,15 @@ function renderDevices() {
     const latest = chain.latest_command
       ? `${esc(chain.latest_command.command)}: ${esc(chain.latest_command.status)} (command ledger)`
       : "none";
+    const apns = chain.apns === "unavailable"
+      ? `<br><span class="note">APNs push: unavailable (not observed by this server)</span>`
+      : (chain.apns ? `<br><span class="note">APNs push: ${esc(chain.apns)}</span>` : "");
     return `<tr><td>${esc(d.name)}</td><td>${esc(d.state)}</td>` +
       `<td>${enrollmentLabel(d.enrollment)}</td>` +
       `<td>${esc(CONNECTIVITY_LABELS[d.connectivity] || d.connectivity)}</td>` +
       `<td>${esc(REPORTED_LABELS[d.reported_vs_published] || d.reported_vs_published)}</td>` +
       `<td>${d.last_device_receipt ? esc(new Date(d.last_device_receipt).toLocaleString()) : "none yet"}</td>` +
-      `<td>${latest}${chain.pending ? ` (${chain.pending} pending)` : ""}</td></tr>`;
+      `<td>${latest}${chain.pending ? ` (${chain.pending} pending)` : ""}${apns}</td></tr>`;
   }).join("");
 }
 
