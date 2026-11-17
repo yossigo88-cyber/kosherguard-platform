@@ -245,13 +245,15 @@ class DeviceAppPolicy(Base):
 
 
 class DDMStatusReport(Base):
-    """A verbatim DDM status report from a device, received on the
+    """A MINIMIZED DDM status receipt from a device, received on the
     /api/ddm/status endpoint NanoMDM forwards (spec Part 10). RECEIPT
     ONLY: a stored report proves the enrollment sent a well-formed
     report, not that any declaration applied. Application evidence
     lives in declaration_states, extracted per the verified
     management.declarations shape (identifier + server-token + active
-    + valid); it must be matched against what was actually served."""
+    + valid); it must be matched against what was actually served.
+    Unsolicited payload fields (location, personal-app data) are
+    dropped before persistence (Answer 31)."""
     __tablename__ = "ddm_status_reports"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
@@ -656,6 +658,37 @@ class OffboardingCase(Base):
         DateTime(timezone=True), default=utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+
+
+class SupportRequest(Base):
+    """In-product support request (Answer 34). Kinds cover account
+    recovery, enrollment assistance, device connectivity
+    troubleshooting, policy-change requests and general questions;
+    the verified-email channel is stored as channel metadata only -
+    no outbound email delivery is claimed without integration. A
+    support request NEVER changes policies, devices, credentials or
+    protection; status/escalation are bookkeeping with audit."""
+    __tablename__ = "support_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    channel: Mapped[str] = mapped_column(String(20), nullable=False,
+                                         default="in_product")
+    status: Mapped[str] = mapped_column(String(20), nullable=False,
+                                        default="open")
+    escalated: Mapped[bool] = mapped_column(nullable=False,
+                                            default=False)
+    resolution_notes: Mapped[str] = mapped_column(Text, nullable=False,
+                                                  default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class EnrollmentTicket(Base):
