@@ -150,8 +150,19 @@ class TestGuardianLifecycle:
             second.totp_secret = security.new_totp_secret()
             s.flush()
             second_id = second.id
+        # MFA reset now also requires the owner's current TOTP code
+        # and an explicit confirmation (fresh_check), not just the
+        # password.
+        import pyotp
+        owner_secret = c.app.state._fixture_mfa["owner@example.com"]
         r = c.post(f"/api/guardians/{second_id}/mfa-reset",
-                   json={"password": PASSWORD}, headers=HDR)
+                   json={"password": PASSWORD},
+                   headers=HDR)
+        assert r.status_code == 403
+        r = c.post(f"/api/guardians/{second_id}/mfa-reset",
+                   json={"password": PASSWORD,
+                         "totp_code": pyotp.TOTP(owner_secret).now(),
+                         "confirm": "mfa-reset"}, headers=HDR)
         assert r.status_code == 200
         assert r.json()["mfa_enrolled"] is False
 
@@ -172,6 +183,10 @@ class TestGuardianLifecycle:
         # Wrong password.
         assert c.post(f"/api/guardians/{second_id}/mfa-reset",
                       json={"password": "not the password"},
+                      headers=HDR).status_code == 403
+        # Right password but no fresh MFA code + confirmation.
+        assert c.post(f"/api/guardians/{second_id}/mfa-reset",
+                      json={"password": PASSWORD},
                       headers=HDR).status_code == 403
         # MFA still enrolled after both failures.
         with session_scope(engine) as s:
