@@ -129,3 +129,24 @@ class TestWebsite:
         assert "in development and not yet launched" in blob or \
             "under active development" in blob
         assert "no availability target or sla is promised" in blob
+
+    def test_admin_has_staff_role_screen(self):
+        page = read(os.path.join("control-plane", "web", "index.html"))
+        js = read(os.path.join("control-plane", "web", "app.js"))
+        assert 'id="staff-panel"' in page
+        assert 'id="staff-role-form"' in page
+        for role in ("owner", "security_admin", "support_admin",
+                     "read_only"):
+            assert role in page
+        assert "/api/staff" in js
+        assert "/role" in js
+
+    def test_admin_has_sensitive_approvals_screen(self):
+        page = read(os.path.join("control-plane", "web", "index.html"))
+        js = read(os.path.join("control-plane", "web", "app.js"))
+        assert 'id="approvals-panel"' in page
+        assert 'id="ap-totp"' in page and 'id="ap-confirm"' in page
+        assert "/api/mdm/sensitive-approvals" in js
+        # The decision form POSTs to the real approve/reject endpoints.
+        assert '${decision}' in js
+        assert 'value="approve"' in page and 'value="reject"' in page
