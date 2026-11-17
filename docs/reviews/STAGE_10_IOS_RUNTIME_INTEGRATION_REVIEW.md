@@ -266,11 +266,23 @@ recorded legacy identifier exactly; unapply without an applied/saved
 policy is 409; migration test updated to 0027 and asserts the new
 column (8).
 
-**Remaining honesty note.** The blocklist payload key remains
-`blacklistedAppBundleIDs` (historical, undocumented in the current
-applicationaccess schema; section 4a item 6). Whether a current iOS
-device still honors it is device-gate work (section 7), as is every
-InstallProfile/RemoveProfile delivery claim: nothing here asserts
+**Blocklist delivery path (re-verified 2026-11-17 against the
+release-branch schemas).** Blocklist mode is NOT parked behind the
+device gate: the documented current mechanism is already implemented
+and served - `ddm_ops.configurations` issues a
+`com.apple.configuration.app.settings` declaration with
+`Allowed.DeniedApps` (schema: `DeniedApps`/`AppIdentifier`, iOS 27+,
+supervised) to every DDM-syncing enrollment holding a blocklist
+policy, and the declaration identifier is now stable
+(`com.kosherguard.appsettings`, ServerToken tracks content). The
+classic InstallProfile path additionally emits the historical
+`blacklistedAppBundleIDs` key, which no longer appears in the current
+applicationaccess schema (re-grepped 2026-11-17: only
+`allowListedAppBundleIDs` is documented; no `blockedAppBundleIDs`
+exists): it is kept as best-effort for pre-DDM enrollments and is
+explicitly UNDOCUMENTED. Whether a current iOS device still honors
+the historical key, and all InstallProfile/RemoveProfile/DDM delivery
+claims, remain device-gate work (section 7): nothing here asserts
 on-device behavior.
 
 ## 5. Application blocking: the honest capability split

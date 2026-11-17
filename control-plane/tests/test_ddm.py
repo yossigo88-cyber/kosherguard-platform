@@ -81,7 +81,7 @@ class TestDDMServing:
         items = client.get("/api/ddm/declaration-items", headers=h).json()
         configs = items["Declarations"]["Configurations"]
         assert len(configs) == 1
-        assert configs[0]["Identifier"].startswith("com.kosherguard.appsettings.")
+        assert configs[0]["Identifier"] == "com.kosherguard.appsettings"
         assert items["Declarations"]["Activations"] == []
         tok = client.get("/api/ddm/tokens", headers=h).json()
         assert (tok["SyncTokens"]["DeclarationsToken"]
@@ -105,8 +105,14 @@ class TestDDMServing:
         assert r.status_code == 200, r.json()
         second = client.get("/api/ddm/declaration-items", headers=h).json()
         assert (first["DeclarationsToken"] != second["DeclarationsToken"])
+        # Stable declaration identity (review finding A1): a policy
+        # change re-applies under a bumped ServerToken, never a second
+        # identifier that could stack stale declarations.
         assert (first["Declarations"]["Configurations"][0]["Identifier"]
-                != second["Declarations"]["Configurations"][0]["Identifier"])
+                == second["Declarations"]["Configurations"][0]["Identifier"]
+                == "com.kosherguard.appsettings")
+        assert (first["Declarations"]["Configurations"][0]["ServerToken"]
+                != second["Declarations"]["Configurations"][0]["ServerToken"])
 
     def test_no_policy_empty_configurations(self, client):
         items = client.get("/api/ddm/declaration-items",

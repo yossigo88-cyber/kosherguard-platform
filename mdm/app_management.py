@@ -225,6 +225,11 @@ def managed_application_list_command() -> dict:
 
 DDM_APP_SETTINGS_TYPE = "com.apple.configuration.app.settings"
 
+# Stable declaration identity, same reasoning as PROFILE_IDENTIFIER:
+# one identifier means a mode switch or list change re-applies under a
+# bumped ServerToken instead of stacking declarations.
+DDM_APP_SETTINGS_IDENTIFIER = "com.kosherguard.appsettings"
+
 
 def app_settings_declaration(mode: str, bundle_ids,
                              server_token: str | None = None) -> dict:
@@ -245,7 +250,7 @@ def app_settings_declaration(mode: str, bundle_ids,
     payload = {"Allowed": {key: [{"AppIdentifier": b} for b in ids]}}
     declaration = {
         "Type": DDM_APP_SETTINGS_TYPE,
-        "Identifier": f"com.kosherguard.appsettings.{mode}",
+        "Identifier": DDM_APP_SETTINGS_IDENTIFIER,
         "ServerToken": server_token or "1",
         "Payload": payload,
     }

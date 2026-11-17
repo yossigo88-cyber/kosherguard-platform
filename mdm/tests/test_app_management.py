@@ -138,7 +138,7 @@ class TestAppSettingsDeclaration:
         d = app_settings_declaration("blocklist", ["com.bad.app"],
                                      server_token="t7")
         assert d["Type"] == "com.apple.configuration.app.settings"
-        assert d["Identifier"] == "com.kosherguard.appsettings.blocklist"
+        assert d["Identifier"] == "com.kosherguard.appsettings"
         assert d["ServerToken"] == "t7"
         assert d["Payload"] == {"Allowed": {
             "DeniedApps": [{"AppIdentifier": "com.bad.app"}]}}
