@@ -77,6 +77,11 @@ class TestWebsite:
         for channel in ("In-product support requests",
                         "Verified email support", "Escalation"):
             assert channel in page
+        # The verified-email channel is metadata-only until a support
+        # mailbox is configured; the page must say so, not imply a
+        # working monitored channel.
+        assert "Verified email support (planned)" in page
+        assert "monitored channel yet" in page
         # No invented support hours or 24/7 promises.
         blob = (page + read(os.path.join("website", "index.html"))).lower()
         assert "24/7" not in blob.replace("do not advertise support "
@@ -100,6 +105,19 @@ class TestWebsite:
         page = read(os.path.join("website", "privacy.html"))
         assert "do not collect device location" in page
         assert "personal apps" in page
+
+    def test_privacy_states_implemented_log_controls(self):
+        """The privacy page must describe the retention/access controls
+        that actually exist in code (filter_log_ops), not vague
+        pending-review language for operational privacy."""
+        page = read(os.path.join("website", "privacy.html"))
+        assert "only blocked decisions" in page
+        assert "never full URLs" in page
+        assert "never stored, even if a device submits it" in page
+        assert "physically deleted" in page
+        assert "between 1 and 30 days" in page
+        assert "default is 7 days" in page
+        assert "backups exclude filtering history" in page
 
     def test_no_unsupported_service_claims(self):
         blob = ""
