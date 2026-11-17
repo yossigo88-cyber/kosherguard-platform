@@ -3,6 +3,11 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 @testable import Core
 
 final class FixtureProtocol: URLProtocol {
@@ -29,7 +34,7 @@ final class PortableTests: XCTestCase {
         config.protocolClasses = [FixtureProtocol.self]
         return URLSession(configuration: config)
     }
-    let manifest = Data(#"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8)
+    let manifest = Data(#"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8)
 
     func testManagedDictionaryAndHTTPS() {
         let name = "kg-test-\(UUID())"
@@ -365,7 +370,7 @@ final class FilterSyncControllerTests: XCTestCase {
         AppConfiguration(controlPlaneBaseURL: base, deviceID: 7,
                          datasetBaseURL: base)
     }
-    let manifest = Data(#"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8)
+    let manifest = Data(#"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8)
     let rulesBody = #"{"device_id":7,"tenant_id":11,"policy_id":3,"generation":5,"default_policy":"allow","rules":{"bad.example":true,"good.example":false}}"#
 
     func fullServer() {
@@ -671,7 +676,7 @@ final class ReviewRegressionTests: XCTestCase {
         FixtureProtocol.handler = { req in
             let path = req.url!.path
             let rules = #"{"device_id":7,"tenant_id":11,"policy_id":3,"generation":5,"default_policy":"allow","rules":{"bad.example":true}}"#
-            let manifest = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
+            let manifest = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
             return (200, [:], Data((path.hasSuffix("filter-rules") ? rules : path.hasSuffix("manifest") ? manifest : "abc").utf8))
         }
         let sut = FilterSyncController(
@@ -1054,7 +1059,7 @@ final class EngineIdentityRefreshTests: XCTestCase {
 final class SyncControllerIdentityTests: XCTestCase {
     let base = URL(string: "https://fixture.example")!
     let rulesBody = #"{"device_id":7,"tenant_id":11,"policy_id":3,"generation":5,"default_policy":"allow","rules":{"bad.example":true}}"#
-    let manifest = Data(#"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8)
+    let manifest = Data(#"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8)
     func session() -> URLSession {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.protocolClasses = [FixtureProtocol.self]
@@ -1264,7 +1269,7 @@ final class CorruptionRecoveryTests: XCTestCase {
         FixtureProtocol.handler = { req in
             let path = req.url!.path
             let rules = #"{"device_id":7,"tenant_id":11,"policy_id":3,"generation":5,"default_policy":"allow","rules":{"bad.example":true}}"#
-            let manifest = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
+            let manifest = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
             return (200, [:], Data((path.hasSuffix("filter-rules") ? rules : path.hasSuffix("manifest") ? manifest : "abc").utf8))
         }
         let controller = FilterSyncController(
@@ -1305,7 +1310,7 @@ final class SessionEpochTests: XCTestCase {
         return (FilterRuleStore(directory: dir), dir)
     }
     let rulesBody = #"{"device_id":7,"tenant_id":11,"policy_id":3,"generation":5,"default_policy":"allow","rules":{"bad.example":true}}"#
-    let manifestBody = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
+    let manifestBody = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
 
     /// Reviewer regression: a slow HTTP response from the OLD managed
     /// configuration must not reinstall the old identity after the
@@ -1684,7 +1689,7 @@ final class LateResponseRaceTests: XCTestCase {
                 try? self.seedNew(store)
                 return (status, [:], Data(#"{"device_id":7,"tenant_id":11,"policy_id":3,"generation":5,"default_policy":"allow","rules":{}}"#.utf8))
             }
-            let manifest = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
+            let manifest = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
             return (200, [:], Data((req.url!.path.hasSuffix("manifest")
                 ? manifest : "abc").utf8))
         }
@@ -1745,7 +1750,7 @@ final class LateResponseRaceTests: XCTestCase {
             atPath: destination.path),
             "stale fetch recreated the prefilter after sign-out")
     }
-    let manifestForRace = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
+    let manifestForRace = #"{"version":2,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#
 
     /// Store level: a staged artifact cannot be committed under an
     /// epoch advanced by an intervening invalidation.
@@ -2363,7 +2368,7 @@ final class PrefilterCacheBindingTests: XCTestCase {
     func testRestoreRejectsForeignIdentityCache() async throws {
         FixtureProtocol.handler = { request in
             if request.url!.path.hasSuffix("manifest") {
-                return (200, [:], Data(#"{"version":4,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8))
+                return (200, [:], Data(#"{"version":4,"rule_count":1,"blocked_count":1,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8))
             }
             return (200, [:], Data("abc".utf8))
         }
@@ -2899,5 +2904,435 @@ final class SignOutOrchestrationTests: XCTestCase {
         try await coordinator.signOut(
             remoteLogout: CountSignOut?.none, boundToOrigin: nil)
         XCTAssertNil(CredentialBundle.load(from: vault))
+    }
+}
+
+// MARK: - Stage 10: Apple prefilter cross-language vectors
+
+/// The Python dataset builder and this Swift implementation must
+/// produce byte-identical Apple-format prefilters. The vectors file
+/// (tools/apple-prefilter-vectors.json) is generated by
+/// tools/gen-apple-prefilter-vectors.py from the PYTHON builder; these
+/// tests recompute every value in Swift and require exact agreement.
+final class ApplePrefilterVectorTests: XCTestCase {
+    struct Vectors: Decodable {
+        struct Bloom: Decodable {
+            let capacity: Int
+            let fp_rate: Double
+            let bit_count: Int
+            let hash_count: Int
+            let murmur_seed: UInt32
+            let bytes_hex: String
+            let tag: String
+            let items: [String]
+            let absent: [String]
+            let positions: [String: [Int]]
+        }
+        let bloom: Bloom
+        let fnv1a32: [String: UInt32]
+        let murmur3_32: [String: [String: UInt32]]
+        let punycode: [String: String]
+    }
+
+    func loadVectors() throws -> Vectors {
+        guard let root = ProcessInfo.processInfo
+            .environment["KG_REPO_ROOT"]
+        else { throw XCTSkip("KG_REPO_ROOT not set") }
+        let url = URL(fileURLWithPath: root)
+            .appendingPathComponent("tools/apple-prefilter-vectors.json")
+        return try JSONDecoder().decode(
+            Vectors.self, from: Data(contentsOf: url))
+    }
+
+    func testFnv1a32MatchesPython() throws {
+        for (input, expected) in try loadVectors().fnv1a32 {
+            XCTAssertEqual(
+                ApplePrefilterHash.fnv1a32(Array(input.utf8)),
+                expected, "fnv1a32(\(input))")
+        }
+    }
+
+    func testMurmur3MatchesPython() throws {
+        for (input, bySeed) in try loadVectors().murmur3_32 {
+            for (seedText, expected) in bySeed {
+                XCTAssertEqual(
+                    ApplePrefilterHash.murmur3_32(
+                        Array(input.utf8), seed: UInt32(seedText)!),
+                    expected, "murmur3(\(input), seed \(seedText))")
+            }
+        }
+    }
+
+    func testPunycodeMatchesPython() throws {
+        for (input, expected) in try loadVectors().punycode {
+            XCTAssertEqual(try Punycode.encode(input), expected,
+                           "punycode(\(input))")
+        }
+    }
+
+    func testBloomBitsAndTagMatchPython() throws {
+        let vectors = try loadVectors().bloom
+        let byteCount = (vectors.bit_count + 7) / 8
+        var bits = [UInt8](repeating: 0, count: byteCount)
+        for (item, expectedPositions) in vectors.positions {
+            let computed = ApplePrefilterHash.positions(
+                punycodeASCII: Array(try Punycode.encode(item).utf8),
+                bitCount: vectors.bit_count,
+                hashCount: vectors.hash_count,
+                murmurSeed: vectors.murmur_seed)
+            XCTAssertEqual(computed, expectedPositions,
+                           "positions(\(item))")
+            for position in computed {
+                bits[position / 8] |= UInt8(1 << (position % 8))
+            }
+        }
+        let hex = bits.map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(hex, vectors.bytes_hex, "bit array bytes")
+        XCTAssertEqual(
+            SHA256.hash(data: Data(bits)).map {
+                String(format: "%02x", $0)
+            }.joined(),
+            vectors.tag, "tag must be the SHA-256 of the bit array")
+        // Membership: every item present, every absent string absent.
+        for item in vectors.items {
+            let positions = ApplePrefilterHash.positions(
+                punycodeASCII: Array(try Punycode.encode(item).utf8),
+                bitCount: vectors.bit_count,
+                hashCount: vectors.hash_count,
+                murmurSeed: vectors.murmur_seed)
+            XCTAssertTrue(positions.allSatisfy {
+                bits[$0 / 8] & UInt8(1 << ($0 % 8)) != 0
+            }, "\(item) must be present")
+        }
+        for entry in vectors.absent {
+            let positions = ApplePrefilterHash.positions(
+                punycodeASCII: Array(try Punycode.encode(entry).utf8),
+                bitCount: vectors.bit_count,
+                hashCount: vectors.hash_count,
+                murmurSeed: vectors.murmur_seed)
+            XCTAssertFalse(positions.allSatisfy {
+                bits[$0 / 8] & UInt8(1 << ($0 % 8)) != 0
+            }, "\(entry) must be absent")
+        }
+    }
+
+    func testParametersRejectForeignFormat() throws {
+        XCTAssertThrowsError(try ApplePrefilterParameters(
+            format: "legacy-sha256", bitCount: 24, hashCount: 3,
+            murmurSeed: 1, byteCount: 3,
+            sha256: String(repeating: "a", count: 64))) { error in
+            guard case ApplePrefilterParameters.ValidationError
+                .wrongFormat = error
+            else { return XCTFail("expected wrongFormat, got \(error)") }
+        }
+        // bit_count/bytes mismatch fails closed.
+        XCTAssertThrowsError(try ApplePrefilterParameters(
+            format: ApplePrefilterParameters.expectedFormat,
+            bitCount: 24, hashCount: 3, murmurSeed: 1, byteCount: 4,
+            sha256: String(repeating: "a", count: 64)))
+    }
+}
+
+// MARK: - Stage 10: DoH token provider lifecycle
+
+final class DohTokenProviderTests: XCTestCase {
+    let base = URL(string: "https://fixture.example")!
+    func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testMintCachesAndRefreshesNearExpiry() async throws {
+        var mints = 0
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        let lock = NSLock()
+        FixtureProtocol.handler = { request in
+            lock.lock(); mints += 1; lock.unlock()
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"),
+                           "kg_session=live")
+            return (200, [:], Data(
+                #"{"device_id":7,"credential":"tok-\#(UUID().uuidString)","scope":"doh","policy_id":1}"#
+                    .utf8))
+        }
+        let provider = DohTokenProvider(
+            issuer: CredentialIssuanceClient(baseURL: base,
+                                             session: session()),
+            deviceID: 7,
+            now: { clock },
+            sessionCookie: { "live" })
+        let first = try await provider.currentToken()
+        let second = try await provider.currentToken()
+        XCTAssertEqual(first, second, "fresh token is reused")
+        XCTAssertEqual(mints, 1, "no second mint while fresh")
+        // Advance past 75% of the fallback lifetime: next call renews.
+        clock = clock.addingTimeInterval(16 * 60)
+        let third = try await provider.currentToken()
+        XCTAssertNotEqual(third, first)
+        XCTAssertEqual(mints, 2)
+        provider.invalidate()
+        _ = try await provider.currentToken()
+        XCTAssertEqual(mints, 3, "invalidation forces a fresh mint")
+    }
+
+    func testConcurrentCallersShareOneMint() async throws {
+        var mints = 0
+        let lock = NSLock()
+        FixtureProtocol.handler = { _ in
+            lock.lock(); mints += 1; lock.unlock()
+            return (200, [:], Data(
+                #"{"device_id":7,"credential":"shared","scope":"doh","policy_id":1}"#
+                    .utf8))
+        }
+        let provider = DohTokenProvider(
+            issuer: CredentialIssuanceClient(baseURL: base,
+                                             session: session()),
+            deviceID: 7, sessionCookie: { "live" })
+        async let a = provider.currentToken()
+        async let b = provider.currentToken()
+        async let c = provider.currentToken()
+        let results = try await [a, b, c]
+        XCTAssertEqual(Set(results), ["shared"],
+                       "single-flight: concurrent callers share the mint")
+        XCTAssertEqual(mints, 1)
+    }
+
+    func testNoSessionFailsClosed() async throws {
+        let provider = DohTokenProvider(
+            issuer: CredentialIssuanceClient(baseURL: base,
+                                             session: session()),
+            deviceID: 7, sessionCookie: { nil })
+        do {
+            _ = try await provider.currentToken()
+            XCTFail("mint without a session succeeded")
+        } catch DohTokenProvider.TokenError.unauthorized {
+            // expected: fail closed, no token
+        }
+    }
+
+    func testServer401MapsToUnauthorized() async throws {
+        FixtureProtocol.handler = { _ in (401, [:], Data()) }
+        let provider = DohTokenProvider(
+            issuer: CredentialIssuanceClient(baseURL: base,
+                                             session: session()),
+            deviceID: 7, sessionCookie: { "stale" })
+        do {
+            _ = try await provider.currentToken()
+            XCTFail("401 mint succeeded")
+        } catch DohTokenProvider.TokenError.unauthorized {
+            // expected
+        }
+    }
+}
+
+// MARK: - Stage 10: DNS proxy relay (wire validation, fail closed)
+
+final class DNSProxyRelayTests: XCTestCase {
+    /// Minimal valid wire query: ID 0x1234, flags RD, one question.
+    func query(id: UInt16 = 0x1234) -> Data {
+        var q = Data([UInt8(id >> 8), UInt8(id & 0xFF),
+                      0x01, 0x00, 0x00, 0x01,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        q.append(contentsOf: [3]) // "www"
+        q.append(contentsOf: "www".utf8)
+        q.append(contentsOf: [0]) // root
+        q.append(contentsOf: [0x00, 0x01, 0x00, 0x01]) // A IN
+        return q
+    }
+
+    func testRejectsMalformedQueries() {
+        XCTAssertThrowsError(try DNSProxyRelay.validate(query: Data()))
+        var response = query()
+        response[2] = 0x81 // QR=1: a RESPONSE must never be relayed
+        XCTAssertThrowsError(try DNSProxyRelay.validate(query: response))
+        var truncated = query()
+        truncated[2] |= 0x02 // TC=1: truncated input is refused
+        XCTAssertThrowsError(
+            try DNSProxyRelay.validate(query: truncated))
+        var zeroQuestions = query()
+        zeroQuestions[5] = 0
+        XCTAssertThrowsError(
+            try DNSProxyRelay.validate(query: zeroQuestions))
+        var oversized = query()
+        oversized.append(Data(repeating: 0,
+                              count: DNSProxyRelay.maximumQueryBytes))
+        XCTAssertThrowsError(
+            try DNSProxyRelay.validate(query: oversized))
+    }
+
+    func testServfailMirrorsTransactionID() throws {
+        let servfail = try XCTUnwrap(
+            DNSProxyRelay.servfailResponse(to: query(id: 0xBEEF)))
+        XCTAssertEqual(servfail[0], 0xBE)
+        XCTAssertEqual(servfail[1], 0xEF)
+        XCTAssertEqual(servfail[2] & 0x80, 0x80, "QR set")
+        XCTAssertEqual(servfail[3] & 0x0F, 2, "RCODE = SERVFAIL")
+    }
+
+    func testRelayRejectsMismatchedTransactionID() async throws {
+        // A resolver answer under a different transaction ID is never
+        // handed to the client: SERVFAIL instead.
+        let answer = try XCTUnwrap(
+            DNSProxyRelay.servfailResponse(to: query(id: 0x9999)))
+        let result = await DNSProxyRelay.relay(query: query()) { _ in
+            answer
+        }
+        let relayed = try XCTUnwrap(result)
+        XCTAssertEqual(relayed[0], 0x12)
+        XCTAssertEqual(relayed[1], 0x34, "client sees the SERVFAIL, "
+                       + "not the foreign answer")
+        XCTAssertEqual(relayed[3] & 0x0F, 2)
+    }
+
+    func testRelayFailureIsServfailNeverEmpty() async throws {
+        let result = await DNSProxyRelay.relay(query: query()) { _ in
+            throw DNSProxyRelay.RelayRejection.tooSmall
+        }
+        let relayed = try XCTUnwrap(result)
+        XCTAssertEqual(relayed[3] & 0x0F, 2,
+                       "upstream failure answers SERVFAIL")
+    }
+}
+
+// MARK: - Stage 10: URL Filter prefilter source (fail closed)
+
+final class URLFilterPrefilterSourceTests: XCTestCase {
+    let fingerprint = "fixture-fingerprint"
+
+    func writeSnapshot(fingerprint: String? = nil,
+                       format: String = "apple-fnv1a-murmur3-doublehash-v1",
+                       bits: [UInt8] = [0xAB, 0xCD, 0xEF],
+                       corruptSHA: Bool = false,
+                       tamperBits: Bool = false) throws -> URL {
+        let hash = SHA256.hash(data: Data(bits)).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let manifest: [String: Any] = [
+            "version": 3, "rule_count": 1, "blocked_count": 1,
+            "provenance": "fixture",
+            "prefilter": [
+                "format": format,
+                "bit_count": 24, "hash_count": 3,
+                "murmur_seed": 1262944257,
+                "bytes": 3,
+                "sha256": corruptSHA
+                    ? String(repeating: "0", count: 64) : hash,
+            ],
+        ]
+        let snapshot: [String: Any] = [
+            "manifest": manifest,
+            "prefilter": Data(tamperBits ? [0x00, 0x00, 0x00] : bits)
+                .base64EncodedString(),
+            "endpointFingerprint": fingerprint ?? self.fingerprint,
+        ]
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try JSONSerialization.data(withJSONObject: snapshot)
+            .write(to: file)
+        return file
+    }
+
+    func testValidArtifactLoads() throws {
+        let file = try writeSnapshot()
+        defer { try? FileManager.default.removeItem(at: file) }
+        let artifact = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: fingerprint).load()
+        let a = try XCTUnwrap(artifact)
+        XCTAssertEqual(a.data, Data([0xAB, 0xCD, 0xEF]))
+        XCTAssertEqual(a.bitCount, 24)
+        XCTAssertEqual(a.hashCount, 3)
+        XCTAssertEqual(a.murmurSeed, 1262944257)
+        XCTAssertEqual(a.datasetVersion, 3)
+        XCTAssertEqual(a.tag, SHA256.hash(data: a.data).map {
+            String(format: "%02x", $0)
+        }.joined(), "tag is the SHA-256 of the bit array")
+    }
+
+    func testUnchangedTagMeansNoUpdate() throws {
+        let file = try writeSnapshot()
+        defer { try? FileManager.default.removeItem(at: file) }
+        let source = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: fingerprint)
+        let tag = try XCTUnwrap(source.load()).tag
+        XCTAssertNil(source.load(existingTag: tag),
+                     "same tag: the system needs no new prefilter")
+    }
+
+    func testFailClosedCases() throws {
+        // Missing file
+        XCTAssertNil(URLFilterPrefilterSource(
+            artifactFile: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString),
+            endpointFingerprint: fingerprint).load())
+        // Foreign identity
+        let foreign = try writeSnapshot(fingerprint: "other-server")
+        defer { try? FileManager.default.removeItem(at: foreign) }
+        XCTAssertNil(URLFilterPrefilterSource(
+            artifactFile: foreign,
+            endpointFingerprint: fingerprint).load(),
+            "a foreign server's artifact is never served")
+        // Wrong format
+        let legacy = try writeSnapshot(format: "legacy-sha256")
+        defer { try? FileManager.default.removeItem(at: legacy) }
+        XCTAssertNil(URLFilterPrefilterSource(
+            artifactFile: legacy,
+            endpointFingerprint: fingerprint).load())
+        // Manifest sha256 that is not the artifact's hash
+        let corrupt = try writeSnapshot(corruptSHA: true)
+        defer { try? FileManager.default.removeItem(at: corrupt) }
+        XCTAssertNil(URLFilterPrefilterSource(
+            artifactFile: corrupt,
+            endpointFingerprint: fingerprint).load())
+        // Bytes tampered after a valid manifest
+        let tampered = try writeSnapshot(tamperBits: true)
+        defer { try? FileManager.default.removeItem(at: tampered) }
+        XCTAssertNil(URLFilterPrefilterSource(
+            artifactFile: tampered,
+            endpointFingerprint: fingerprint).load())
+        // Empty current identity: never bind
+        let file = try writeSnapshot()
+        defer { try? FileManager.default.removeItem(at: file) }
+        XCTAssertNil(URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: "").load())
+    }
+}
+
+// MARK: - Stage 10: PIR configuration pair validation
+
+final class PIRConfigurationTests: XCTestCase {
+    func testPIRPairIsBothOrNeither() {
+        let name = "kg-test-\(UUID())"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        var dict: [String: Any] = [
+            "controlPlaneBaseURL": "https://fixture.example",
+            "deviceID": 7,
+        ]
+        defaults.set(dict, forKey: "com.apple.configuration.managed")
+        var config = AppConfiguration.managed(defaults: defaults)
+        XCTAssertNil(config.pirServerURL)
+        XCTAssertNil(config.pirPrivacyPassIssuerURL)
+        // Only one PIR key: the pair is invalid - BOTH drop (a
+        // half-configured URL Filter must never reach the system).
+        dict["pirServerURL"] = "https://pir.fixture.example"
+        defaults.set(dict, forKey: "com.apple.configuration.managed")
+        config = AppConfiguration.managed(defaults: defaults)
+        XCTAssertNil(config.pirServerURL, "lone PIR server is dropped")
+        XCTAssertNil(config.pirPrivacyPassIssuerURL)
+        // Complete pair over HTTPS: kept.
+        dict["pirPrivacyPassIssuerURL"] =
+            "https://issuer.fixture.example"
+        defaults.set(dict, forKey: "com.apple.configuration.managed")
+        config = AppConfiguration.managed(defaults: defaults)
+        XCTAssertEqual(config.pirServerURL?.host,
+                       "pir.fixture.example")
+        XCTAssertEqual(config.pirPrivacyPassIssuerURL?.host,
+                       "issuer.fixture.example")
+        // HTTP PIR endpoints are refused like every other endpoint.
+        dict["pirServerURL"] = "http://pir.fixture.example"
+        defaults.set(dict, forKey: "com.apple.configuration.managed")
+        config = AppConfiguration.managed(defaults: defaults)
+        XCTAssertNil(config.pirServerURL)
+        XCTAssertNil(config.pirPrivacyPassIssuerURL)
     }
 }
