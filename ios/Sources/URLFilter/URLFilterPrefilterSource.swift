@@ -50,7 +50,19 @@ struct URLFilterPrefilterSource {
     /// `existingTag` is the system's current prefilter tag: when it
     /// matches the artifact's tag the system needs no update and the
     /// caller returns nil-for-no-change instead.
-    func load(existingTag: String? = nil) -> Artifact? {
+    /// The tri-state the control provider needs: a valid artifact,
+    /// an explicitly-unchanged tag (Apple's nil-for-no-change), or an
+    /// INVALID state (missing, corrupt, foreign identity, wrong
+    /// format, hash mismatch). Callers must never collapse .invalid
+    /// into "no change": that would silently retain a previous
+    /// identity's prefilter as current policy.
+    enum LoadResult: Equatable {
+        case artifact(Artifact)
+        case unchanged
+        case invalid
+    }
+
+    func loadResult(existingTag: String? = nil) -> LoadResult {
         guard let raw = try? Data(contentsOf: artifactFile),
               let snapshot = try? JSONDecoder().decode(
                   PrefilterUpdater.Snapshot.self, from: raw),
@@ -59,16 +71,27 @@ struct URLFilterPrefilterSource {
               snapshot.manifest.version > 0,
               let params = try? snapshot.manifest.appleParameters(),
               snapshot.prefilter.count == params.byteCount
-        else { return nil }
+        else { return .invalid }
         let digest = SHA256.hash(data: snapshot.prefilter)
             .map { String(format: "%02x", $0) }.joined()
-        guard digest == params.sha256 else { return nil }
-        guard existingTag != params.sha256 else { return nil }
-        return Artifact(data: snapshot.prefilter,
+        guard digest == params.sha256 else { return .invalid }
+        guard existingTag != params.sha256 else { return .unchanged }
+        return .artifact(Artifact(data: snapshot.prefilter,
                         tag: params.sha256,
                         bitCount: params.bitCount,
                         hashCount: params.hashCount,
                         murmurSeed: params.murmurSeed,
-                        datasetVersion: snapshot.manifest.version)
+                        datasetVersion: snapshot.manifest.version))
+    }
+
+    /// Convenience for callers that only need pass/fail-closed:
+    /// nil for BOTH unchanged and invalid. The control provider uses
+    /// loadResult so it can fail closed on .invalid instead.
+    func load(existingTag: String? = nil) -> Artifact? {
+        if case .artifact(let artifact) = loadResult(
+            existingTag: existingTag) {
+            return artifact
+        }
+        return nil
     }
 }

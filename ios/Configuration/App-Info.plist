@@ -28,5 +28,27 @@
 	</dict>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<!-- NSPIRConfiguration: REQUIRED top-level declaration of the URL
+	     Filter's PIR endpoints (grounded in Apple's PIR-service
+	     onboarding documentation, apple/pir-service-example
+	     Onboarding.md, read 2026-11-17). PIRServerURL is required;
+	     PrivacyPassIssuerURL is optional and defaults to PIRServerURL
+	     when absent. Hosts only - no paths, query or custom ports.
+	     From iOS/macOS 27.3 the system REJECTS any mismatch between
+	     these values and the ones passed to
+	     NEURLFilterManager.setConfiguration, so the MDM-pushed managed
+	     configuration's PIR pair must name the SAME hosts.
+	     PLACEHOLDER hosts: replace both with the real deployment
+	     hosts during the Apple onboarding step (the onboarding form
+	     asks for exactly these URLs, plus a DNS TXT record
+	     apple-url-filter=<app bundle id> on the service host). Until
+	     then the URL Filter cannot be enabled on any device. -->
+	<key>NSPIRConfiguration</key>
+	<dict>
+		<key>PIRServerURL</key>
+		<string>https://pir.kosherguard.example.com</string>
+		<key>PrivacyPassIssuerURL</key>
+		<string>https://issuer.kosherguard.example.com</string>
+	</dict>
 </dict>
 </plist>

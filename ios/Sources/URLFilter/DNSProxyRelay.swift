@@ -45,9 +45,12 @@ enum DNSProxyRelay {
         let flags = query[query.index(query.startIndex, offsetBy: 2)]
         // QR bit (0x80) must be clear: this is a query, not a looped
         // response; TC (0x02) set means the query was already
-        // truncated and reassembly is not this layer's job.
+        // truncated and reassembly is not this layer's job. Opcode
+        // (bits 0x78) must be 0 (standard QUERY): NOTIFY/UPDATE/etc.
+        // are not resolver lookups and never reach DoH.
         guard flags & 0x80 == 0 else { throw RelayRejection.notAQuery }
         guard flags & 0x02 == 0 else { throw RelayRejection.truncationSet }
+        guard flags & 0x78 == 0 else { throw RelayRejection.notAQuery }
         let qdcount = (Int(query[query.index(query.startIndex, offsetBy: 4)]) << 8)
             | Int(query[query.index(query.startIndex, offsetBy: 5)])
         guard qdcount >= 1 else { throw RelayRejection.noQuestion }

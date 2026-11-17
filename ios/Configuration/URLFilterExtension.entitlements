@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- STATUS: UNVERIFIED - hand-authored, never compiled or signed.
+     The "url-filter-provider" value of
+     com.apple.developer.networking.networkextension requires Apple's
+     capability approval for the App ID (WWDC25 session 234;
+     developer-forum reports 2026-02 confirm App Store export rejects
+     the value until the capability is granted). The app group matches
+     the app and other extensions so the provider can read the
+     identity-bound prefilter snapshot. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>url-filter-provider</string>
+	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.kosherguard.shared</string>
+	</array>
+</dict>
+</plist>

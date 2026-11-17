@@ -64,53 +64,61 @@ final class DohTokenProvider {
 
     /// A currently valid token, minting or renewing as needed.
     func currentToken() async throws -> String {
-        if let task: Task<(String, Date), Error> = lock.withLock({ () -> Task<(String, Date), Error>? in
-            if let inFlight { return inFlight }
-            if let cached, now() < cached.expiresAt {
-                return nil // fresh enough; answered below
-            }
-            let task = Task { [issuer, deviceID, now, sessionCookie] in
-                guard let cookie = sessionCookie(), !cookie.isEmpty else {
-                    throw TokenError.unauthorized
+        // Loop: if invalidate() lands between the freshness check and
+        // the cached-token read, the read finds no cache - mint anew
+        // instead of reporting a spurious failure.
+        while true {
+            if let task: Task<(String, Date), Error> = lock.withLock({ () -> Task<(String, Date), Error>? in
+                if let inFlight { return inFlight }
+                if let cached, now() < cached.expiresAt {
+                    return nil // fresh enough; answered below
                 }
-                let minted = try await issuer.mint(deviceID: deviceID,
-                                                   scope: .doh,
-                                                   sessionCookie: cookie)
-                return (minted.token,
-                        now() + Self.lifetime(of: minted))
-            }
-            inFlight = task
-            return task
-        }) {
-            do {
-                let (token, expiresAt) = try await task.value
-                lock.withLock {
-                    cached = (token, expiresAt)
-                    inFlight = nil
+                let task = Task { [issuer, deviceID, now, sessionCookie] in
+                    guard let cookie = sessionCookie(), !cookie.isEmpty else {
+                        throw TokenError.unauthorized
+                    }
+                    let minted = try await issuer.mint(deviceID: deviceID,
+                                                       scope: .doh,
+                                                       sessionCookie: cookie)
+                    return (minted.token,
+                            now() + Self.lifetime(of: minted))
                 }
-                return token
-            } catch let error as CredentialIssuanceClient.IssuanceError {
-                lock.withLock { inFlight = nil }
-                switch error {
-                case .unauthorized, .deviceNotFound, .noEffectivePolicy:
-                    throw TokenError.unauthorized
-                default:
+                inFlight = task
+                return task
+            }) {
+                do {
+                    let (token, expiresAt) = try await task.value
+                    lock.withLock {
+                        cached = (token, expiresAt)
+                        inFlight = nil
+                    }
+                    return token
+                } catch let error as CredentialIssuanceClient.IssuanceError {
+                    lock.withLock { inFlight = nil }
+                    switch error {
+                    case .unauthorized, .deviceNotFound, .noEffectivePolicy:
+                        throw TokenError.unauthorized
+                    default:
+                        throw TokenError.unavailable
+                    }
+                } catch let error as TokenError {
+                    lock.withLock { inFlight = nil }
+                    throw error
+                } catch {
+                    lock.withLock { inFlight = nil }
                     throw TokenError.unavailable
                 }
-            } catch let error as TokenError {
-                lock.withLock { inFlight = nil }
-                throw error
-            } catch {
-                lock.withLock { inFlight = nil }
-                throw TokenError.unavailable
             }
-        }
-        // Fresh cached token (answered outside the lock).
-        return try lock.withLock {
-            guard let cached, now() < cached.expiresAt else {
-                throw TokenError.unavailable // unreachable: re-checked
+            // Fresh cached token (answered outside the lock). If the
+            // cache was invalidated between the two locks, loop and
+            // mint - never a spurious failure.
+            if let token = lock.withLock({ () -> String? in
+                guard let cached, now() < cached.expiresAt
+                else { return nil }
+                return cached.token
+            }) {
+                return token
             }
-            return cached.token
         }
     }
 

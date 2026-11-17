@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- STATUS: UNVERIFIED - hand-authored approximation, never opened in
+     Xcode. The URL Filter app extension MUST be created from Xcode
+     26's "URL Filter app extension template" (WWDC25 session 234);
+     the template generates the exact NSExtension entry, and its
+     NSExtensionPointIdentifier value must replace the placeholder
+     below before any build is claimed. Sources consulted 2026-11-17
+     do not publish the template's identifier; candidates seen in
+     developer-forum reports were rejected at App Store export only
+     because the url-filter-provider capability was not yet approved
+     for those App IDs, which does not confirm the identifier either
+     way. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSExtension</key>
+	<dict>
+		<!-- PLACEHOLDER: replace with the identifier the Xcode 26
+		     URL Filter template generates (see header comment). -->
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.networkextension.url-filter</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).URLFilterControlProvider</string>
+	</dict>
+</dict>
+</plist>

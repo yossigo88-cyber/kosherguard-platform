@@ -32,15 +32,16 @@ struct URLFilterConfiguration {
     /// call - a captured configuration is never authoritative.
     ///
     /// - controlProviderBundleIdentifier: the bundle ID of the
-    ///   control-provider extension target that serves the prefilter
-    ///   (KosherGuardFilterControl).
+    ///   DEDICATED URL Filter extension target (KosherGuardURLFilter)
+    ///   whose entry point conforms to NEURLFilterControlProvider -
+    ///   NOT the NEFilterControlProvider extension.
     /// - shouldFailClosed: policy default TRUE. When the off-device
     ///   PIR lookup cannot complete, the system blocks rather than
     ///   silently allowing uncategorized content past the filter.
     static func enable(
         from configuration: AppConfiguration,
         controlProviderBundleIdentifier: String =
-            "com.kosherguard.app.FilterControlExtension",
+            "com.kosherguard.app.URLFilterExtension",
         prefilterFetchInterval: TimeInterval = 3600,
         shouldFailClosed: Bool = true
     ) async throws {
@@ -49,6 +50,35 @@ struct URLFilterConfiguration {
         }
         guard let issuer = configuration.pirPrivacyPassIssuerURL else {
             throw ConfigurationError.notConfigured("pirPrivacyPassIssuerURL")
+        }
+        // NSPIRConfiguration (grounded in Apple's PIR-service
+        // onboarding documentation, read 2026-11-17): the app
+        // Info.plist statically declares the PIR endpoints; from
+        // iOS/macOS 27.3 the system REJECTS any mismatch between
+        // these runtime values and the plist. Validate the match
+        // here so a misconfigured deployment fails at enable time
+        // with a clear error instead of a system rejection later.
+        if let declared = Bundle.main.object(
+            forInfoDictionaryKey: "NSPIRConfiguration")
+            as? [String: Any] {
+            if let declaredPIR = declared["PIRServerURL"] as? String,
+               let declaredURL = URL(string: declaredPIR),
+               declaredURL.host(percentEncoded: false)
+                    != pirServer.host(percentEncoded: false) {
+                throw ConfigurationError.notConfigured(
+                    "pirServerURL does not match the Info.plist "
+                    + "NSPIRConfiguration.PIRServerURL")
+            }
+            if let declaredIssuer =
+                    declared["PrivacyPassIssuerURL"] as? String,
+               let declaredURL = URL(string: declaredIssuer),
+               declaredURL.host(percentEncoded: false)
+                    != issuer.host(percentEncoded: false) {
+                throw ConfigurationError.notConfigured(
+                    "pirPrivacyPassIssuerURL does not match the "
+                    + "Info.plist NSPIRConfiguration."
+                    + "PrivacyPassIssuerURL")
+            }
         }
         let manager = NEURLFilterManager.shared
         try await manager.loadFromPreferences()
@@ -74,6 +104,35 @@ struct URLFilterConfiguration {
     }
 
     static func disableFilter() async throws {
+        // NSPIRConfiguration (grounded in Apple's PIR-service
+        // onboarding documentation, read 2026-11-17): the app
+        // Info.plist statically declares the PIR endpoints; from
+        // iOS/macOS 27.3 the system REJECTS any mismatch between
+        // these runtime values and the plist. Validate the match
+        // here so a misconfigured deployment fails at enable time
+        // with a clear error instead of a system rejection later.
+        if let declared = Bundle.main.object(
+            forInfoDictionaryKey: "NSPIRConfiguration")
+            as? [String: Any] {
+            if let declaredPIR = declared["PIRServerURL"] as? String,
+               let declaredURL = URL(string: declaredPIR),
+               declaredURL.host(percentEncoded: false)
+                    != pirServer.host(percentEncoded: false) {
+                throw ConfigurationError.notConfigured(
+                    "pirServerURL does not match the Info.plist "
+                    + "NSPIRConfiguration.PIRServerURL")
+            }
+            if let declaredIssuer =
+                    declared["PrivacyPassIssuerURL"] as? String,
+               let declaredURL = URL(string: declaredIssuer),
+               declaredURL.host(percentEncoded: false)
+                    != issuer.host(percentEncoded: false) {
+                throw ConfigurationError.notConfigured(
+                    "pirPrivacyPassIssuerURL does not match the "
+                    + "Info.plist NSPIRConfiguration."
+                    + "PrivacyPassIssuerURL")
+            }
+        }
         let manager = NEURLFilterManager.shared
         try await manager.loadFromPreferences()
         manager.isEnabled = false

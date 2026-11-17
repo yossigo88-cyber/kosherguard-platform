@@ -267,6 +267,13 @@ final class CredentialController {
 final class FilterSyncViewModel {
     private(set) var stateDescription: String = "Not synced yet"
     private(set) var canSync = false
+    /// URL Filter enablement as last attempted by this process:
+    /// honest to what the app DID, not to system state it cannot
+    /// observe without device APIs. Starts at notInstalled; a
+    /// successful enable() moves it to enabled, a successful disable
+    /// or a configuration without the PIR pair moves it back.
+    private(set) var urlFilterState: FilterStatus.ExtensionState =
+        .notInstalled
     private var controller: FilterSyncController?
     private var configObserver: NSObjectProtocol?
 
@@ -327,12 +334,21 @@ final class FilterSyncViewModel {
                        confirmed.pirPrivacyPassIssuerURL != nil {
                         try await URLFilterConfiguration.enable(
                             from: confirmed)
+                        await MainActor.run {
+                            self.urlFilterState = .enabled
+                        }
                     } else {
                         try await URLFilterConfiguration.disableFilter()
+                        await MainActor.run {
+                            self.urlFilterState = .notInstalled
+                        }
                     }
                 } catch {
                     store?.recordStatus("URL Filter configuration "
                         + "failed: \(error)")
+                    await MainActor.run {
+                        self.urlFilterState = .failed
+                    }
                 }
             }
             await MainActor.run {
@@ -449,10 +465,12 @@ struct KosherGuardApp: App {
 struct FilterStatusView: View {
     @Environment(CredentialController.self) private var credentials
     @Environment(FilterSyncViewModel.self) private var sync
-    @State private var status = FilterStatus(
-        extensionState: .notInstalled,
-        prefilterVersion: nil,
-        enrollmentState: "Not enrolled")
+    private var status: FilterStatus {
+        FilterStatus(
+            extensionState: sync.urlFilterState,
+            prefilterVersion: nil,
+            enrollmentState: "Not enrolled")
+    }
 
     var body: some View {
         NavigationStack {
