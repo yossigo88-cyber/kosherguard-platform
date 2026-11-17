@@ -19,7 +19,8 @@ Honored: no purchases, no secrets exposed (token value never printed; vault file
 Source: https://docs.github.com/en/billing/concepts/product-billing/github-actions (fetched 2026-11-17):
 - "Standard GitHub-hosted runners in public repositories" are listed as free usage; "Public repositories: This usage remains free."
 - "Larger runners are billed for public repositories" - so the standard `macos-26` label must be used, never a larger runner label.
-- Artifact storage: the build log artifact uses the plan's included storage allowance; a single xcodebuild log is a few MB, far inside the free allowance.
+- Compute: explicitly free for public repositories on standard runners.
+- Artifact storage: the docs' included GitHub Free allowance is 500 MB (shared with Packages); the workflow stores ONE xcodebuild.log (a few MB) with 30-day retention - a tiny fraction of the free allowance. This is a bounded footprint, not an open-ended "$0 regardless of usage" claim.
 
 Conclusion: runner cost is $0 for this public repository on `macos-26`. No payment method or billing change is needed.
 
@@ -67,18 +68,19 @@ Required vs not required, for the Stage 12 goal:
 | --- | --- | --- |
 | Push a commit that adds/updates `.github/workflows/*.yml` (git HTTPS) | **Workflows: write** | YES - this is the exact rejection in section 4 |
 | Trigger runs by pushing commits | (none beyond the push itself) | NO extra permission |
-| Read run status/logs/artifacts via API so the agent can capture actual Xcode results | **Actions: read** | Recommended; without it the user must read results in the web UI |
+| Read run status/logs/artifacts so the agent can capture actual Xcode results | none on a public repo | NO - verified 2026-11-17: UNAUTHENTICATED `GET /repos/yossigo88-cyber/kosherguard-platform/actions/workflows` and `/actions/runs` both return HTTP 200, so results are readable anonymously (also in the web UI) |
 | Manual re-run / workflow_dispatch / cancel | Actions: write | NO - optional; pushing another commit retriggers |
 
-**Minimum proposed change: add `Workflows: write` and `Actions: read` to the existing fine-grained token, same selected repositories, nothing else.** No organization permissions, no Secrets access, no Contents change, no new repos. `Actions: write` is NOT needed.
+**Minimum proposed change: add ONLY `Workflows: write` to the existing fine-grained token, same selected repositories, nothing else.** No Actions permission needed, no organization permissions, no Secrets access, no Contents change, no new repos.
+
+Token verification (2026-11-17): the existing "GitHub KosherGuard token" is confirmed a FINE-GRAINED PAT (github_pat_ prefix, verified programmatically without printing the value). Its Contents: write is proven working by the successful Stage 11/12 pushes; its lack of workflow-file write is proven by the section-4 rejection. Whether it holds Actions: read is untestable from outside (public repo allows anonymous reads) and irrelevant per the table.
 
 Zero-permission-change alternative: the user creates `.github/workflows/ios-unsigned-build.yml` through the GitHub web UI (web sessions may commit workflow files). The agent could then still not read run results without `Actions: read`, and any later workflow edit by the agent would still be rejected - so this only defers the same decision.
 
 ## 6. Decision requested from the user (no change made)
 
 Proposed, exact: on the existing "GitHub KosherGuard token" (fine-grained, this repo already selected):
-1. Add **Workflows: write** - lets the agent push the workflow file and future workflow fixes.
-2. Add **Actions: read** - lets the agent read run results and the xcodebuild log to report actual compilation errors.
+1. Add **Workflows: write** - lets the agent push the workflow file and future workflow fixes. That is the ONLY permission change requested.
 
 If approved, the user updates the token in GitHub settings (or replaces it in the vault); the agent does not touch the token itself.
 
