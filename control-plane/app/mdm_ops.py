@@ -10,7 +10,6 @@ never from a successful enqueue or send.
 from __future__ import annotations
 
 import json
-import re
 import sys
 import os
 import uuid
@@ -182,16 +181,11 @@ def issue_command(session: Session, tenant_id: int, enrollment_pk: int,
     return row
 
 
-_SECRETISH = re.compile(
-    r"(?i)(bearer\s+|token|api[-_]?key|secret|password|credential|"
-    r"authorization)(\s*[=:]\s*)(\S+)")
-
-
 def sanitize_adapter_error(exc: Exception) -> str:
     """Adapter exception text can carry credentials (API keys in URLs
     or headers, bearer tokens). What is stored in the command ledger is
-    the exception class plus a REDACTED, truncated message: useful for
-    diagnosis, never secret-bearing."""
+    the exception class plus an allowlisted failure category. Raw
+    exception text is withheld, never stored or displayed."""
     # Free-form adapter messages can embed PEMs, URLs or unknown secret
     # formats. Deny by default rather than guessing every secret syntax.
     message = str(exc).lower()
