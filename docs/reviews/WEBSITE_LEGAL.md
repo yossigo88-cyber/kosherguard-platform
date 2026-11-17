@@ -12,9 +12,13 @@ DNS - deployment is out of scope and gated). Pages:
   customer login (`/portal/`) and a SEPARATE administrator login
   (`/web/`).
 - `support.html` - support channels (Answer 34): in-product support
-  requests, verified email support, escalation to an authorized
-  administrator; states support cannot casually remove protection and
-  advertises no hours or 24/7 service.
+  requests (WORKING: the family portal now carries a support form
+  posting to the real /api/support/requests API with a live request
+  list), verified email support (channel metadata only - the address
+  is delivered with the invitation; no outbound email integration is
+  claimed), escalation to an authorized administrator; states support
+  cannot casually remove protection and advertises no hours or 24/7
+  service.
 - `enrollment.html` - enrollment information, including the honest
   Apple-side limitations (approval pending, no real-device validation
   yet, restore/Activation Lock/eSIM not promised).
@@ -25,7 +29,7 @@ DNS - deployment is out of scope and gated). Pages:
 English initially. No untested capabilities or unsupported marketing
 claims: pre-launch status is stated on every page; enrollment claims
 carry the Apple-pending disclaimer. Structural tests:
-`control-plane/tests/test_website.py` (8 tests).
+`control-plane/tests/test_website.py` (10 tests, incl. serving-configuration routing for /, /portal/, /web/ and the portal support form).
 
 ## Answer 32 - legal and privacy documents
 
