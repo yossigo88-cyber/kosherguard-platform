@@ -89,18 +89,25 @@ def approval_json(a: SensitiveCommandApproval, session=None) -> dict:
     if session is not None:
         # An approver must see WHO asked and WHICH device is targeted
         # before approving - not just a request id and free text. Both
-        # are same-tenant rows: the approval list is already scoped to
-        # the caller's tenant, so this adds no cross-tenant disclosure.
+        # must be INDEPENDENTLY re-verified as same-tenant rows here:
+        # the approval record alone is not proof that the enrollment
+        # it references belongs to this tenant. A mismatched row is
+        # never disclosed (no name, UDID or enrollment ID) - the field
+        # is simply omitted.
         requester = session.get(User, a.requested_by_user_id)
+        if requester is not None and requester.tenant_id != a.tenant_id:
+            requester = None
         body["requested_by_email"] = requester.email if requester else None
         device_label = None
         if a.enrollment_pk is not None:
             enrollment = session.get(MDMEnrollment, a.enrollment_pk)
-            if enrollment is not None:
+            if (enrollment is not None
+                    and enrollment.tenant_id == a.tenant_id):
                 device = session.get(Device, enrollment.device_id)
-                name = device.name if device else None
-                udid = enrollment.device_udid or enrollment.enrollment_id
-                device_label = f"{name} ({udid})" if name else udid
+                if device is not None and device.tenant_id == a.tenant_id:
+                    name = device.name
+                    udid = enrollment.device_udid or enrollment.enrollment_id
+                    device_label = f"{name} ({udid})" if name else udid
         body["device"] = device_label
     return body
 
@@ -124,9 +131,16 @@ def register_staff_routes(app, *, error, current_user, db_session,
     @app.get("/api/mdm/sensitive-approvals")
     def sensitive_list(user: User = Depends(current_user),
                        session=Depends(db_session)):
-        denied = require_guardian(user)
-        if denied is not None:
-            return denied
+        # Viewing sensitive approvals requires the SAME authority as
+        # deciding them (Answer 25): tenant owners and platform
+        # owners/security administrators. An ordinary guardian's device
+        # delegation is NOT sensitive-operation authority, and
+        # support/read-only staff stay out even with a tenant owner
+        # role; a security administrator's tenant viewer role does not
+        # block their staff authority.
+        if not sensitive_privileged(user):
+            return error(403, "sensitive approvals require owner or "
+                              "security-administrator authority")
         rows = session.scalars(select(SensitiveCommandApproval).where(
             SensitiveCommandApproval.tenant_id == user.tenant_id)
             .order_by(SensitiveCommandApproval.id.desc()).limit(100)).all()
@@ -154,6 +168,8 @@ def register_staff_routes(app, *, error, current_user, db_session,
             .with_for_update())
         if a is None or a.tenant_id != user.tenant_id:
             return error(404, "approval not found")
+        if a.status == "expired":
+            return error(410, "approval expired; request it again")
         if a.status != "pending":
             return error(409, f"approval already {a.status}")
         exp = a.expires_at
@@ -179,23 +195,38 @@ def register_staff_routes(app, *, error, current_user, db_session,
         a.decided_at = utcnow()
         if a.operation == "EraseDevice":
             try:
+                # Re-validates the enrollment (tenant ownership AND
+                # current state) at queue time, not request time.
                 row = mdm_ops.issue_command(
                     session, a.tenant_id, a.enrollment_pk, a.operation,
                     json.loads(a.payload or "{}"), user.id,
                     adapter=make_adapter(), allow_destructive=True)
-                a.status = "executed"
-                a.decision_detail = f"device command {row.id} queued ({row.status})"
+                # Honest lifecycle: the command is in the server
+                # queue. It is EXECUTED only when the device itself
+                # acknowledges it, which this approval cannot know -
+                # so the approval never says "executed".
+                a.status = "approved_command_queued"
+                a.decision_detail = (
+                    f"approved; device command {row.id} recorded in the "
+                    f"server command queue (ledger status {row.status}); "
+                    "execution is confirmed only by a later device "
+                    "acknowledgement, which is not claimed here")
             except mdm_ops.MDMError as exc:
+                a.status = "approved"
                 a.decision_detail = f"approved; queueing failed: {exc}"
         else:
             # ABM release / protection removal / certificate operation:
             # no live integration in this build. The approval is the
             # audited authorization record; an operator performs the
             # external step per the runbook. This is NOT implemented
-            # functionality - the decision detail says so explicitly.
-            a.status = "executed"
-            a.decision_detail = ("approved; platform-level operation recorded - "
-                                 "operator runbook required (no live ABM/certificate integration)")
+            # functionality and is NEVER labeled executed: a manual
+            # action is still required.
+            a.status = "approved_manual_action_required"
+            a.decision_detail = (
+                "approved; a manual operator step is still required "
+                "per the documented runbook (no live ABM/certificate "
+                "integration in this build); the operation is NOT "
+                "executed")
         ScopedSession(session, a.tenant_id).audit(
             "mdm.sensitive.approve",
             f"{a.operation} approved by user {user.id}: {a.decision_detail}",
@@ -208,13 +239,35 @@ def register_staff_routes(app, *, error, current_user, db_session,
     def sensitive_reject(approval_id: int, body: SensitiveDecisionBody,
                          user: User = Depends(current_user),
                          session=Depends(db_session)):
+        """Rejection is a sensitive decision too: the SAME row lock,
+        the SAME expiry handling and the SAME fresh verification +
+        explicit confirmation as approval. The lock makes approval and
+        rejection mutually exclusive under any interleaving: whichever
+        transaction commits first wins, and the other sees the final
+        status. The requester may withdraw (reject) their own pending
+        request; the audit records the actual decider either way."""
         if not sensitive_privileged(user):
             return error(403, "destructive operations are not available to this role")
-        a = session.get(SensitiveCommandApproval, approval_id)
+        a = session.scalar(select(SensitiveCommandApproval).where(
+            SensitiveCommandApproval.id == approval_id)
+            .with_for_update())
         if a is None or a.tenant_id != user.tenant_id:
             return error(404, "approval not found")
+        if a.status == "expired":
+            return error(410, "approval expired; request it again")
         if a.status != "pending":
             return error(409, f"approval already {a.status}")
+        exp = a.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= utcnow():
+            a.status = "expired"
+            session.commit()
+            return error(410, "approval expired; request it again")
+        bad = fresh_check(error, user, body.totp_code, body.confirm,
+                          a.operation)
+        if bad is not None:
+            return bad
         a.status = "rejected"
         a.decided_by_user_id = user.id
         a.decided_at = utcnow()
@@ -300,11 +353,23 @@ def register_staff_routes(app, *, error, current_user, db_session,
                 new_role = StaffRole(new_role).value
             except ValueError:
                 return error(400, "unknown staff role")
-        owners = [u for u in session.scalars(select(User).where(
-            User.staff_role == StaffRole.owner.value)).all()]
         if (target.staff_role == StaffRole.owner.value
-                and new_role != StaffRole.owner.value and len(owners) <= 1):
-            return error(409, "cannot demote or revoke the last staff owner")
+                and new_role != StaffRole.owner.value):
+            # The last-owner invariant under CONCURRENT demotions:
+            # lock the whole staff-owner set FIRST (a consistent lock
+            # order - owner set before individual rows - so two owners
+            # demoting each other serialize instead of deadlocking or
+            # both succeeding), then re-read the target under lock.
+            owners = list(session.scalars(select(User).where(
+                User.staff_role == StaffRole.owner.value)
+                .with_for_update()).all())
+            target = session.get(User, user_id, with_for_update=True)
+            if target.staff_role != StaffRole.owner.value:
+                return error(409, "target is no longer a staff owner")
+            if len(owners) <= 1:
+                return error(409, "cannot demote or revoke the last staff owner")
+        else:
+            target = session.get(User, user_id, with_for_update=True)
         old = target.staff_role
         target.staff_role = new_role
         ScopedSession(session, target.tenant_id).audit(
