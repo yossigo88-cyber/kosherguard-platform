@@ -26,6 +26,8 @@ h2 { margin-bottom:.4rem; }
 @media (max-width: 640px) {
   table { display: block; overflow-x: auto; }
 }
+body.ro section.panel:not(#account-panel):not(#signout-panel) form,
+body.ro section.panel:not(#account-panel):not(#signout-panel) button { display: none; }
 </style>
 </head>
 <body>
@@ -325,8 +327,10 @@ h2 { margin-bottom:.4rem; }
     <p class="muted">Destructive device operations need a second
     privileged approver who is not the requester. Approving requires a
     current authenticator code and typing the operation name; approval
-    executes exactly the recorded operation on the recorded device -
-    nothing else. Requests expire and are single-use.</p>
+    applies to exactly the recorded operation on the recorded device -
+    nothing else. Approving queues the command to the device; it is not
+    proof the device completed it, and acknowledgement is tracked
+    separately. Requests expire and are single-use.</p>
     <table id="approvals-table">
       <thead><tr><th>ID</th><th>Operation</th><th>Device</th><th>Requested by</th><th>Status</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
       <tbody></tbody>
@@ -337,7 +341,7 @@ h2 { margin-bottom:.4rem; }
         <label>Authenticator code <input id="ap-totp" inputmode="numeric" required></label>
         <label>Type the operation name to confirm <input id="ap-confirm" required></label>
         <label>Note (optional) <input id="ap-reason"></label>
-        <button type="submit" name="decision" value="approve">Approve and execute</button>
+        <button type="submit" name="decision" value="approve">Approve and queue</button>
         <button type="submit" name="decision" value="reject">Reject</button>
         <span class="error" id="approval-error"></span>
         <span class="ok" id="approval-ok"></span>
@@ -472,4 +476,4 @@ h2 { margin-bottom:.4rem; }
 </main>
 <script src="/web/app.js"></script>
 </body>
-  </html>
+</html>
