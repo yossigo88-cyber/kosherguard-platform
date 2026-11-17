@@ -16,9 +16,9 @@ Legend: [ ] not started, [~] in progress / partially implemented,
 user instruction.
 
 Current verification state (all suites green at the head this file
-ships with): control-plane 356, filtering-engine 337, dns-edge 87,
+ships with): control-plane 364, filtering-engine 337, dns-edge 87,
 mdm 64, proxy-edge 38, url-filter-server 38, category-pipeline 6,
-dashboard 276 - 1,202 tests total, plus three committed load-test
+dashboard 276 - 1,210 tests total, plus three committed load-test
 harnesses (docs/reviews/LOAD_TEST.md).
 
 ## Milestone map (all eight complete through this branch)
@@ -35,7 +35,7 @@ harnesses (docs/reviews/LOAD_TEST.md).
   server (38 tests). DONE except the Apple-blocked native app
 - M6: Operations - structured request logs (no secrets), /health/depth,
   staff-only /metrics, backup/restore runbook + tested scripts. DONE
-- M7: Full testing - 1,202 automated tests across 8 components, security
+- M7: Full testing - 1,210 automated tests across 8 components, security
   negatives, tenant isolation, concurrency, load harnesses. DONE
 - M8: Final delivery - documentation, limitation list, handoff. IN
   PROGRESS (this refresh; final security report and handoff package)
@@ -76,7 +76,7 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 14 | Security | [x] | MFA everywhere privileged (fresh TOTP + typed confirmation for sensitive ops), hashed sessions, tenant isolation, read_only staff choke point, credential redaction, security-negative tests; final security report pending in M8 |
 | 15 | Hosting and infrastructure | [x] config, [O] deploy | `deploy/` + `render.yaml` configuration; no deployment performed or authorized |
 | 16 | Apple credentials and setup | [B] | `docs/MDM_ENROLLMENT_AND_PUSH.md` + setup instructions deliverable |
-| 17 | Testing | [x] | 1,202 tests green at head across 8 components; load harnesses + smoke tests; filtering-coverage, tenant-isolation, security-negative, concurrency suites all present |
+| 17 | Testing | [x] | 1,210 tests green at head across 8 components; load harnesses + smoke tests; filtering-coverage, tenant-isolation, security-negative, concurrency suites all present |
 | 18 | Final deliverables (22) | [~] | Itemized below |
 | 19 | Development rules | [x] | Logical commits on `full-platform-build`; main untouched; per-area review docs in `docs/reviews/` |
 | 20 | Pre-build assignment | [S] | Completed before this build (44 answers); preserved in docs/reviews |
