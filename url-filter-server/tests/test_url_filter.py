@@ -12,39 +12,78 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.bloom import BloomFilter  # noqa: E402
+from app.apple_prefilter import (FORMAT_ID, KOSHERGUARD_MURMUR_SEED,  # noqa: E402
+                                 ApplePrefilter, fnv1a32, murmur3_32,
+                                 to_punycode)
 from app.dataset import SHARD_SIZE, URLRule, build_dataset  # noqa: E402
 from app.server import create_app  # noqa: E402
 
 
+class TestHashPrimitives:
+    """Known-answer tests pinning the exact hash functions Apple
+    documents for the URL Filter prefilter (FNV-1a 32, MurmurHash3 32).
+    The Swift URLFilter prefilter code verifies the SAME vectors
+    (tools/apple-prefilter-vectors.json) so both platforms compute
+    identical bit arrays."""
+
+    def test_fnv1a32_known_vectors(self):
+        # Published FNV-1a 32 reference values.
+        assert fnv1a32(b"") == 0x811C9DC5
+        assert fnv1a32(b"a") == 0xE40C292C
+        assert fnv1a32(b"foobar") == 0xBF9CF968
+
+    def test_murmur3_32_known_vectors(self):
+        # Published MurmurHash3 x86-32 reference values.
+        assert murmur3_32(b"", 0) == 0
+        assert murmur3_32(b"foo", 0) == 0xF6A5C420
+        # Cross-checked against the reference mmh3 package.
+        assert murmur3_32(b"hello world", 42) == 0xEA0C9BF9
+        assert murmur3_32(b"abcde", 7) == 0xB5138433
+
+    def test_punycode(self):
+        assert to_punycode("Example.COM.") == "example.com"
+        assert to_punycode("bücher.de") == "xn--bcher-kva.de"
+        assert to_punycode("münchen.example/path") == \
+            "xn--mnchen-3ya.example/path"
+
+
 class TestBloom:
     def test_no_false_negatives(self):
-        bf = BloomFilter(500)
+        bf = ApplePrefilter(500)
         items = [f"blocked-{i}.example" for i in range(500)]
         for i in items:
             bf.add(i)
-        assert all(i in bf for i in items)
+        assert all(bf.might_contain(i) for i in items)
 
     def test_false_positive_rate_bounded(self):
-        bf = BloomFilter(2000, 0.001)
+        bf = ApplePrefilter(2000, 0.001)
         for i in range(2000):
             bf.add(f"b{i}.example")
-        fps = sum(f"clean-{i}.example" in bf for i in range(20000))
+        fps = sum(bf.might_contain(f"clean-{i}.example")
+                  for i in range(20000))
         # Generous bound: sizing targets 0.1%; require < 1%.
         assert fps / 20000 < 0.01
 
     def test_roundtrip(self):
-        bf = BloomFilter(100)
+        bf = ApplePrefilter(100)
         bf.add("a.example")
         bf.add("b.example")
-        bf2 = BloomFilter.from_bytes(bf.to_bytes(), 100)
-        assert "a.example" in bf2 and "b.example" in bf2
-        assert "c.example" not in bf2
+        bf2 = ApplePrefilter.from_bytes(bf.to_bytes(), 100)
+        assert bf2.might_contain("a.example")
+        assert bf2.might_contain("b.example")
+        assert not bf2.might_contain("c.example")
 
     def test_from_bytes_size_mismatch_rejected(self):
-        bf = BloomFilter(100)
+        bf = ApplePrefilter(100)
         with pytest.raises(ValueError, match="size mismatch"):
-            BloomFilter.from_bytes(bf.to_bytes() + b"x", 100)
+            ApplePrefilter.from_bytes(bf.to_bytes() + b"x", 100)
+
+    def test_seed_changes_layout(self):
+        a = ApplePrefilter(10, murmur_seed=1)
+        b = ApplePrefilter(10, murmur_seed=2)
+        a.add("same.example")
+        b.add("same.example")
+        assert a.to_bytes() != b.to_bytes()
 
 
 def sample_rules():
@@ -62,15 +101,19 @@ class TestDataset:
         assert m["blocked_count"] == 2
         assert hashlib.sha256(
             ds.prefilter.to_bytes()).hexdigest() == m["prefilter"]["sha256"]
+        assert m["prefilter"]["format"] == FORMAT_ID
+        assert m["prefilter"]["bit_count"] == ds.prefilter.bit_count
+        assert m["prefilter"]["hash_count"] == ds.prefilter.hash_count
+        assert m["prefilter"]["murmur_seed"] == ds.prefilter.murmur_seed
         assert len(m["shards_sha256"]) == m["shard_count"]
         for shard, digest in zip(ds.shards, m["shards_sha256"]):
             assert hashlib.sha256(shard).hexdigest() == digest
 
     def test_prefilter_holds_blocked_only(self):
         ds = build_dataset(sample_rules(), version=1)
-        assert "bet365.com" in ds.prefilter
-        assert "porn.example" in ds.prefilter
-        assert "wikipedia.org" not in ds.prefilter
+        assert ds.prefilter.might_contain("bet365.com")
+        assert ds.prefilter.might_contain("porn.example")
+        assert not ds.prefilter.might_contain("wikipedia.org")
 
     def test_invalid_verdict_rejected(self):
         with pytest.raises(ValueError, match="unknown verdict"):
@@ -102,9 +145,11 @@ class TestServer:
         assert r.status_code == 200
         assert hashlib.sha256(r.content).hexdigest() == \
             r.headers["x-sha256"]
-        bf = BloomFilter.from_bytes(
-            r.content, capacity=2, fp_rate=0.001)
-        assert "bet365.com" in bf
+        assert r.headers["x-bloom-murmur-seed"] == \
+            str(KOSHERGUARD_MURMUR_SEED)
+        bf = ApplePrefilter.from_bytes(
+            r.content, item_count=2, fp_rate=0.001)
+        assert bf.might_contain("bet365.com")
 
     def test_shard_served_and_404(self, client):
         r = client.get("/v1/dataset/shards/0")

@@ -20,7 +20,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 
-from .bloom import BloomFilter
+from .apple_prefilter import FORMAT_ID, KOSHERGUARD_MURMUR_SEED, ApplePrefilter
 
 SHARD_SIZE = 4096
 
@@ -36,14 +36,15 @@ class URLRule:
 class Dataset:
     version: int
     rules: list[URLRule] = field(default_factory=list)
-    prefilter: BloomFilter | None = None
+    prefilter: ApplePrefilter | None = None
     shards: list[bytes] = field(default_factory=list)
     manifest: dict = field(default_factory=dict)
 
 
 def build_dataset(rules: list[URLRule], version: int,
                   fp_rate: float = 0.001,
-                  provenance: str = "") -> Dataset:
+                  provenance: str = "",
+                  murmur_seed: int = KOSHERGUARD_MURMUR_SEED) -> Dataset:
     """Build a complete dataset: prefilter + verdict shards + manifest.
 
     Block rules populate the prefilter (they are what the on-device
@@ -51,6 +52,12 @@ def build_dataset(rules: list[URLRule], version: int,
     so the off-device service can return an explicit allow for a
     prefilter hit that is actually excepted (Bloom false positives and
     exceptions resolve off-device).
+
+    The prefilter uses Apple's documented URL Filter construction
+    (apple_prefilter.py): FNV-1a 32 + MurmurHash3 32 with double
+    hashing, Punycoded entries. The manifest publishes every parameter
+    the device needs to hand the system (bit_count, hash_count,
+    murmur_seed) plus the format identifier and integrity hash.
     """
     if version < 1:
         raise ValueError("version must be >= 1")
@@ -58,7 +65,8 @@ def build_dataset(rules: list[URLRule], version: int,
     for r in rules:
         if r.verdict not in ("block", "allow"):
             raise ValueError(f"unknown verdict: {r.verdict!r}")
-    prefilter = BloomFilter(max(1, len(blocked)), fp_rate)
+    prefilter = ApplePrefilter(max(1, len(blocked)), fp_rate,
+                               murmur_seed)
     for r in blocked:
         prefilter.add(r.url)
 
@@ -74,10 +82,12 @@ def build_dataset(rules: list[URLRule], version: int,
         "rule_count": len(rules),
         "blocked_count": len(blocked),
         "prefilter": {
-            "bits": prefilter.m,
-            "hashes": prefilter.k,
+            "format": FORMAT_ID,
+            "bit_count": prefilter.bit_count,
+            "hash_count": prefilter.hash_count,
+            "murmur_seed": prefilter.murmur_seed,
             "bytes": len(prefilter.to_bytes()),
-            "sha256": hashlib.sha256(prefilter.to_bytes()).hexdigest(),
+            "sha256": prefilter.tag(),
             "fp_rate_target": fp_rate,
         },
         "shard_size": SHARD_SIZE,

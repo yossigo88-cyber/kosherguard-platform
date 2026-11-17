@@ -74,8 +74,10 @@ def create_app(dataset: Dataset,
         return Response(
             content=data, media_type="application/octet-stream",
             headers={"X-SHA256": hashlib.sha256(data).hexdigest(),
-                     "X-Bloom-Bits": str(dataset.prefilter.m),
-                     "X-Bloom-Hashes": str(dataset.prefilter.k)})
+                     "X-Bloom-Bits": str(dataset.prefilter.bit_count),
+                     "X-Bloom-Hashes": str(dataset.prefilter.hash_count),
+                     "X-Bloom-Murmur-Seed": str(dataset.prefilter.murmur_seed),
+                     "X-Bloom-Format": "apple-fnv1a-murmur3-doublehash-v1"})
 
     @app.get("/v1/dataset/shards/{index}",
              dependencies=[Depends(require_device)])
