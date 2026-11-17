@@ -521,7 +521,12 @@ class TestCrossSourceSync:
         c, path = TestFileSyncIntegrity._mk(engine, tmp_path)
         s1 = mk_source(c, name="src-a")
         s2 = mk_source(c, name="src-b")
-        c2 = make_client(engine, email="second@example.com")
+        # The second staff client must sync the SAME file, exactly like
+        # the single control-plane deployment both staff users share:
+        # without it this thread never re-renders after its commit and
+        # the union assertion below depends on commit timing (flake).
+        c2 = make_client(engine, email="second@example.com",
+                         categories_file=path)
         s1u = mk_import(c, s1["id"], version="1",
                         rules=[{"domain": "a.com", "category": "ads"}])
         s2u = mk_import(c, s2["id"], version="1",
