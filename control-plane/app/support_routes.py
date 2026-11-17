@@ -105,7 +105,10 @@ def register_support_routes(app, *, error, current_user, db_session,
                                StaffRole.support_admin)
         if denied is not None:
             return denied, None
-        req = session.get(SupportRequest, request_id)
+        # Row lock: concurrent staff transitions (advance/escalate)
+        # serialize and each re-checks the committed status.
+        req = session.scalar(select(SupportRequest).where(
+            SupportRequest.id == request_id).with_for_update())
         if req is None:
             return error(404, "support request not found"), None
         return None, req
