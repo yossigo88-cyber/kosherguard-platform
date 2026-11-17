@@ -49,3 +49,18 @@ tested on disposable PostgreSQL by `test_privacy_backups.py`).
 (live state for enrollment/assignment/credential, attestation for
 ABM), attestation requires explicit confirmation, cross-tenant
 isolation.
+
+## 2026-11-17 security correction (supersedes weaker checklist above)
+
+Attestation requires fresh actor TOTP and confirmation
+`attest-abm-assignment`, is bound to the current enrollment primary key,
+and is labeled `manual_guardian`, not Apple-verified state. Readiness
+requires an active device and enrolled current cycle, unrevoked/unexpired
+dataset credential issued no earlier than that cycle, selected enabled
+baseline, enabled tighten-only effective policy, and a verified immutable
+generation carrying that enrollment cycle and matching both policy byte
+representations. Old generations without cycle metadata fail closed and
+must be republished. Changed policy bytes require republication. Missing,
+corrupt or stale evidence never releases Setup Assistant; the endpoint
+reports readiness only. See test_restore.py and the security-corrections
+report for current evidence.
