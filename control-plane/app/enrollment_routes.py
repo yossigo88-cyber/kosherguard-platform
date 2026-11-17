@@ -12,6 +12,7 @@ from datetime import timedelta, timezone
 from fastapi import Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from . import certificate_ops, security
 from .db import ScopedSession
@@ -96,7 +97,11 @@ def register_enrollment_routes(app, *, error, current_user, db_session,
         denied = require_guardian(user, "devices")
         if denied is not None:
             return denied
-        ticket = session.get(EnrollmentTicket, ticket_id)
+        # The SAME row lock redemption takes: a revoke racing a redeem
+        # serializes, so a ticket can never be redeemed after a
+        # successful revocation nor revoked as-unused after a redeem.
+        ticket = session.scalar(select(EnrollmentTicket).where(
+            EnrollmentTicket.id == ticket_id).with_for_update())
         if ticket is None or ticket.tenant_id != user.tenant_id:
             return error(404, "ticket not found")
         if ticket.used_at is not None:
@@ -121,9 +126,18 @@ def register_enrollment_routes(app, *, error, current_user, db_session,
         expiry-checked, UDID-bound and (when a CA is configured)
         chain-verified; the result is recorded on the enrollment -
         verification never substitutes for the ticket."""
+        token_hash = security.hash_session_token(body.ticket)
+        # Establish tenant -> ticket -> device lock order even on this
+        # bearer-authenticated path. Otherwise FK key-share locks taken
+        # while inserting can deadlock with legacy enrollment/offboarding.
+        tenant_id = session.scalar(select(EnrollmentTicket.tenant_id).where(
+            EnrollmentTicket.token_hash == token_hash))
+        if tenant_id is None:
+            return error(403, "invalid enrollment ticket")
+        from .db import lock_tenant
+        lock_tenant(session, tenant_id)
         ticket = session.scalar(select(EnrollmentTicket).where(
-            EnrollmentTicket.token_hash == security.hash_session_token(
-                body.ticket)).with_for_update())
+            EnrollmentTicket.token_hash == token_hash).with_for_update())
         if ticket is None:
             return error(403, "invalid enrollment ticket")
         now = utcnow()
@@ -136,8 +150,17 @@ def register_enrollment_routes(app, *, error, current_user, db_session,
             return error(410, "ticket expired")
         if ticket.used_at is not None:
             return error(409, "ticket already used")
-        device = session.get(Device, ticket.device_id)
+        # Lock the DEVICE row (not just the ticket): two different
+        # tickets for the same device redeemed concurrently then
+        # serialize here, so both cannot observe 'no current
+        # enrollment' and insert duplicates. Lock order is always
+        # ticket -> device, so no cycle with revocation (ticket only).
+        device = session.scalar(select(Device).where(
+            Device.id == ticket.device_id).with_for_update())
         if device is None or device.state != "active":
+            # An offboarded device is never re-enrolled by an old
+            # ticket; offboarding sets the device state and the DDM
+            # paths refuse offboarded devices independently.
             return error(409, "device not enrollable")
         cert_sha = None
         cert_status = None
@@ -148,7 +171,9 @@ def register_enrollment_routes(app, *, error, current_user, db_session,
                     settings.device_identity_ca_file)
             except certificate_ops.CertificateError as exc:
                 return error(403, f"device identity certificate rejected: {exc}")
-        # One pending/enrolled record per device: a second ticket for
+        # One pending/enrolled record per device, enforced by the
+        # partial unique index uq_mdm_enrollments_current_device AND
+        # serialized here by the device row lock: a second ticket for
         # the same device conflicts unless the earlier enrollment never
         # bound a UDID (still placeholder state) and is replaced.
         existing = session.scalars(select(MDMEnrollment).where(
@@ -171,7 +196,13 @@ def register_enrollment_routes(app, *, error, current_user, db_session,
         enrollment.identity_cert_sha256 = cert_sha
         enrollment.identity_cert_status = cert_status
         session.add(enrollment)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError:
+            # Concurrent creator slipped past the device lock (legacy
+            # path) - the database invariant holds; report a conflict.
+            session.rollback()
+            return error(409, "device already has a current enrollment")
         ScopedSession(session, ticket.tenant_id).audit(
             "mdm.enrollment_ticket.redeem",
             f"ticket {ticket.id} device {ticket.device_id} "
