@@ -76,7 +76,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import (DDMStatusReport, DeviceAppPolicy, MDMEnrollment,
+from .models import (DDMStatusReport, Device, DeviceAppPolicy, MDMEnrollment,
                      utcnow)
 
 
@@ -142,6 +142,11 @@ def resolve_or_bind(session: Session, enrollment_id: str | None,
     if not candidates:
         raise DDMError("unknown enrollment", 404)
     enrollment = candidates[0]
+    from .db import lock_tenant
+    lock_tenant(session, enrollment.tenant_id)
+    session.refresh(enrollment)
+    if enrollment.state != "pending":
+        raise DDMError("enrollment no longer pending", 409)
     enrollment.enrollment_id = enrollment_id
     return enrollment, True
 
@@ -161,6 +166,14 @@ def ensure_active(session: Session, enrollment: MDMEnrollment) -> bool:
     placeholder is activated here (returns True when it was). Any
     other non-active state (e.g. revoked) is refused. Enrollment ID
     alone, without the peer's HMAC, never reaches this point."""
+    from .db import lock_tenant
+    lock_tenant(session, enrollment.tenant_id)
+    session.refresh(enrollment)
+    device = session.get(Device, enrollment.device_id)
+    if device is None or device.tenant_id != enrollment.tenant_id or device.state != "active":
+        raise DDMError(
+            "device is offboarded; offboarding is terminal for DDM "
+            "serving and is never silently reactivated", 403)
     if enrollment.state == "pending":
         enrollment.state = "enrolled"
         enrollment.last_seen_at = utcnow()
@@ -194,6 +207,14 @@ def confirm_checkin(session: Session, enrollment_id: str | None,
     records ENROLLMENT ONLY: supervision is never accepted from this
     caller (see the module docstring)."""
     enrollment = resolve_enrollment(session, enrollment_id)
+    from .db import lock_tenant
+    lock_tenant(session, enrollment.tenant_id)
+    session.refresh(enrollment)
+    device = session.get(Device, enrollment.device_id)
+    if device is None or device.tenant_id != enrollment.tenant_id or device.state != "active":
+        raise DDMError(
+            "device is offboarded; a check-in can never reactivate it",
+            409)
     if enrollment.state == "pending":
         if nanomdm_id:
             clash = session.scalar(select(MDMEnrollment).where(
