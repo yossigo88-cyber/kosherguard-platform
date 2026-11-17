@@ -95,14 +95,14 @@ public struct CredentialIssuanceClient {
         case 503: throw IssuanceError.issuanceNotConfigured
         default: throw IssuanceError.unexpectedStatus(http.statusCode)
         }
-        struct Body: Decodable {
+        struct MintResponseBody: Decodable {
             let device_id: Int
             let credential: String
             let scope: String
             let policy_id: Int?
             let expires_in_seconds: Int?
         }
-        guard let body = try? JSONDecoder().decode(Body.self, from: data)
+        guard let body = try? JSONDecoder().decode(MintResponseBody.self, from: data)
         else { throw IssuanceError.malformedResponse }
         return ScopedCredential(deviceID: body.device_id,
                                 token: body.credential,

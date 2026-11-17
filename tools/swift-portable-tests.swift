@@ -1532,9 +1532,13 @@ final class BuildConfigGuardTests: XCTestCase {
         where file.pathExtension == "swift" {
             let text = try String(contentsOf: file, encoding: .utf8)
             fileText[file.lastPathComponent] = text
+            // Private declarations are file-scoped: invisible to
+            // other files, so they can neither satisfy nor break the
+            // per-target closure and are excluded from the registry.
             for match in text.matches(of:
-                #/(?:final class|class|struct|enum|protocol)\s+([A-Z][A-Za-z0-9_]*)/#) {
-                typeToFile[String(match.1)] = file.lastPathComponent
+                #/(?:(private)\s+)?(?:final class|class|struct|enum|protocol)\s+([A-Z][A-Za-z0-9_]*)/#) {
+                guard match.1 == nil else { continue }
+                typeToFile[String(match.2)] = file.lastPathComponent
             }
         }
         let pbx = try String(contentsOf: root.appendingPathComponent(
@@ -3334,5 +3338,70 @@ final class PIRConfigurationTests: XCTestCase {
         config = AppConfiguration.managed(defaults: defaults)
         XCTAssertNil(config.pirServerURL)
         XCTAssertNil(config.pirPrivacyPassIssuerURL)
+    }
+}
+
+// MARK: - Stage 10: application blocking policy (portable model)
+
+final class AppBlockingPolicyTests: XCTestCase {
+
+    func testServerContractDecodes() throws {
+        let json = Data(#"{"mode":"blocklist","bundle_ids":["com.example.game","net.example.social"],"saved":true,"updated_at":"2026-11-17T00:00:00"}"#.utf8)
+        let policy = try JSONDecoder().decode(
+            AppBlockingPolicy.self, from: json)
+        XCTAssertEqual(policy.mode, .blocklist)
+        XCTAssertEqual(policy.bundleIDs,
+                       ["com.example.game", "net.example.social"])
+        XCTAssertTrue(policy.saved)
+    }
+
+    func testUnsavedServerRecordMeansNoPolicy() throws {
+        // Server has no stored policy: {"mode":"blocklist",
+        // "bundle_ids":[],"saved":false}. The mirror must not treat
+        // this as "block nothing"; it is "no policy".
+        let json = Data(#"{"mode":"blocklist","bundle_ids":[],"saved":false}"#.utf8)
+        let policy = try JSONDecoder().decode(
+            AppBlockingPolicy.self, from: json)
+        XCTAssertFalse(policy.saved)
+    }
+
+    func testBundleIDValidationMatchesServer() {
+        // Same contract as mdm/app_management.validate_bundle_ids.
+        XCTAssertThrowsError(
+            try AppBlockingPolicy(mode: .blocklist,
+                                  bundleIDs: ["not a bundle id"]))
+        XCTAssertThrowsError(
+            try AppBlockingPolicy(mode: .blocklist,
+                                  bundleIDs: ["com.example.app",
+                                              "com.example.app"]))
+        XCTAssertNoThrow(
+            try AppBlockingPolicy(mode: .allowlist,
+                                  bundleIDs: ["com.example.app",
+                                              "net.example.other-2"]))
+    }
+
+    func testStoreIsIdentityBoundAndFailSafe() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("app-policy.json")
+        let store = AppBlockingPolicyStore(snapshotFile: file)
+        let policy = try AppBlockingPolicy(
+            mode: .blocklist, bundleIDs: ["com.example.game"])
+        // Empty fingerprint: refused.
+        XCTAssertThrowsError(
+            try store.save(policy, endpointFingerprint: ""))
+        XCTAssertNil(store.load(endpointFingerprint: "fp-1"))
+        try store.save(policy, endpointFingerprint: "fp-1")
+        XCTAssertEqual(store.load(endpointFingerprint: "fp-1"), policy)
+        // Foreign identity: fail safe, never apply.
+        XCTAssertNil(store.load(endpointFingerprint: "fp-2"))
+        // Corrupt file: fail safe.
+        try Data("not json".utf8).write(to: file)
+        XCTAssertNil(store.load(endpointFingerprint: "fp-1"))
+        store.clear()
+        XCTAssertNil(store.load(endpointFingerprint: "fp-1"))
     }
 }
