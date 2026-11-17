@@ -28,6 +28,7 @@ from . import mdm_ops
 from .ddm_routes import register_ddm_routes
 from .enrollment_routes import register_enrollment_routes
 from .restore_routes import register_restore_routes
+from .support_routes import register_support_routes
 from .category_source_routes import register_category_source_routes
 from .offboarding_routes import register_offboarding_routes
 from .guardian_routes import register_guardian_routes
@@ -1443,6 +1444,9 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
     register_restore_routes(app, error=error, current_user=current_user,
         db_session=db_session, require_csrf_header=require_csrf_header,
         require_guardian=require_guardian)
+    register_support_routes(app, error=error, current_user=current_user,
+        db_session=db_session, require_csrf_header=require_csrf_header,
+        require_staff=require_staff)
 
     # -- Platform category dataset administration (M6) -----------------
 
