@@ -50,12 +50,21 @@ def test_old_session_role_promotion_and_reset_revocation(client, engine):
         u.role=Role.guardian
     assert viewer.get('/api/devices').status_code == 403
     # Verified owner can recover another account, not strip own MFA.
-    assert client.post(f'/api/guardians/{uid}/mfa-reset',json={'password':PASSWORD},headers=HDR).status_code == 200
+    # Recovery requires fresh TOTP + confirmation in addition to the
+    # password.
+    import pyotp as _pyotp
+    owner_secret = client.app.state._fixture_mfa['g@example.com']
+    fresh = {'password': PASSWORD,
+             'totp_code': _pyotp.TOTP(owner_secret).now(),
+             'confirm': 'mfa-reset'}
+    assert client.post(f'/api/guardians/{uid}/mfa-reset',json={'password':PASSWORD},headers=HDR).status_code == 403
+    assert client.post(f'/api/guardians/{uid}/mfa-reset',json=fresh,headers=HDR).status_code == 200
     assert viewer.get('/api/auth/me').status_code == 401
     with session_scope(engine) as s:
         owner=s.scalar(select(User).where(User.email=='g@example.com'));oid=owner.id
         assert not list(s.scalars(select(AuthSession).where(AuthSession.user_id==uid)))
-    assert client.post(f'/api/guardians/{oid}/mfa-reset',json={'password':PASSWORD},headers=HDR).status_code == 400
+    fresh['totp_code'] = _pyotp.TOTP(owner_secret).now()
+    assert client.post(f'/api/guardians/{oid}/mfa-reset',json=fresh,headers=HDR).status_code == 400
 
 
 def test_preexisting_password_session_not_granted_by_new_secret(client, engine):
