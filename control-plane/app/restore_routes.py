@@ -106,6 +106,10 @@ def register_restore_routes(app, *, error, current_user, db_session,
         denied = require_guardian(user, "devices")
         if denied is not None:
             return denied
+        # Read a consistent lifecycle/configuration snapshot while the
+        # checklist is assembled, under the same lock as configuration writes.
+        from .db import lock_tenant
+        lock_tenant(session, user.tenant_id)
         device = session.get(Device, device_id)
         if device is None or device.tenant_id != user.tenant_id:
             return error(404, "device not found")
@@ -176,12 +180,16 @@ def register_restore_routes(app, *, error, current_user, db_session,
         publisher = Publisher(tenant_root(
             settings.publications_root, user.tenant_id))
         published_ok = False
+        published_exceptions = []
         try:
             published = publisher.current()
             if (published and reenrolled and policy_ok and
                     published.get("enrollment_cycles", {}).get(
                         str(device_id)) == enrollment.id):
                 generation_dir = publisher.generations_dir / published["generation"]
+                overlay_path = generation_dir / "exceptions.json"
+                if overlay_path.exists():
+                    published_exceptions = json.loads(overlay_path.read_bytes()).get(str(device_id), [])
                 mapping_path = generation_dir / "device-map.json"
                 mapping = json.loads(mapping_path.read_bytes()) if mapping_path.exists() else {}
                 entry = mapping.get("devices", {}).get(str(device_id))
@@ -201,12 +209,30 @@ def register_restore_routes(app, *, error, current_user, db_session,
             # Missing/corrupt/old evidence is a failed check, never readiness.
             published_ok = False
 
+        # A valid assigned policy is not the effective filtering policy
+        # while an exception overlay weakens or disables it. Do not turn
+        # an intentional temporary bypass into a green restore checklist.
+        # Check both saved current scope and the published pinned scope:
+        # revocation/membership edits do not instantly update edge snapshots.
+        from . import exception_ops
+        saved_exceptions = exception_ops.export_exceptions(
+            session, user.tenant_id, now=now).get(str(device_id), [])
+        def window_open(entry):
+            try:
+                return (exception_ops._parse_time(entry.get("starts_at")) <= now <
+                        exception_ops._parse_time(entry.get("expires_at")))
+            except (TypeError, ValueError):
+                return True  # malformed overlay is not readiness evidence
+        exceptions_clear = (published_ok and not any(
+            window_open(entry) for entry in saved_exceptions + published_exceptions))
+
         checks = {
             "abm_assignment_attested": device_active and attestation is not None,
             "device_reenrolled": reenrolled,
             "baseline_assignment_valid": policy_ok,
             "filtering_credential_active": len(creds) > 0,
             "filtering_configuration_published": published_ok,
+            "filtering_exceptions_clear": exceptions_clear,
         }
         return {
             "device_id": device_id,
@@ -230,6 +256,10 @@ def register_restore_routes(app, *, error, current_user, db_session,
                 "filtering_configuration_published":
                     "a verified published generation matches the current "
                     "enrollment cycle, effective policy and protected baseline",
+                "filtering_exceptions_clear":
+                    "no currently effective saved or published exception "
+                    "overlay bypasses filtering for this device; temporary "
+                    "exceptions remain authorized but block restore readiness",
             },
             "attestation_kind": (attestation.attestation_kind
                                  if attestation else None),
