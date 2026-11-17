@@ -15,30 +15,28 @@ Legend: [ ] not started, [~] in progress / partially implemented,
 [B] blocked by Apple credentials/device access, [O] out of scope by
 user instruction.
 
-Current verification state (all suites green at the head this file
-ships with): control-plane 364, filtering-engine 337, dns-edge 87,
-mdm 64, proxy-edge 38, url-filter-server 38, category-pipeline 6,
-dashboard 276 - 1,210 tests total, plus three committed load-test
-harnesses (docs/reviews/LOAD_TEST.md).
+## Verification and milestone state (2026-11-17 correction)
 
-## Milestone map (all eight complete through this branch)
+Verified code candidate: `6399667e64b089f9b14915a6472fd402d0e9828f`.
+Fresh clone at that exact SHA: **1,272 tests passed** across eight components:
+control-plane 426, filtering-engine 337, DNS87, MDM64, proxy38,
+URL38, category6, dashboard276. These are current runs, not totals
+assembled from earlier handoffs. Logs and commands are recorded in
+`reviews/SECURITY_CORRECTIONS_2026-11-17.md`.
 
-- M1: Foundation - control-plane foundation (auth, TOTP MFA, tenancy,
-  audit, rate limiting), engine symlink fix. DONE
-- M2: Control plane complete - API, portal UI, admin dashboard, public
-  website tree. DONE
-- M3: Policy compiler, DNS edge, proxy/PAC, category pipeline. DONE
-- M4: MDM/ADE server-side (adapter, APNs client, profiles, reconciler,
-  app management, NanoDEP client), enrollment architecture. DONE at the
-  server layer; live Apple operation [B]
-- M5: Native iOS (Swift, uncompiled/unsigned/untested [B]) + URL-filter
-  server (38 tests). DONE except the Apple-blocked native app
-- M6: Operations - structured request logs (no secrets), /health/depth,
-  staff-only /metrics, backup/restore runbook + tested scripts. DONE
-- M7: Full testing - 1,210 automated tests across 8 components, security
-  negatives, tenant isolation, concurrency, load harnesses. DONE
-- M8: Final delivery - documentation, limitation list, handoff. IN
-  PROGRESS (this refresh; final security report and handoff package)
+The older 1,189 and 1,210 totals were historical snapshots and were
+incorrectly described as verified at their publication heads. Baseline
+`5254763d1477578c477fa2ee7338e953837dc672` had364 control-plane tests
+rerun; it did not establish an exact-head rerun of all eight suites.
+The unresolvable `44e48b1d9483b985984931a15cbdbd1c00542cb6` is withdrawn
+as evidence. Use the reachable candidate SHA and current source/tests.
+
+M1-M7 retain their implemented server/source scope, with Apple-side
+behavior explicitly unverified. M8's security correction implementation
+is on this branch; final documentation and independent review are in
+progress until the final delivery message names the verified head.
+Neither this matrix nor a green server suite closes Apple authorization,
+Xcode compilation/signing, real-device testing, or deployment.
 
 ## Part-by-part coverage
 
@@ -59,7 +57,7 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 1.12 | Central administration dashboard | [x] | `control-plane/web/` portal (policies, groups, exceptions, schedules, devices, MDM, categories, customers, credentials, guardians, approvals, staff, filtering, apps, audit) + `dashboard/` tree (276 tests); UI e2e verified with local headless browser incl. mobile 390px |
 | 1.13 | Customer and device management | [x] | Tenants, guardians (invite/delegation/role/MFA-reset), devices, groups; staff customers view is names+counts only (tenant isolation); customer-tenant onboarding via staff-owner-only POST /api/staff/tenants (7-day hashed owner invite, audited) with staff-panel Add customer form |
 | 1.14 | New customer-facing website | [x] tree, [O] live swap | `website/` built and copy-reviewed (privacy/support pages match actual collection/retention); replacing the live site is a separate approval (Part 2 question 15) |
-| 1.15 | Secure backend and database | [x] | FastAPI + PostgreSQL, Alembic migrations 0001-0024, hashed sessions, TOTP MFA, CSRF header checks, tenant scoping |
+| 1.15 | Secure backend and database | [x] | FastAPI + PostgreSQL, Alembic migrations 0001-0025, hashed sessions, TOTP MFA, CSRF header checks, tenant scoping |
 | 1.16 | Logging, monitoring, backups | [x] | JSON request logs without secrets, /health/depth (503 on failure), staff-only /metrics, audit events; backup/restore runbook + scripts tested (`test_backup_restore.py`) |
 | 2 | ABM + automated enrollment | [B] live, [x] code | As 1.1-1.3 |
 | 3 | Non-removable MDM from day one | [x] design+payloads, [B] device | Profile/restriction payloads; engine loader fixed (M1) |
@@ -73,10 +71,10 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 11 | Customer-facing website | [x] tree, [O] step 7 | Steps 1-6; live replacement is a separately-approved step |
 | 12 | Customer accounts + multi-tenancy | [x] | Family=tenant, multi-guardian with owner-delegated capabilities and protected baseline; tenant-isolation tests. Part 2A customer portal: secure sign-in (MFA), authorized devices with enrollment/supervision state, online/offline/stale connectivity from stored receipts, last confirmed update, current filtering policy with schedules, permitted delegated settings, structured exception requests (approve/reject creating real audited PolicyExceptions under the requester's delegable limits), support requests |
 | 13 | Database and backend | [x] | As 1.15 |
-| 14 | Security | [x] | MFA everywhere privileged (fresh TOTP + typed confirmation for sensitive ops), hashed sessions, tenant isolation, read_only staff choke point, credential redaction, security-negative tests; final security report pending in M8 |
+| 14 | Security | [x] | MFA everywhere privileged (fresh TOTP + typed confirmation for sensitive ops), hashed sessions, tenant isolation, read_only staff choke point, credential redaction, security-negative tests; security corrections documented in reviews/SECURITY_CORRECTIONS_2026-11-17.md |
 | 15 | Hosting and infrastructure | [x] config, [O] deploy | `deploy/` + `render.yaml` configuration; no deployment performed or authorized |
 | 16 | Apple credentials and setup | [B] | `docs/MDM_ENROLLMENT_AND_PUSH.md` + setup instructions deliverable |
-| 17 | Testing | [x] | 1,210 tests green at head across 8 components; load harnesses + smoke tests; filtering-coverage, tenant-isolation, security-negative, concurrency suites all present |
+| 17 | Testing | [x] | 1,272 tests at candidate6399667 across8 components; see exact-SHA ledger; load harnesses + smoke tests; filtering-coverage, tenant-isolation, security-negative, concurrency suites all present |
 | 18 | Final deliverables (22) | [~] | Itemized below |
 | 19 | Development rules | [x] | Logical commits on `full-platform-build`; main untouched; per-area review docs in `docs/reviews/` |
 | 20 | Pre-build assignment | [S] | Completed before this build (44 answers); preserved in docs/reviews |
@@ -98,7 +96,7 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 11 | Administration dashboard | [x] | Portal UI + `dashboard/` (276 tests) |
 | 12 | Customer management | [x] | Tenants/guardians/staff customers view; staff-owner tenant onboarding endpoint + Add customer UI |
 | 13 | Customer-facing website | [x] tree, [O] live | `website/`; live swap separately approved |
-| 14 | Database and migrations | [x] | Alembic 0001-0023 |
+| 14 | Database and migrations | [x] | Alembic 0001-0025 |
 | 15 | Hosting and deployment configuration | [x] config, [O] deploy | `deploy/`, `render.yaml` |
 | 16 | Security implementation | [x] | As Part 14 |
 | 17 | Monitoring and logging | [x] | Observability endpoints + structured logs (dd0518d) |
@@ -106,17 +104,9 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 19 | Apple integration instructions | [x] | `docs/MDM_ENROLLMENT_AND_PUSH.md`, `docs/setup/` |
 | 20 | Testing results | [x] | This file's counts; per-area review docs; docs/reviews/LOAD_TEST.md |
 | 21 | Documentation | [x] | Architecture doc, reviews/, COMPATIBILITY.md, LOAD_TEST.md, BACKUP_RECOVERY.md |
-| 22 | List of remaining limitations | [~] | Accumulated in reviews; final consolidated list ships with the M8 security report |
+| 22 | List of remaining limitations | [~] | Accumulated in reviews; consolidated list in FINAL_HANDOFF.md and SECURITY_CORRECTIONS_2026-11-17.md |
 
-## Test-count reconciliation (current head)
+## Test-count reconciliation
 
-- control-plane: 343 (179+164 in the two-suite batch split)
-- filtering-engine: 337
-- dns-edge: 87
-- mdm: 64
-- proxy-edge: 38
-- url-filter-server: 38
-- category-pipeline: 6
-- dashboard: 276 (164+112 batched)
-- Total: 1,189, all green at the head this file ships with; per-SHA
-  evidence is in the session reports and docs/reviews/.
+See the exact-SHA ledger above and the security-corrections report.
+No historical test total is a claim about an untested later commit.
