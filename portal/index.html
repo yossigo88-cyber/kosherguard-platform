@@ -13,7 +13,7 @@ header { padding: 1rem 6vw; border-bottom: 1px solid #ddd5c5; display:flex; just
 main { max-width: 46rem; margin: 2.5rem auto; padding: 0 1rem; }
 .panel { background:#fff; border:1px solid #e2dccb; border-radius:10px; padding:1.6rem; margin-bottom:1.4rem; }
 label { display:block; margin:.7rem 0 .2rem; font-size:.95rem; }
-input { width:100%; padding:.5rem; border:1px solid #c9c2b0; border-radius:6px; font-size:1rem; }
+input, select, textarea { width:100%; padding:.5rem; border:1px solid #c9c2b0; border-radius:6px; font-size:1rem; font-family:inherit; }
 button { background:var(--accent); color:#fff; border:0; padding:.55rem 1.2rem; border-radius:6px; font-size:1rem; margin-top:.9rem; cursor:pointer; }
 table { width:100%; border-collapse:collapse; margin-top:.8rem; }
 th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3; font-size:.95rem; }
@@ -38,6 +38,25 @@ th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3;
     <h2>Your devices</h2>
     <table id="devices"><thead><tr><th>Name</th><th>State</th></tr></thead><tbody></tbody></table>
   </section>
+  <section class="panel hidden" id="support-panel">
+    <h2>Support</h2>
+    <form id="support-form">
+      <label>Topic
+        <select id="support-kind">
+          <option value="general">General question</option>
+          <option value="account_recovery">Account recovery</option>
+          <option value="enrollment_assistance">Enrollment assistance</option>
+          <option value="connectivity_troubleshooting">Device connectivity troubleshooting</option>
+          <option value="policy_change">Policy-change request</option>
+        </select>
+      </label>
+      <label>Subject <input id="support-subject" required maxlength="200"></label>
+      <label>Details <textarea id="support-body" rows="3" required></textarea></label>
+      <button type="submit">Send support request</button>
+      <div id="support-msg"></div>
+    </form>
+    <table id="support-requests"><thead><tr><th>Subject</th><th>Status</th></tr></thead><tbody></tbody></table>
+  </section>
   <section class="panel hidden" id="policies-panel">
     <h2>Family policies</h2>
     <table id="policies"><thead><tr><th>Name</th><th>Default action</th><th>Enabled</th></tr></thead><tbody></tbody></table>
@@ -46,4 +65,4 @@ th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3;
 </main>
 <script src="/portal/app.js"></script>
 </body>
-  </html>
+</html>
