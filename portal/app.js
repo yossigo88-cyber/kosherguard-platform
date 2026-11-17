@@ -25,6 +25,8 @@ async function showApp() {
   document.getElementById("login-panel").classList.add("hidden");
   document.getElementById("devices-panel").classList.remove("hidden");
   document.getElementById("policies-panel").classList.remove("hidden");
+  document.getElementById("support-panel").classList.remove("hidden");
+  loadSupport();
   const me = await api("/api/auth/me");
   document.getElementById("who").textContent = me.body.email || "";
   const devices = await api("/api/devices");
@@ -34,6 +36,27 @@ async function showApp() {
   document.querySelector("#policies tbody").innerHTML =
     (policies.body.policies || []).map(p => `<tr><td>${esc(p.name)}</td><td>${esc(p.default_policy)}</td><td>${p.enabled ? "yes" : "no"}</td></tr>`).join("");
 }
+
+async function loadSupport() {
+  const r = await api("/api/support/requests");
+  document.querySelector("#support-requests tbody").innerHTML =
+    (r.body.requests || []).map(q => `<tr><td>${esc(q.subject)}</td><td>${esc(q.status)}</td></tr>`).join("");
+}
+
+document.getElementById("support-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const r = await api("/api/support/requests", {method: "POST", headers: HDR,
+    body: JSON.stringify({kind: document.getElementById("support-kind").value,
+      subject: document.getElementById("support-subject").value,
+      body: document.getElementById("support-body").value})});
+  document.getElementById("support-msg").textContent =
+    r.status === 200 ? "Request sent. Staff will review it." : (r.body.error || "Could not send the request.");
+  if (r.status === 200) {
+    document.getElementById("support-subject").value = "";
+    document.getElementById("support-body").value = "";
+    loadSupport();
+  }
+});
 
 document.getElementById("signout").addEventListener("click", async () => {
   await api("/api/auth/logout", {method: "POST", headers: HDR});
