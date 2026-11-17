@@ -39,7 +39,9 @@ planning targets - recovery within one hour, 15-minute database
 recovery-point objective - remain future targets subject to budget and
 successful recovery testing. The development environment is
 best-effort. Database backup/restore procedures and restoration tests
-are tracked in the backup/restore cluster.
+are documented in `docs/deployment/BACKUP_RECOVERY.md` (scripts
+`deploy/pg_backup.sh` / `deploy/pg_restore.sh`, restore drill,
+tested on disposable PostgreSQL by `test_privacy_backups.py`).
 
 ## Tests
 
