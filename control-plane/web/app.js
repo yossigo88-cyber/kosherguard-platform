@@ -944,3 +944,25 @@ $("staff-role-form").addEventListener("submit", async (e) => {
     err.textContent = (r.body && r.body.error) || "Role change failed.";
   }
 });
+
+$("tenant-onboard-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("to-error");
+  err.textContent = "";
+  $("to-result").classList.add("hidden");
+  const r = await api("/api/staff/tenants", {
+    method: "POST", headers: HDR,
+    body: JSON.stringify({tenant_name: $("to-name").value,
+                          owner_email: $("to-email").value}),
+  });
+  if (r.status !== 200) {
+    err.textContent = r.body.error || "Could not create the customer.";
+    return;
+  }
+  $("to-tenant").textContent = r.body.tenant_id;
+  $("to-expires").textContent = r.body.expires_at;
+  $("to-token").textContent = r.body.invite_token;
+  $("to-result").classList.remove("hidden");
+  $("to-name").value = "";
+  $("to-email").value = "";
+});
