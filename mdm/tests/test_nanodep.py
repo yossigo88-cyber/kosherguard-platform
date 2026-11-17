@@ -83,7 +83,7 @@ class Fixture(BaseHTTPRequestHandler):
         self._record(body)
         if not self._auth_ok():
             return self._json(401, {"error": "unauthorized"})
-        if self.path == "/proxy/mdmserver1/devices":
+        if self.path == "/proxy/mdmserver1/server/devices":
             cursor = (body or {}).get("cursor")
             if not cursor:
                 return self._json(200, {
@@ -149,7 +149,7 @@ class TestProxy:
                    for d in client.iter_devices("mdmserver1")]
         assert serials == ["S1", "S2", "S3"]
         posts = [c for c in Fixture.calls
-                 if c["path"] == "/proxy/mdmserver1/devices"]
+                 if c["path"] == "/proxy/mdmserver1/server/devices"]
         # First page request omits the cursor; the second carries it.
         assert "cursor" not in (posts[0]["body"] or {})
         assert posts[1]["body"]["cursor"] == "PAGE2"
@@ -185,3 +185,26 @@ class TestSyncer:
         dead = NanoDEPClient("http://127.0.0.1:1", "k", timeout=0.5)
         with pytest.raises(NanoDEPError, match="unreachable"):
             dead.version()
+
+
+def test_current_assignment_lookup_live_details_scope_profile_and_inventory():
+    from mdm.nanodep import CurrentAssignmentLookup
+    class Fake:
+        response={"devices":{"S1":{"serial_number":"S1","profile_uuid":"P1","profile_status":"assigned"}}}
+        calls=[]
+        def _proxy(self,dep,method,path,body):
+            self.calls.append((dep,method,path,body));return self.response
+    client=Fake()
+    lookup=CurrentAssignmentLookup(client=client,tenant_id=1,dep_name="customer",profile_uuid="P1",inventory_lookup=lambda t,s:"device-0001" if (t,s)==(1,"S1") else None)
+    assert lookup(1,"S1")=={"assigned":True,"udid":"device-0001"}
+    assert client.calls[-1]==("customer","POST","devices",{"devices":["S1"]})
+    with pytest.raises(NanoDEPError):lookup(2,"S1")
+    for change in [{"profile_uuid":"WRONG"},{"profile_status":"removed"},{"op_type":"deleted"},{"released_by_replacement":True},{"serial_number":"S2"}]:
+        client.response={"devices":{"S1":{"serial_number":"S1","profile_uuid":"P1","profile_status":"assigned",**change}}}
+        with pytest.raises(NanoDEPError):lookup(1,"S1")
+
+
+def test_pagination_nonadvancing_cursor_rejects():
+    client=NanoDEPClient("https://nanodep.example.test","test")
+    client.fetch_devices=lambda *args,**kwargs:{"devices":[],"more_to_follow":True,"cursor":""}
+    with pytest.raises(NanoDEPError):list(client.iter_devices("customer"))
