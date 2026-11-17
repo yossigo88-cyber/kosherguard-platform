@@ -141,18 +141,52 @@ NOT signed, NOT run on Apple hardware; Network Extension targets are
 untouched and unverified. Evidence: /tmp/swift-portable.log.
 ios/README.md updated to match this reality exactly.
 
+### 1.11 iOS PrefilterUpdater: transient failure suppressed retries for 45 minutes
+Found by the independent audit re-check (section 6): refresh() stamped
+lastAttempt before fetching, so one transient failure (e.g. a dropped
+connection or a 5xx) suppressed every retry for the full 45-minute
+cadence. Fixed within the existing requirements: a completed check
+(new bits applied, or a confirmed nothing-new staleVersion) starts the
+45-minute cadence; a failed attempt gets a short 60-second backoff
+(failureRetryInterval) so recovery is quick but the server is never
+hammered. Two regressions added to tools/swift-portable-tests.swift:
+testSuccessEnforcesFortyFiveMinuteCadence (cadence preserved after
+success, verified by the staleVersion that proves the post-cadence
+fetch really ran) and testTransientFailureRetriesAfterShortBackoff
+(401, refused at +30s, retried and succeeding at +61s). Negative
+control: against the pre-fix source the backoff regression fails with
+tooSoon at the 61s retry (exit 1, /tmp/swift-portable-backoff-neg.log);
+with the fix the portable suite is 8/8 (exit 0,
+/tmp/swift-portable-fixed8.log). Same portability qualifications as
+1.10 apply: Linux logic-level only, not compiled for iOS.
+
 ## 2. Suite results (all exit 0, logs + JUnit retained under /tmp)
 
-- control-plane: 458 passed (5 chunks, /tmp/cp-full-{0..4}.xml/.log)
-- dashboard: 286 passed (auth 42, publishing 48, rest 196)
-- filtering-engine: 337 passed
-- dns-edge: 87 passed
-- mdm: 64 passed
-- proxy-edge: 38 passed
-- url-filter-server: 46 passed
-- category-pipeline: 6 passed
+Exact-head ledger: every suite below was re-run on a fresh
+unauthenticated clone of the published full-platform-build head
+7602c71d3b86cfe6e9fd41a26119facc9ae78ad8 (/tmp/head-*.log/.xml),
+matching the earlier runs on the local candidate tree
+(/tmp/<suite>.log/.xml). The one exception is the iOS portable suite,
+whose post-fix 8/8 run accompanies the delivery note for the head
+containing the 1.11 fix (it cannot precede the commit that publishes
+the fix).
+
+- control-plane: 458 passed (5 chunks, /tmp/head-cp-{0..4}.xml/.log)
+- dashboard: 286 passed (3 chunks: 98 + 95 + 93,
+  /tmp/head-db-0{0,1,2}.xml/.log). First chunk-01 attempt was
+  interrupted by a shell time-box and its partial log showed a
+  startup-timeout flake in test_dashboard_to_dns_end_to_end; the clean
+  re-run passed 95/95.
+- filtering-engine: 337 passed (/tmp/head-filtering-engine.{xml,log})
+- dns-edge: 87 passed (/tmp/head-dns-edge.{xml,log})
+- mdm: 64 passed (/tmp/head-mdm.{xml,log})
+- proxy-edge: 38 passed (/tmp/head-proxy-edge.{xml,log})
+- url-filter-server: 46 passed (/tmp/head-url-filter.{xml,log})
+- category-pipeline: 6 passed (/tmp/head-category-pipeline.{xml,log})
 - UI production-code VM regressions (tools/test_review_ui.mjs): 3 passed
-- iOS portable (qualified, section 1.10): 6 passed
+  (/tmp/head-review-ui.log)
+- iOS portable (qualified, sections 1.10/1.11): 6 passed at 7602c71;
+  8 passed with the 1.11 fix
 
 Every fix above also carries a negative control: the regression fails
 when the fix is stashed, and the vulnerable-behavior reproductions are
@@ -191,7 +225,29 @@ kept out of the ordinary passing suites.
 - All other docs: no accuracy claims were re-verified in this pass;
   they were not relied upon for any fix.
 
-## 5. Known remaining limits
+## 5. Independent audit reconciliation
+
+An independent audit followed publication of the head at 7602c71. Its
+scope: it re-derived every fix and count in this report and re-ran the
+principal negative controls, with high-risk spot-checks beyond that;
+it was not another line-by-line audit of the platform. It found no
+blocking defect. Its findings are reconciled here:
+
+- PrefilterUpdater retry suppression: real source defect, fixed in
+  1.11 with a bounded regression.
+- Struct callers of refresh() lack synchronization: confirmed as a
+  limit, not fixed. PrefilterUpdater is a struct; callers must
+  serialize refresh() on a single owned value. Making it an actor or
+  adding locking is a redesign outside this correction pass.
+- App-group wiring for extension/app sharing: remains an undecided
+  design item for the owner (unchanged, section 6).
+- url-filter-server's dataset loader imports the sibling
+  filtering-engine/src tree via sys.path: confirmed. This is a
+  deployment requirement - url-filter-server must be deployed with
+  filtering-engine/src importable - now documented here and already
+  reflected in how the suite runs (PYTHONPATH=../filtering-engine/src).
+
+## 6. Known remaining limits
 
 - No iOS compile, signing, or device testing (no Apple SDK/credentials).
 - No real-network OHTTP interop run (gateway fetch + npm ci).
@@ -199,5 +255,9 @@ kept out of the ordinary passing suites.
   blocked in this environment (see 1.10).
 - PrefilterUpdater persistence URL is caller-supplied; app-group wiring
   for extension/app sharing is an undecided design item for the owner.
+- PrefilterUpdater is a struct without internal synchronization;
+  callers must serialize refresh() (see section 5).
+- url-filter-server depends on the sibling filtering-engine/src tree
+  being importable at deployment (see section 5).
 - Alembic migrations were exercised through the suite but not
   individually audited line-by-line.
