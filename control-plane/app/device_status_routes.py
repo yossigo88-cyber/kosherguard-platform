@@ -19,7 +19,7 @@ def register_device_status_routes(app, *, error, current_user,
     def _connectivity_class(last_seen):
         """Receipt-based classification, NOT live presence: the server
         only knows when a device last reported. recently_reporting <
-        1h; stale 1-24h; offline > 24h; never_reported when the
+        1h; stale 1-24h; no_report_over_24h > 24h; never_reported when the
         enrollment has never contacted us."""
         if last_seen is None:
             return "never_reported"
@@ -31,7 +31,7 @@ def register_device_status_routes(app, *, error, current_user,
             return "recently_reporting"
         if age < timedelta(hours=24):
             return "stale"
-        return "offline"
+        return "no_report_over_24h"
 
     @app.get("/api/devices")
     def list_devices(user: User = Depends(current_user),
