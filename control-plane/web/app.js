@@ -492,11 +492,16 @@ async function refreshGuardians() {
         "Your password (fresh authentication) to reset MFA for " +
         g.email + ":");
       if (!password) return;
+      const totp_code = prompt("Your current authenticator code:");
+      if (!totp_code) return;
+      const confirm = prompt("Type mfa-reset to reset MFA for " + g.email +
+        ". This revokes their sessions and requires MFA enrollment again.");
+      if (confirm !== "mfa-reset") return;
       const rr = await api(`/api/guardians/${g.id}/mfa-reset`, {
         method: "POST",
         headers: {"Content-Type": "application/json",
                   "X-KosherGuard-Request": "1"},
-        body: JSON.stringify({password}),
+        body: JSON.stringify({password, totp_code, confirm}),
       });
       const err = $("guardian-error");
       err.textContent = rr.status === 200 ? "" :
