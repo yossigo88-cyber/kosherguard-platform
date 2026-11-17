@@ -10,14 +10,19 @@
 body { font-family: Georgia, serif; color: var(--ink); background: var(--paper); line-height: 1.55; }
 header { padding: 1rem 6vw; border-bottom: 1px solid #ddd5c5; display:flex; justify-content:space-between; }
 .logo { font-weight: bold; color: var(--accent); font-size: 1.25rem; }
-main { max-width: 46rem; margin: 2.5rem auto; padding: 0 1rem; }
+main { max-width: 52rem; margin: 2.5rem auto; padding: 0 1rem; }
 .panel { background:#fff; border:1px solid #e2dccb; border-radius:10px; padding:1.6rem; margin-bottom:1.4rem; }
 label { display:block; margin:.7rem 0 .2rem; font-size:.95rem; }
 input, select, textarea { width:100%; padding:.5rem; border:1px solid #c9c2b0; border-radius:6px; font-size:1rem; font-family:inherit; }
 button { background:var(--accent); color:#fff; border:0; padding:.55rem 1.2rem; border-radius:6px; font-size:1rem; margin-top:.9rem; cursor:pointer; }
+button.small { padding:.2rem .6rem; font-size:.85rem; margin-top:0; }
+button.reject { background:#8a3b3b; }
 table { width:100%; border-collapse:collapse; margin-top:.8rem; }
 th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3; font-size:.95rem; }
 .error { color:#a33; margin-top:.6rem; }
+.note { color:#6b6353; font-size:.85rem; margin-top:.4rem; }
+.badge { display:inline-block; padding:.05rem .5rem; border-radius:8px; font-size:.8rem; background:#e7efe9; }
+.sched { font-size:.9rem; color:#3d4650; margin:.15rem 0 0 1rem; }
 .hidden { display:none; }
 </style>
 </head>
@@ -36,7 +41,50 @@ th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3;
   </section>
   <section class="panel hidden" id="devices-panel">
     <h2>Your devices</h2>
-    <table id="devices"><thead><tr><th>Name</th><th>State</th></tr></thead><tbody></tbody></table>
+    <table id="devices"><thead><tr>
+      <th>Name</th><th>State</th><th>Enrollment</th><th>Connectivity</th>
+      <th>Last confirmed update</th><th>Pending commands</th>
+    </tr></thead><tbody></tbody></table>
+    <p class="note">Connectivity and update times come from stored device
+    check-in receipts only; they are not live presence. The server does
+    not verify actual on-device enforcement.</p>
+  </section>
+  <section class="panel hidden" id="policies-panel">
+    <h2>Family policies</h2>
+    <p id="permitted" class="note"></p>
+    <div id="policies"></div>
+  </section>
+  <section class="panel hidden" id="exceptions-panel">
+    <h2>Exception requests</h2>
+    <form id="exception-form">
+      <label>Kind
+        <select id="ex-kind">
+          <option value="allow_domains">Allow specific domains</option>
+          <option value="disable_policy">Temporarily disable policy (owner only)</option>
+        </select>
+      </label>
+      <label>Applies to
+        <select id="ex-scope">
+          <option value="device">One device</option>
+          <option value="group">A device group</option>
+        </select>
+      </label>
+      <label id="ex-device-row">Device <select id="ex-device"></select></label>
+      <label id="ex-group-row" class="hidden">Group <select id="ex-group"></select></label>
+      <label id="ex-domains-row">Domains (one per line)
+        <textarea id="ex-domains" rows="2" placeholder="example.com"></textarea></label>
+      <label>Reason <input id="ex-reason" required maxlength="500"></label>
+      <label>Duration (minutes, 5-10080) <input id="ex-duration" type="number" min="5" max="10080" value="120" required></label>
+      <button type="submit">Request exception</button>
+      <div class="error" id="ex-error"></div>
+    </form>
+    <table id="exceptions"><thead><tr>
+      <th>What</th><th>Reason</th><th>Duration</th><th>Requested by</th>
+      <th>Status</th><th></th>
+    </tr></thead><tbody></tbody></table>
+    <p class="note">A pending request changes nothing. Only an owner, or
+    a guardian within their delegated limits, can approve a request into
+    a live exception; every decision is audited.</p>
   </section>
   <section class="panel hidden" id="support-panel">
     <h2>Support</h2>
@@ -57,9 +105,7 @@ th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3;
     </form>
     <table id="support-requests"><thead><tr><th>Subject</th><th>Status</th></tr></thead><tbody></tbody></table>
   </section>
-  <section class="panel hidden" id="policies-panel">
-    <h2>Family policies</h2>
-    <table id="policies"><thead><tr><th>Name</th><th>Default action</th><th>Enabled</th></tr></thead><tbody></tbody></table>
+  <section class="panel hidden" id="signout-panel">
     <button id="signout">Sign out</button>
   </section>
 </main>
