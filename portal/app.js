@@ -71,7 +71,7 @@ function renderDevices() {
 
 function renderSchedules(schedules) {
   if (!schedules || !schedules.length) return "";
-  const DAYNAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const DAYNAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const fmt = t => (typeof t === "number")
     ? String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0")
     : String(t);
