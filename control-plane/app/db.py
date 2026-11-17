@@ -51,7 +51,14 @@ def lock_tenant(session: Session, tenant_id: int) -> None:
     that affects what a generation contains (policy, assignment,
     group, exception, default selection) and every publication takes
     this lock first, so a concurrent change can never be silently
-    omitted, resurrected or half-applied by a racing publication."""
+    omitted, resurrected or half-applied by a racing publication.
+
+    Bearer log ingestion, offboarding, credential revocation, retention
+    changes and physical log cleanup share this lock too. Acquire it
+    before device/credential rows, log deletes or inserts; refresh any
+    authorization objects read before waiting. Multi-tenant maintenance
+    acquires tenants in ascending ID order. Hold through commit.
+    """
     session.scalar(select(Tenant).where(Tenant.id == tenant_id)
                    .with_for_update())
 
