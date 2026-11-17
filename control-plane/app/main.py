@@ -273,6 +273,16 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=403,
                     detail="verified MFA required; enroll then sign in with a code")
+        # Answer 29: read_only staff may VIEW authorized information
+        # only. Block every mutating call outside account self-service
+        # (/api/auth/*), even when the account also holds a tenant owner
+        # role - the same precedence as the destructive-command limit.
+        if (user.staff_role == StaffRole.read_only.value
+                and request.method not in ("GET", "HEAD", "OPTIONS")
+                and not request.url.path.startswith("/api/auth/")):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403,
+                detail="read-only staff role: viewing authorized information only")
         # Serialize tenant configuration writes with publication/default
         # changes. The lock lives through the same request DB transaction.
         if request.method in {"POST", "PUT", "DELETE", "PATCH"} and request.url.path.startswith(("/api/policies", "/api/devices", "/api/groups", "/api/publications")):
@@ -354,6 +364,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "tenant_id": user.tenant_id,
                 "mfa_enabled": user.totp_secret is not None,
                 "privileged": user.role != Role.viewer or user.is_platform_admin,
+                "staff_role": user.staff_role,
                 "mfa_verified": request.state.mfa_verified,
                 "delegated_settings": json.loads(user.delegated_settings)}
 
