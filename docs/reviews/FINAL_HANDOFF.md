@@ -31,10 +31,21 @@ control-plane suite re-run green at 184+172):
    reject) create real PolicyExceptions through the same validation
    and approver rules as direct creation.
 3. Device update-state chain (Answer 23): GET /api/devices carries
-   desired published revision (server intent), pending command ledger
-   count (server push records), and stored device receipts
-   (acknowledgments, DDM reports, last check-in) with explicit labels
-   that actual on-device enforcement remains unverified.
+   per device the desired published revision (server intent), the
+   push_chain (per-status command ledger counts - queued = push
+   requested, delivered = push accepted by the channel,
+   acknowledged/not_now = device answers - plus the latest command),
+   reported_vs_published (the latest stored DDM receipt's declaration
+   states matched by identifier + server-token + active + valid
+   against what the server currently serves that enrollment, with
+   explicit no_enrollment / no_report_received /
+   no_declarations_served / served_not_fully_reported /
+   all_served_reported_applied states), and receipt-based
+   connectivity with last device receipt. Every field is labeled as
+   server ledger record or stored receipt; actual on-device
+   enforcement remains unverified. Deepened at commit
+   a408645ab3b659bbdca2b8ceb42cd575ee1a7b1a after the auditor's
+   recheck; suite re-verified green at that head (184+172).
 Three committed load-test harnesses with measured numbers and CI smoke
 tests (docs/reviews/LOAD_TEST.md). UI flows verified end-to-end with a
 local headless browser against the real application (synthetic accounts,
