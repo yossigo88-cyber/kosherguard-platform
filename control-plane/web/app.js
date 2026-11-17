@@ -95,7 +95,7 @@ async function loadAppPolicy() {
   $("app-mode").value = r.body.mode || "blocklist";
   $("app-bundle-ids").value = (r.body.bundle_ids || []).join("\n");
   $("app-shield-toggle").textContent = r.body.shield_active
-    ? "Shield is ON remotely - turn off" : "Shield is OFF remotely - turn on";
+    ? "Remote setting is ON - turn off" : "Remote setting is OFF - turn on";
 }
 
 $("app-shield-toggle").addEventListener("click", async () => {
@@ -110,8 +110,14 @@ $("app-shield-toggle").addEventListener("click", async () => {
     // Reload first: loadAppPolicy clears the status line on entry.
     await loadAppPolicy();
     $("app-ok").textContent = next
-      ? "Shield gate on. The device's own Screen Time selection is now remotely activated."
-      : "Shield gate off. The device's shield is paused remotely.";
+      ? "Remote setting saved. The device applies it on its next "
+        + "successful sync, and only to the device owner's own "
+        + "locally consented Screen Time selection - none exists "
+        + "until they choose apps on the device. The device-side "
+        + "effect is not tracked from here."
+      : "Remote setting saved (off). The device pauses the shield on "
+        + "its next successful sync; the effect is not tracked from "
+        + "here.";
   } else {
     $("app-error").textContent = r.body.error || "Shield toggle failed";
   }
@@ -138,8 +144,8 @@ $("app-save").addEventListener("click", async () => {
       bundle_ids: escIds($("app-bundle-ids").value)})});
   if (r.status === 200) {
     $("app-ok").textContent = r.body.reapplied
-      ? `Saved and re-queued to the device (command #${r.body.command_id}). ` +
-        "The old restrictions stay on the device until the replacement lands."
+      ? `Saved; updated policy re-queued (command #${r.body.command_id}). ` +
+        "Waiting for device check-in."
       : (r.body.reapply_reason
         ? `Saved, but the device keeps its old restrictions for now: ${r.body.reapply_reason}`
         : "Saved. Not applied to the device yet - use Apply to enforce it.");

@@ -461,7 +461,18 @@ expansion to all-apps/all-except; publication still held.
    confirmation line was set before `loadAppPolicy()`, which clears
    it on entry - the confirmation would never have rendered. Both
    were in unpublished new code; reported for independent severity
-   assessment per the standing rule.
+   assessment per the standing rule. Reviewer wording pass followed:
+   the toggle confirmation no longer claims the selection "is now
+   remotely activated" - it states the remote setting is saved, the
+   device applies it on its next successful sync, only to the owner's
+   locally consented selection (none exists until chosen on device),
+   and the device-side effect is not tracked from here; the labels
+   read "Remote setting is ON/OFF" (server-side setting, not a
+   device-enforcement claim); the save-while-applied message no
+   longer asserts old restrictions remain on the device - it reads
+   "Saved; updated policy re-queued (command #N). Waiting for device
+   check-in." Updated pixels recaptured through the same
+   authenticated workflow.
 5. **Apple API audit against the official sample.** Our
    `URLFilterConfiguration.swift` call sequence matches Apple's
    FilteringTrafficByURL sample
