@@ -256,6 +256,9 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
                     MDMEnrollment.device_id == case.device_id,
                     MDMEnrollment.tenant_id == case.tenant_id,
                     MDMEnrollment.state.in_(["pending", "enrolled"]))).all():
+                from .native_mdm import cleanup_enrollment
+                cleanup_enrollment(session, tenant_id=case.tenant_id,
+                    enrollment_pk=enrollment.id, reason="offboarded")
                 enrollment.state = "offboarded"
             for cred in session.scalars(select(IssuedCredential).where(
                     IssuedCredential.device_id == case.device_id,
