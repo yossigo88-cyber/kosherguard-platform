@@ -26,6 +26,9 @@ async function showApp() {
   ["groups-panel", "exceptions-panel", "policy-preview-panel", "publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "approvals-panel", "staff-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   accountInfo = me.body;
+  // read_only staff: viewing only - hide every mutation control outside
+  // account self-service; the backend rejects mutations independently.
+  document.body.classList.toggle("ro", me.body.staff_role === "read_only");
   $("who").textContent = me.body.email || "";
   if (me.body.privileged && !me.body.mfa_verified) {
     document.querySelectorAll("section.panel").forEach(p => p.classList.add("hidden"));
@@ -874,7 +877,7 @@ async function refreshApprovals() {
   document.querySelector("#approvals-table tbody").innerHTML = rows.map(a =>
     `<tr><td>${a.id}</td><td>${esc(a.operation)}</td><td>${esc(a.device || "-")}</td>` +
     `<td>${esc(a.requested_by_email || "user " + a.requested_by_user_id)}</td>` +
-    `<td>${esc(a.status)}</td>` +
+    `<td>${esc(a.status)}${a.status === "executed" && a.decision_detail ? `<br><small>${esc(a.decision_detail)}</small>` : ""}</td>` +
     `<td>${esc(a.reason || "")}</td><td>${esc(a.expires_at.slice(0, 16).replace("T", " "))}</td>` +
     `<td>${a.status === "pending" ? `<button class="link" data-decide="${a.id}" data-op="${esc(a.operation)}" data-device="${esc(a.device || "-")}" data-by="${esc(a.requested_by_email || "user " + a.requested_by_user_id)}">decide</button>` : ""}</td></tr>`).join("");
 }
@@ -902,7 +905,13 @@ $("approval-form").addEventListener("submit", async (e) => {
                           reason: $("ap-reason").value}),
   });
   if (r.status === 200) {
-    ok.textContent = decision === "approve" ? "Approved and executed." : "Rejected.";
+    if (decision === "approve") {
+      const d = (r.body && r.body.decision_detail) || "recorded";
+      ok.textContent = "Approved: " + d +
+        (d.indexOf("queued") >= 0 ? " Queue insertion is not device execution - the device has not necessarily completed the operation." : "");
+    } else {
+      ok.textContent = "Rejected.";
+    }
     $("approval-act").classList.add("hidden");
     refreshApprovals();
   } else {
