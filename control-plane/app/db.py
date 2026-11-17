@@ -42,6 +42,20 @@ def session_scope(engine):
         session.close()
 
 
+def lock_tenant(session: Session, tenant_id: int) -> None:
+    """Serialize tenant-scoped configuration mutations and publication.
+
+    Locks the always-present tenant row FOR UPDATE (a no-op on SQLite).
+    PublicationState cannot serve this purpose: its row may not exist
+    yet, and locking a nonexistent row locks nothing. Every mutation
+    that affects what a generation contains (policy, assignment,
+    group, exception, default selection) and every publication takes
+    this lock first, so a concurrent change can never be silently
+    omitted, resurrected or half-applied by a racing publication."""
+    session.scalar(select(Tenant).where(Tenant.id == tenant_id)
+                   .with_for_update())
+
+
 class ScopedSession:
     """Tenant-scoped access; every read and write is pinned to tenant_id."""
 
