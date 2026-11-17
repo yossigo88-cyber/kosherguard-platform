@@ -1,13 +1,28 @@
 # Monitoring and logging configuration (M6)
 
-STATUS: configuration only - nothing here is deployed or running.
-No hosting has been purchased and no live infrastructure changes.
+STATUS: the control-plane implements real observability in code
+(`control-plane/app/observability.py`, tested by
+`control-plane/tests/test_observability.py`):
+
+- `GET /health` - cheap liveness, unauthenticated.
+- `GET /health/depth` - dependency depth (database check); 503 with
+  per-component results when degraded.
+- `GET /metrics` - Prometheus text counters (per-route-template
+  requests by status), staff-only.
+- One JSON line per API request on the `kosherguard.requests` logger:
+  timestamp, method, route TEMPLATE, status, duration. Never bodies,
+  headers, cookies, query strings, emails or tokens; concrete IDs
+  never appear (route templates only).
+
+Everything else in this file remains configuration only - nothing is
+deployed or running. No hosting has been purchased and no live
+infrastructure changes.
 
 ## Services to monitor
 
 | Service | Health endpoint | Notes |
 | --- | --- | --- |
-| control-plane | GET /health | auth, policies, publications, category admin |
+| control-plane | GET /health, GET /health/depth, GET /metrics | implemented in code (see above) |
 | mdm | module-level | ADE sync, command queue depth, APNs cert expiry state |
 | url-filter-server | GET /v1/dataset/manifest | device-credential protected in production |
 | proxy-edge | service-specific | see proxy-edge/ |
