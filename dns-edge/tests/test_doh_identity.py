@@ -49,7 +49,8 @@ class TestAuthenticate:
 
     def test_error_never_contains_token(self):
         tok = issue_token(KEY, "dev-1", "t", "doh")
-        evil = tok[:-2] + "xx"
+        body, sig = tok.split(".")
+        evil = body + "." + ("A" if sig[0] != "A" else "B") + sig[1:]
         with pytest.raises(IdentityError) as exc_info:
             authenticate_doh_request(f"Bearer {evil}", KEY)
         assert tok not in str(exc_info.value)
