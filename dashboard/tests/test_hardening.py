@@ -203,7 +203,7 @@ def test_failed_login_audited_without_secrets(custom_server):
 def _expire_token(db_path, token):
     conn = db_module.connect(db_path)
     conn.execute("UPDATE sessions SET expires_at = ? WHERE token = ?",
-                 ("2020-01-01T00:00:00+00:00", token))
+                 ("2020-01-01T00:00:00+00:00", auth.hash_session_token(token)))
     conn.commit()
     conn.close()
 
@@ -226,7 +226,7 @@ def test_expired_session_rejected_and_cleaned_up(custom_server):
     conn = db_module.connect(srv.store.db_path)
     stale = auth.create_session(conn, 1)
     conn.execute("UPDATE sessions SET expires_at = ? WHERE token = ?",
-                 ("2020-01-01T00:00:00+00:00", stale))
+                 ("2020-01-01T00:00:00+00:00", auth.hash_session_token(stale)))
     conn.commit()
     removed = auth.cleanup_expired_sessions(conn)
     assert removed == 1
