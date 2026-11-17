@@ -55,6 +55,11 @@ class StaffRoleBody(BaseModel):
     staff_role: str | None = None  # null revokes staff status
 
 
+class TenantOnboardBody(BaseModel):
+    tenant_name: str
+    owner_email: str
+
+
 def fresh_check(error, user: User, totp_code: str | None,
                 confirm: str | None, expected: str) -> JSONResponse | None:
     """Fresh verification + explicit confirmation for sensitive
@@ -219,6 +224,48 @@ def register_staff_routes(app, *, error, current_user, db_session,
             actor_user_id=user.id)
         session.commit()
         return approval_json(a, session)
+
+    @app.post("/api/staff/tenants",
+              dependencies=[Depends(require_csrf_header)])
+    def onboard_tenant(body: TenantOnboardBody,
+                       user: User = Depends(current_user),
+                       session=Depends(db_session)):
+        """Customer-tenant onboarding (Answers 28/33: invitation-only
+        pilot, staff-assisted). A staff owner creates the customer
+        tenant and the invitation for its first owner; the raw invite
+        token is returned once for out-of-band delivery and is never
+        stored or logged. This is the ONLY way a tenant comes into
+        existence - there is no self-service signup."""
+        denied = require_staff(error, user, StaffRole.owner)
+        if denied is not None:
+            return denied
+        from .models import Tenant, InviteToken
+        import secrets as _secrets
+        name = (body.tenant_name or "").strip()
+        email = (body.owner_email or "").strip().lower()
+        if not name or len(name) > 200:
+            return error(400, "tenant name required (max 200 chars)")
+        if not email or "@" not in email or len(email) > 320:
+            return error(400, "valid owner email required")
+        tenant = Tenant(name=name)
+        session.add(tenant)
+        session.flush()
+        raw = _secrets.token_urlsafe(32)
+        invite = InviteToken(
+            tenant_id=tenant.id, email=email, role=Role.owner,
+            token_hash=security.hash_session_token(raw),
+            invited_by_user_id=user.id,
+            expires_at=utcnow() + timedelta(days=7))
+        session.add(invite)
+        session.flush()
+        ScopedSession(session, tenant.id).audit(
+            "staff.tenant_onboard",
+            f"tenant {tenant.id} ({name}) onboarded for {email}",
+            actor_user_id=user.id)
+        session.commit()
+        return {"tenant_id": tenant.id, "owner_email": email,
+                "invite_token": raw,
+                "expires_at": invite.expires_at.isoformat()}
 
     @app.get("/api/staff")
     def staff_list(user: User = Depends(current_user),
