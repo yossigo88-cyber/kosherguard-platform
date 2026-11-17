@@ -39,8 +39,18 @@ import Foundation
 ///   meantime.
 /// - Subsequent fetch whose tag matches the current valid artifact:
 ///   return nil - Apple's documented "no update necessary" signal.
+/// Entry-point shape matches Apple's official "Filtering traffic by
+/// URL" sample (SimpleURLFilterExtension, docs-assets.developer.apple.
+/// com/published/ab6517c07cf8/FilteringTrafficByURL.zip, fetched
+/// 2026-11-17): @main class with required init, protocol conformance
+/// in an extension, EXAppExtensionAttributes in the Info.plist (no
+/// NSExtensionPrincipalClass).
 @available(iOS 26.0, *)
-final class URLFilterControlProvider: NEURLFilterControlProvider {
+@main
+class URLFilterControlProvider {
+
+    required init() {
+    }
 
     /// Where the sync persists the prefilter snapshot, relative to
     /// the shared app-group store (same location KosherGuardApp
@@ -50,12 +60,16 @@ final class URLFilterControlProvider: NEURLFilterControlProvider {
             .deletingLastPathComponent()
             .appendingPathComponent("prefilter-snapshot.json")
     }
+}
+
+@available(iOS 26.0, *)
+extension URLFilterControlProvider: NEURLFilterControlProvider {
 
     func start() async throws {
         // No per-launch state; the artifact is read per fetch.
     }
 
-    func stop(reason: NEProviderStopReason) async {
+    func stop(reason: NEProviderStopReason) async throws {
         // Nothing to tear down; no caches are held.
     }
 
@@ -93,10 +107,11 @@ final class URLFilterControlProvider: NEURLFilterControlProvider {
                 + "dataset for the current identity"])
         case .artifact(let artifact):
             // The artifact is small (sized for the corpus at ~0.1%
-            // FP); hand the bytes directly. Apple's alternative
-            // (temporaryFilepath) is for very large filters.
+            // FP), so it uses Apple's documented .smallFilter(Data)
+            // case; .temporaryFilepath(URL) - the sample's choice -
+            // is for very large filters.
             return NEURLFilterPrefilter(
-                data: .bytes(artifact.data),
+                data: .smallFilter(artifact.data),
                 tag: artifact.tag,
                 bitCount: artifact.bitCount,
                 hashCount: artifact.hashCount,

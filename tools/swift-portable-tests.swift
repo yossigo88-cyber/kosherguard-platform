@@ -3682,6 +3682,38 @@ final class AppShieldReachabilityTests: XCTestCase {
         }
     }
 
+    /// The URL Filter extension packaging must match Apple's official
+    /// "Filtering traffic by URL" sample exactly: EXAppExtensionAttributes
+    /// with the url-filter-control extension point, @main provider
+    /// class with required init, conformance in an extension, and
+    /// only the two documented PrefilterData cases.
+    func testURLFilterExtensionMatchesAppleTemplate() throws {
+        let plist = try source(
+            "ios/Configuration/URLFilterExtension-Info.plist")
+        XCTAssertTrue(plist.contains("EXAppExtensionAttributes"))
+        XCTAssertTrue(plist.contains(
+            "com.apple.networkextension.url-filter-control"),
+                      "extension point must be the Apple sample value")
+        XCTAssertFalse(plist.contains("<key>NSExtensionPrincipalClass</key>"),
+                       "the sample declares no principal class")
+        XCTAssertFalse(plist.contains(
+            "<string>com.apple.networkextension.url-filter</string>"),
+                       "the old guessed identifier must not return")
+        let provider = try source(
+            "ios/Sources/URLFilterExtension/URLFilterControlProvider.swift")
+        for needle in [
+            "@main",
+            "required init()",
+            "extension URLFilterControlProvider: NEURLFilterControlProvider",
+            ".smallFilter(",
+        ] {
+            XCTAssertTrue(provider.contains(needle),
+                          "provider missing \(needle)")
+        }
+        XCTAssertFalse(provider.contains(".bytes("),
+                       ".bytes is not a documented PrefilterData case")
+    }
+
     /// Every entitlement the new flow needs must be declared in the
     /// app target's entitlements file (still requiring Apple's
     /// approval; declared != granted).

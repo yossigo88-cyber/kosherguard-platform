@@ -1,15 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- STATUS: UNVERIFIED - hand-authored approximation, never opened in
-     Xcode. The URL Filter app extension MUST be created from Xcode
-     26's "URL Filter app extension template" (WWDC25 session 234);
-     the template generates the exact NSExtension entry, and its
-     NSExtensionPointIdentifier value must replace the placeholder
-     below before any build is claimed. Sources consulted 2026-11-17
-     do not publish the template's identifier; candidates seen in
-     developer-forum reports were rejected at App Store export only
-     because the url-filter-provider capability was not yet approved
-     for those App IDs, which does not confirm the identifier either
-     way. -->
+<!-- STATUS: structure verified against Apple's official sample
+     project, never opened in Xcode. The EXAppExtensionAttributes /
+     EXExtensionPointIdentifier pair below is copied from Apple's
+     "Filtering traffic by URL" sample code (SimpleURLFilterExtension/
+     Info.plist in docs-assets.developer.apple.com/published/
+     ab6517c07cf8/FilteringTrafficByURL.zip, downloaded 2026-11-17):
+     com.apple.networkextension.url-filter-control. The sample uses
+     NO NSExtensionPrincipalClass - the @main-annotated provider
+     class is the entry point - so none is declared here either.
+     Replaces an earlier guessed placeholder
+     (com.apple.networkextension.url-filter under NSExtension), which
+     was wrong in BOTH key and value. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -29,14 +30,10 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>NSExtension</key>
+	<key>EXAppExtensionAttributes</key>
 	<dict>
-		<!-- PLACEHOLDER: replace with the identifier the Xcode 26
-		     URL Filter template generates (see header comment). -->
-		<key>NSExtensionPointIdentifier</key>
-		<string>com.apple.networkextension.url-filter</string>
-		<key>NSExtensionPrincipalClass</key>
-		<string>$(PRODUCT_MODULE_NAME).URLFilterControlProvider</string>
+		<key>EXExtensionPointIdentifier</key>
+		<string>com.apple.networkextension.url-filter-control</string>
 	</dict>
 </dict>
 </plist>

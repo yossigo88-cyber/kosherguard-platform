@@ -334,17 +334,31 @@ here asserts a verified on-device result.
    the app group. `App.entitlements` now declares
    `com.apple.developer.family-controls` (declared != granted:
    Apple's separate approval is still required and unrequested).
-4. **URL Filter extension point identifier: still unresolved,
-   plainly.** Re-checked Apple's sources 2026-11-17:
-   `pir-service-example`'s TestingInstructionsNEURLFilter.md (fetched
-   in full, 10,058 bytes) documents the manager/protocol/token flow
-   but never names the extension's `NSExtensionPointIdentifier`;
-   developer.apple.com/documentation/networkextension/url-filters.md
-   likewise. The value remains the marked PLACEHOLDER in
-   `URLFilterExtension-Info.plist`; the Xcode 26 "URL Filter App
-   Extension" template (requires the Mac/Xcode gate, section 7) is
-   the authoritative source. No guessed value was promoted to a
-   claim.
+4. **URL Filter extension packaging: RESOLVED against Apple's
+   official sample project (2026-11-17).** The URL filters doc page
+   links a downloadable Apple sample, "Filtering traffic by URL"
+   (docs-assets.developer.apple.com/published/ab6517c07cf8/
+   FilteringTrafficByURL.zip, downloaded and read in full). Its
+   SimpleURLFilterExtension/Info.plist settles what no prose
+   document named: the extension declares
+   `EXAppExtensionAttributes.EXExtensionPointIdentifier =
+   com.apple.networkextension.url-filter-control` - NOT the
+   NSExtension dictionary and NOT the guessed
+   `com.apple.networkextension.url-filter` value this repo's
+   placeholder carried (wrong in both key and value; corrected).
+   The sample's provider is an `@main` class with `required init()`
+   and protocol conformance in an extension - no
+   NSExtensionPrincipalClass - and our provider now matches that
+   shape exactly. The sample also exposed a second real defect:
+   our `NEURLFilterPrefilter` construction used a `.bytes(Data)`
+   case that does not exist; the documented cases are
+   `.smallFilter(Data)` and `.temporaryFilepath(URL)` (verified in
+   the official PrefilterData reference). Ours now uses
+   `.smallFilter`. Sample deviations kept deliberately: we throw
+   (fail closed) where the sample returns nil on load failure, and
+   our entitlements add the app group our shared artifact file
+   needs. A portable-suite guard now pins the template shape so
+   none of this regresses silently.
 5. **Dashboard wording precision.** Panel blurb now says "nothing
    here has been verified on an iPhone yet" (was passive
    "validated in the device-testing phase"); unapply reads "Unapply
@@ -385,17 +399,43 @@ Verified against Apple's documentation (sources in section 6):
   (`AppBlockingPolicyClient`, pull-based) for dashboard visibility
   and consistency, not for token mapping.
 
-  EXPLICIT SCOPE LIMIT: on this route there is NO administrator
-  remote allow/block/category synchronization into actual shielding.
-  The mirrored server policy cannot drive the shield (no bundle-ID
-  to token mapping exists), and nothing in this build translates it
-  into a picker selection or applies it. Remote policy updates for
-  app restrictions are therefore a SUPERVISED-route capability
-  only. What the personally-owned route provides is local,
-  consented, on-device selection + shield with the server policy
-  visible alongside it - a real feature, but not remote
-  administration, and it is not described as one anywhere in the
-  UI, docs, or API.
+  REMOTE-GATING FEASIBILITY (grounded 2026-11-17 in Apple's
+  AuthorizationCenter / FamilyActivitySelection / ManagedSettingsStore
+  / ShieldSettings documentation; runtime behavior still device-gate):
+
+  API-SUPPORTED, currently UNIMPLEMENTED in this build:
+  - Remote ACTIVATION/PAUSE of the user's own stored selection.
+    After the one-time system consent, authorization persists until
+    the user revokes it in Settings (observable via the
+    authorizationStatus publisher); shield changes are plain store
+    property sets with NO per-change prompt. A server "blocking
+    on/off" flag can therefore gate whether the persisted selection
+    is applied. The selection bytes (opaque tokens) stay
+    device-local - the server sees only active/inactive state, so
+    the privacy boundary holds. Consent is not circumvented: the
+    server can only gate what the user already chose in the picker,
+    and revocation always wins.
+  - Remote CATEGORY posture: ShieldSettings.ActivityCategoryPolicy
+    supports .all and .all(except: tokens), so the server can switch
+    the device between off / shield-the-chosen-set / shield-
+    everything-except-the-chosen-set without any new tokens.
+
+  NOT API-SUPPORTED (impossible, not merely unbuilt):
+  - Server selection of specific apps by bundle ID on this route
+    (no token mapping exists).
+  - Syncing a selection across devices (tokens are device-local).
+  - Server-initiated restrictions beyond the user's own selection
+    without a new picker pass on that device.
+
+  CURRENT BUILD STATUS: none of the API-supported remote gating is
+  implemented - the shield is applied/cleared only by local UI
+  actions in AppBlockingView. Adding it is a bounded feature
+  increment: extend the pulled app-policy mirror with an
+  active/posture field and have AppShieldViewModel honor it on sync,
+  with UI disclosure that an administrator can turn the user's own
+  selection on or off. Held for the user's decision rather than
+  built silently, because it changes what the server can do to a
+  personal device.
 - **Internet denial is not launch blocking.** DNS/filter rules stop
   an app's traffic; the app still launches offline. The two
   mechanisms are complementary and configured separately.
@@ -452,7 +492,7 @@ account or costs money.
 | Task | Requires | Blocks |
 | --- | --- | --- |
 | Compile the iOS targets | A Mac with current Xcode | Any claim that the app builds |
-| Resolve the URL Filter `NSExtensionPointIdentifier` PLACEHOLDER | The Xcode 26 "URL Filter App Extension" template (no Apple document names the value; checked 2026-11-17) | Any claim that Xcode wiring is complete; the extension target cannot load with a placeholder identifier |
+
 | Run on a real device | Spare iPhone; supervision for the URL Filter / dns-proxy / MDM routes | Any claim of working on-device filtering |
 | `dns-proxy` entitlement | Apple's managed-entitlement approval for the App ID | DNS proxy on any device |
 | `family-controls` entitlement | App ID capability (account holder action) | Screen Time shields |
