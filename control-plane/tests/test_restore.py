@@ -44,7 +44,9 @@ def make_client(engine, email="owner@example.com", tenant_name="fam-a",
                    role=Role.owner))
     env = {"KG_DATABASE_URL": "postgresql://placeholder",
            "KG_PUBLICATIONS_ROOT": pub_root}
-    c = TestClient(create_app(Settings(env), engine=engine))
+    settings = Settings(env)
+    c = TestClient(create_app(settings, engine=engine))
+    c.app.state.restore_test_settings = settings
     r = mfa_login(c, json={"email": email, "password": PASSWORD}, headers=HDR)
     assert r.status_code == 200, r.text
     return c
@@ -286,3 +288,43 @@ def test_restore_rejects_stale_or_wrong_evidence(engine, client, stale):
     key = "filtering_credential_active" if stale in ("credential", "wrong-device") else (
         "baseline_assignment_valid" if stale == "disabled-baseline" else "filtering_configuration_published")
     assert body["checks"][key] is False
+
+
+@pytest.mark.parametrize("kind", ["disable_policy", "allow_domains"])
+@pytest.mark.parametrize("scope", ["device", "group"])
+def test_restore_effective_exception_blocks_readiness_until_cleanup(engine, client, kind, scope):
+    from app.worker import run_once
+    dev = mk_device(client)
+    pid = _publish_setup(client)
+    assert client.post(f"/api/devices/{dev}/assignment", json={"policy_id": pid}, headers=HDR).status_code == 200
+    _enrollment(engine, dev, "exception-cycle")
+    _credential(engine, dev)
+    assert client.post("/api/publications", headers=HDR).status_code == 200
+    assert attest(client, dev).status_code == 200
+    assert readiness(client, dev)["setup_release_ready"] is True
+    body = {"kind": kind, "scope_type": scope, "device_id": dev,
+            "domains": ["bad.example"] if kind == "allow_domains" else [],
+            "reason": "temporary authorized exception",
+            "expires_at": (utcnow() + timedelta(hours=1)).isoformat()}
+    if scope == "group":
+        r = client.post("/api/groups", json={"name": "restore-group", "policy_id": pid}, headers=HDR)
+        assert r.status_code == 200, r.text
+        gid = r.json()["id"]
+        assert client.put(f"/api/groups/{gid}/devices/{dev}", headers=HDR).status_code == 200
+        body["group_id"] = gid
+        body.pop("device_id")
+    r = client.post("/api/exceptions", json=body, headers=HDR)
+    assert r.status_code == 200, r.text
+    eid = r.json()["id"]
+    # Even a saved active exception blocks the checklist while unpublished.
+    status = readiness(client, dev)
+    assert status["checks"]["baseline_assignment_valid"] is True
+    assert status["checks"]["filtering_exceptions_clear"] is False
+    assert status["setup_release_ready"] is False
+    assert client.post("/api/publications", headers=HDR).status_code == 200
+    assert readiness(client, dev)["setup_release_ready"] is False
+    # A saved revocation is not yet evidence the edge snapshot is clear.
+    assert client.delete(f"/api/exceptions/{eid}", headers=HDR).status_code == 200
+    assert readiness(client, dev)["checks"]["filtering_exceptions_clear"] is False
+    assert run_once(engine, client.app.state.restore_test_settings)
+    assert readiness(client, dev)["setup_release_ready"] is True
