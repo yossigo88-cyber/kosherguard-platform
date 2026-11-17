@@ -181,7 +181,7 @@ def _load_device_auth():
     return _da
 
 
-def create_app(settings: Settings, engine=None) -> FastAPI:
+def create_app(settings: Settings, engine=None, native_mdm_runtime=None) -> FastAPI:
     app = FastAPI(title="KosherGuard Control Plane", docs_url=None,
                   redoc_url=None)
     engine = engine or make_engine(settings.database_url)
@@ -1247,6 +1247,15 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
 
     register_ddm_routes(app, error=error, db_session=db_session,
                         settings=settings)
+
+    from .ade_web_routes import register as register_ade_web
+    register_ade_web(app,runtime=native_mdm_runtime,error=error,current_user=current_user,
+        db_session=db_session,require_guardian=require_guardian,
+        require_csrf_header=require_csrf_header,settings=settings)
+    from .native_mdm_routes import register_native_mdm_routes
+    register_native_mdm_routes(app, runtime=native_mdm_runtime, error=error,
+        current_user=current_user, db_session=db_session,
+        require_csrf_header=require_csrf_header, require_guardian=require_guardian)
 
     register_enrollment_routes(app, error=error, current_user=current_user,
         db_session=db_session, require_csrf_header=require_csrf_header,
