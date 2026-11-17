@@ -47,6 +47,7 @@ const REPORTED_LABELS = {
   served_not_fully_reported: "Not all served policies reported applied",
   no_report_received: "No device report received yet",
   no_declarations_served: "No policy declarations served yet",
+  comparison_unavailable: "Comparison unavailable (server could not evaluate)",
   no_enrollment: "Not enrolled"
 };
 
@@ -54,7 +55,7 @@ function renderDevices() {
   document.querySelector("#devices tbody").innerHTML = DEVICES.map(d => {
     const chain = d.push_chain || {};
     const latest = chain.latest_command
-      ? `${esc(chain.latest_command.command)}: ${esc(chain.latest_command.status)}`
+      ? `${esc(chain.latest_command.command)}: ${esc(chain.latest_command.status)} (command ledger)`
       : "none";
     return `<tr><td>${esc(d.name)}</td><td>${esc(d.state)}</td>` +
       `<td>${enrollmentLabel(d.enrollment)}</td>` +
