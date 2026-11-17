@@ -9,9 +9,32 @@ against a fresh clone.
 
 ## Verification state at delivery
 
-1,189 automated tests, all green at head across eight components:
-control-plane 343, filtering-engine 337, dns-edge 87, mdm 64,
+1,202 automated tests, all green at head across eight components:
+control-plane 356, filtering-engine 337, dns-edge 87, mdm 64,
 proxy-edge 38, url-filter-server 38, category-pipeline 6, dashboard 276.
+
+Independent-coverage-audit closure: the read-only requirements audit
+run against this branch's earlier head found three buildable gaps. All
+three are closed in code on this branch (commit
+44e48b1d9483b985984931a15cbdbd1c00542cb6, 13 new tests, full
+control-plane suite re-run green at 184+172):
+1. Customer-tenant onboarding: staff-owner-only POST
+   /api/staff/tenants creates the customer tenant plus a 7-day owner
+   invitation (raw token returned once, stored hashed, audited), with
+   a staff-panel Add customer form; invite accept reuses the existing
+   flow (Answers 28/33).
+2. Customer portal (spec Part 2A): devices now show enrollment and
+   supervision state, receipt-based online/stale/offline connectivity,
+   last confirmed update and pending command count; policies show
+   schedules; permitted settings are shown from the account's
+   delegations; structured exception requests (submit/list/approve/
+   reject) create real PolicyExceptions through the same validation
+   and approver rules as direct creation.
+3. Device update-state chain (Answer 23): GET /api/devices carries
+   desired published revision (server intent), pending command ledger
+   count (server push records), and stored device receipts
+   (acknowledgments, DDM reports, last check-in) with explicit labels
+   that actual on-device enforcement remains unverified.
 Three committed load-test harnesses with measured numbers and CI smoke
 tests (docs/reviews/LOAD_TEST.md). UI flows verified end-to-end with a
 local headless browser against the real application (synthetic accounts,
