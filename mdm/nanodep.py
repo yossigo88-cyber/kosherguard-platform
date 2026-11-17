@@ -110,7 +110,7 @@ class NanoDEPClient:
         body: dict = {}
         if cursor:
             body["cursor"] = cursor
-        return self._proxy(dep_name, "POST", "devices", body=body)
+        return self._proxy(dep_name, "POST", "server/devices", body=body)
 
     def iter_devices(self, dep_name: str):
         """Yield device dicts across all cursor pages until Apple says
@@ -120,7 +120,10 @@ class NanoDEPClient:
             page = self.fetch_devices(dep_name, cursor=cursor)
             for device in page.get("devices", []):
                 yield device
-            cursor = page.get("cursor", cursor)
+            next_cursor = page.get("cursor", cursor)
+            if page.get("more_to_follow") and (not next_cursor or next_cursor == cursor):
+                raise NanoDEPError("pagination cursor did not advance")
+            cursor = next_cursor
             # Apple's contract: more_to_follow while pages remain.
             if not page.get("more_to_follow"):
                 return
@@ -159,3 +162,56 @@ class NanoDEPSyncer:
         self.client.set_assigner(self.dep_name, plan.profile_name)
         return self.client.assign_profile(
             self.dep_name, plan.profile_name, plan.serials)
+
+    # Defined below as a standalone function to keep the existing client API
+    # stable for existing users.
+
+
+def define_profile(client: NanoDEPClient, dep_name: str, profile: dict) -> dict:
+    """Apple Define Profile API through NanoDEP's authenticated proxy.
+
+    This registers with Apple only when explicitly invoked with authorized
+    credentials. No test invokes Apple. A response must be checked before
+    assignment; request JSON alone is not registration.
+    """
+    from .identity import https_url
+    https_url(profile.get("url", ""))
+    if profile.get("is_mdm_removable") is False and profile.get("is_supervised") is not True:
+        raise NanoDEPError("Prevent Unenrollment requires supervision")
+    if profile.get("await_device_configured") is True:
+        raise NanoDEPError("await_device_configured requires an implemented DeviceConfigured flow")
+    response = client._proxy(dep_name, "POST", "profile", body=profile)
+    if not response.get("profile_uuid"):
+        raise NanoDEPError("Apple did not return a profile UUID")
+    return response
+
+
+class CurrentAssignmentLookup:
+    """Real customer-specific NanoDEP Device Details lookup, no cached allow.
+
+    Apple returns serial/profile assignment, not UDID. The UDID association is
+    separately approved inventory supplied by the customer instance. Every
+    lookup checks current assigned profile/status under that tenant's server.
+    """
+    def __init__(self, *, client, tenant_id, dep_name, profile_uuid, inventory_lookup):
+        if type(tenant_id) is not int or tenant_id<1 or not dep_name or not profile_uuid or not callable(inventory_lookup):
+            raise NanoDEPError("tenant/server/profile and approved inventory required")
+        self.client,self.tenant_id,self.dep_name,self.profile_uuid=client,tenant_id,dep_name,profile_uuid
+        self.inventory_lookup=inventory_lookup
+
+    def __call__(self,tenant_id,serial):
+        if tenant_id!=self.tenant_id or not isinstance(serial,str) or not 1<=len(serial)<=120:
+            raise NanoDEPError("assignment lookup tenant/serial mismatch")
+        response=self.client._proxy(self.dep_name,"POST","devices",body={"devices":[serial]})
+        devices=response.get("devices")
+        if not isinstance(devices,dict):raise NanoDEPError("malformed Apple Device Details response")
+        device=devices.get(serial)
+        if (not isinstance(device,dict) or device.get("serial_number")!=serial
+                or device.get("profile_uuid")!=self.profile_uuid
+                or device.get("profile_status") not in {"assigned","pushed"}
+                or device.get("op_type")=="deleted" or device.get("released_by_replacement") is True):
+            raise NanoDEPError("device is not currently assigned to expected server/profile")
+        inventory=self.inventory_lookup(tenant_id,serial)
+        if not isinstance(inventory,str) or not 8<=len(inventory)<=120:
+            raise NanoDEPError("device has no approved UDID inventory")
+        return {"assigned":True,"udid":inventory}
