@@ -64,3 +64,15 @@ must be republished. Changed policy bytes require republication. Missing,
 corrupt or stale evidence never releases Setup Assistant; the endpoint
 reports readiness only. See test_restore.py and the security-corrections
 report for current evidence.
+
+## Exception-aware release gate
+
+`filtering_exceptions_clear` must also be green. Active allow_domains and
+disable_policy windows, for the device or its group, block readiness if
+present in saved state OR the currently pinned published overlay. Revoking
+an exception does not erase its already published authority. Wait for the
+revocation cleanup job to publish a new generation, then check readiness
+again. Cleanup uses the last published snapshot, without shipping drafts.
+Tests cover both scopes and exception kinds, revocation before cleanup,
+and readiness returning after cleanup. This is still a server readiness
+report, not a device-enforced Setup Assistant release.
