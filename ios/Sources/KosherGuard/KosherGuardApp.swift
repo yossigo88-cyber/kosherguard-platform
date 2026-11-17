@@ -274,6 +274,11 @@ final class FilterSyncViewModel {
     /// or a configuration without the PIR pair moves it back.
     private(set) var urlFilterState: FilterStatus.ExtensionState =
         .notInstalled
+    /// Bumped after every successful app-policy mirror save. The
+    /// app-blocking section observes this and re-evaluates the remote
+    /// shield gate (including re-checking Screen Time authorization)
+    /// on every completed policy sync.
+    private(set) var appPolicyGeneration = 0
     private var controller: FilterSyncController?
     private var configObserver: NSObjectProtocol?
 
@@ -384,39 +389,47 @@ final class FilterSyncViewModel {
         } else {
             canSync = true
         }
-        // Pull-based app policy mirror (Stage 10): refresh the
-        // device-local copy of the control plane's application
-        // policy, bound to the current endpoint identity. On the
-        // supervised route the MDM profile is the enforcement; this
-        // mirror feeds dashboard visibility only - on a
-        // personally-owned device the server policy CANNOT select
-        // apps (opaque device-local tokens), so it never drives
-        // AppShieldController. A fetch failure changes nothing
-        // (fail safe: the last good policy stays).
-        if let baseURL = configuration.controlPlaneBaseURL,
-           let deviceID = configuration.deviceID,
-           let store {
-            let keychain = KeychainCredentialStore(
-                accessGroup: KeychainCredentialStore.sharedAccessGroup)
-            let fingerprint = FilterSyncController.bootstrap(
-                for: configuration, tenantID: nil)?.endpointFingerprint
-                ?? ""
-            let policyFile = store.snapshotFile
-                .deletingLastPathComponent()
-                .appendingPathComponent("app-policy.json")
-            Task {
-                guard let cookie = CredentialBundle.load(
-                    from: keychain)?.session, !cookie.isEmpty,
-                    !fingerprint.isEmpty
-                else { return }
-                if let policy = try? await AppBlockingPolicyClient(
-                    baseURL: baseURL).fetch(
-                        deviceID: deviceID,
-                        sessionCookie: cookie) {
-                    try? AppBlockingPolicyStore(snapshotFile: policyFile)
-                        .save(policy,
-                              endpointFingerprint: fingerprint)
-                }
+        refreshAppPolicyMirror(configuration: configuration,
+                               store: store)
+    }
+
+    /// Pull-based app policy mirror (Stage 10): refresh the
+    /// device-local copy of the control plane's application policy,
+    /// bound to the current endpoint identity. On the supervised
+    /// route the MDM profile is the enforcement; on a
+    /// personally-owned device the server policy CANNOT select apps
+    /// (opaque device-local tokens) - the mirrored `shield_active`
+    /// flag can only gate ACTIVATION of the device's own locally
+    /// consented selection (see AppShieldViewModel), never choose or
+    /// widen it. A fetch failure changes nothing (fail safe: the
+    /// last good policy and its gate stay).
+    private func refreshAppPolicyMirror(
+        configuration: AppConfiguration, store: FilterRuleStore?) {
+        guard let baseURL = configuration.controlPlaneBaseURL,
+              let deviceID = configuration.deviceID,
+              let store
+        else { return }
+        let keychain = KeychainCredentialStore(
+            accessGroup: KeychainCredentialStore.sharedAccessGroup)
+        let fingerprint = FilterSyncController.bootstrap(
+            for: configuration, tenantID: nil)?.endpointFingerprint
+            ?? ""
+        let policyFile = store.snapshotFile
+            .deletingLastPathComponent()
+            .appendingPathComponent("app-policy.json")
+        Task {
+            guard let cookie = CredentialBundle.load(
+                from: keychain)?.session, !cookie.isEmpty,
+                !fingerprint.isEmpty
+            else { return }
+            if let policy = try? await AppBlockingPolicyClient(
+                baseURL: baseURL).fetch(
+                    deviceID: deviceID,
+                    sessionCookie: cookie),
+               (try? AppBlockingPolicyStore(snapshotFile: policyFile)
+                    .save(policy,
+                          endpointFingerprint: fingerprint)) != nil {
+                await MainActor.run { self.appPolicyGeneration += 1 }
             }
         }
     }
@@ -446,7 +459,17 @@ final class FilterSyncViewModel {
 
     func syncNow() {
         guard let controller else { return }
-        Task { await controller.syncNow() }
+        let configuration = AppConfiguration.managed()
+        let store = FilterRuleStore.appGroupStore()
+        Task {
+            await controller.syncNow()
+            // Recheck the remote shield gate on every manual sync:
+            // the mirror refresh bumps appPolicyGeneration, and the
+            // observing app-blocking section re-verifies Screen Time
+            // authorization before keeping the shield active.
+            refreshAppPolicyMirror(configuration: configuration,
+                                   store: store)
+        }
     }
 }
 

@@ -259,6 +259,15 @@ class DeviceAppPolicy(Base):
     # (review finding A1).
     profile_identifier: Mapped[str | None] = mapped_column(
         String(255), nullable=True)
+    # Remote activation gate for the PERSONAL (unsupervised) shield:
+    # True means this device's locally consented Screen Time
+    # selection may be activated; False pauses it. This gates
+    # activation only - the per-app selection is opaque, device-local
+    # and owner-only (FamilyControls); the server never sees or
+    # chooses which apps are shielded. Default False keeps local
+    # Screen Time behavior unchanged until a guardian opts in.
+    shield_active: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="false")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow,
         nullable=False)

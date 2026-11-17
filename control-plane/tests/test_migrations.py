@@ -195,7 +195,7 @@ def test_fresh_postgresql_migrations_roundtrip(tmp_path, monkeypatch):
     assert "uq_mdm_provision_current_udid" in {x["name"] for x in inspector.get_indexes("mdm_provisions")}
     assert {"cert_der", "cert_sha256", "machineinfo_sha256", "revoked_at", "push_ciphertext"} <= {x["name"] for x in inspector.get_columns("mdm_provisions")}
     with engine.connect() as con:
-        assert con.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0027"
+        assert con.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0028"
     assert "profile_identifier" in {x["name"] for x in inspector.get_columns("device_app_policies")}
     command.downgrade(cfg, "0024")
     command.upgrade(cfg, "head")

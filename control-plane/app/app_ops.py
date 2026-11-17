@@ -73,14 +73,32 @@ def get_policy(session: Session, tenant_id: int,
     row = _policy_row(session, tenant_id, device_id)
     if row is None:
         return {"mode": "blocklist", "bundle_ids": [], "saved": False,
-                "applied": False}
+                "applied": False, "shield_active": False}
     return {"mode": row.mode, "bundle_ids": json.loads(row.bundle_ids),
             "saved": True, "applied": row.profile_identifier is not None,
+            "shield_active": bool(row.shield_active),
             "updated_at": row.updated_at.isoformat()}
 
 
 def put_policy(session: Session, tenant_id: int, device_id: int,
-               mode: str, bundle_ids, actor_user_id: int) -> dict:
+               mode: str, bundle_ids, actor_user_id: int,
+               adapter=None) -> dict:
+    """Save the policy intent; if it is APPLIED, re-apply immediately.
+
+    Consistency rule (review finding): while a policy is applied
+    (profile_identifier set), the DDM declaration follows the stored
+    contents at the device's next sync - so a plain save would leave
+    the classic InstallProfile channel serving the OLD contents until
+    someone pressed Apply again, with nothing in the API admitting
+    the split. Instead, saving on an applied policy immediately
+    queues a replacement InstallProfile carrying the NEW contents
+    under the same stable identifier. Enforcement never gaps: the
+    on-device profile is replaced in place, never removed first, and
+    removal stays exclusive to Unapply. If the device has no active
+    enrollment the save still succeeds and reports reapplied=False -
+    nothing can be queued, and the API says so instead of silently
+    claiming "saved" while the device keeps the old profile.
+    """
     _device(session, tenant_id, device_id)
     try:
         ids = app_management.validate_bundle_ids(bundle_ids)
@@ -104,7 +122,49 @@ def put_policy(session: Session, tenant_id: int, device_id: int,
         tenant_id=tenant_id, actor_user_id=actor_user_id,
         action="app_policy.update",
         detail=f"device {device_id} mode={mode} apps={len(ids)}"))
-    return {"mode": mode, "bundle_ids": ids, "saved": True}
+    result = {"mode": mode, "bundle_ids": ids, "saved": True,
+              "reapplied": False}
+    if row.profile_identifier:
+        try:
+            command = apply_policy(session, tenant_id, device_id,
+                                   actor_user_id, adapter=adapter)
+        except AppOpsError as exc:
+            if exc.status != 409:
+                raise
+            result["reapply_reason"] = str(exc)
+        else:
+            result["reapplied"] = True
+            result["command_id"] = command.id
+    return result
+
+
+def set_shield_active(session: Session, tenant_id: int, device_id: int,
+                      active: bool, actor_id: int) -> dict:
+    """Remote activation gate for the PERSONAL (unsupervised) shield.
+
+    Gates only whether the device's own locally consented Screen Time
+    selection is activated. It cannot choose, add or widen which apps
+    are shielded - that selection is opaque and device-local
+    (FamilyControls), and the device-side code ignores this flag for
+    anything except activating/pausing the stored selection. Local
+    consent and revocation always win: a device with no stored
+    selection shows nothing, and removing the selection locally makes
+    this flag inert until the user picks again.
+    """
+    _device(session, tenant_id, device_id)
+    row = _policy_row(session, tenant_id, device_id)
+    if row is None:
+        row = DeviceAppPolicy(tenant_id=tenant_id, device_id=device_id,
+                              mode="blocklist", bundle_ids="[]")
+        session.add(row)
+        session.flush()
+    row.shield_active = active
+    session.flush()
+    session.add(AuditEvent(
+        tenant_id=tenant_id, actor_user_id=actor_id,
+        action="app_policy.shield_gate",
+        detail=f"device {device_id} active={active}"))
+    return {"shield_active": active}
 
 
 def apply_policy(session: Session, tenant_id: int, device_id: int,

@@ -109,13 +109,13 @@ test dependencies (including `psycopg[binary]`, `pgserver`, `mmh3`).
 - URL filter server: `cd url-filter-server && python3 -m pytest tests -q`
   -> **50 passed**
 - Control plane (run from repo root; `test_ade_web` imports `mdm`):
-  `python3 -m pytest control-plane/tests -q` -> **500 passed**;
-  `mdm/tests`: 129 passed (incl. the app-management payload tests);
-  `control-plane/tests/test_app_policy.py`: 19 passed
+  `python3 -m pytest control-plane/tests -q` -> **518 passed**;
+  `mdm/tests`: 136 passed (incl. the app-management payload tests);
+  `control-plane/tests/test_app_policy.py`: 35 passed
 - Portable iOS logic (real SPM build, pinned swift-crypto, real
   XCTest - no API shims):
   `KG_REPO_ROOT=$PWD bash tools/run-swift-portable-tests.sh`
-  -> **127 passed**, including:
+  -> **134 passed**, including:
   - Apple prefilter cross-language vectors: every FNV-1a, Murmur3
     (5 seeds), Punycode, per-item hash position, bit-array bytes and
     SHA-256 tag recomputed in Swift and required equal to the
@@ -370,6 +370,92 @@ here asserts a verified on-device result.
    markup/CSS - NOT an authenticated-workflow test and not presented
    as one).
 
+## 4d. Fourth review pass corrections (2026-11-17): remote shield gate, save-while-applied consistency
+
+Authorized scope (parent relay of the independent reviewer's gate
+4): implement the remote ACTIVATE/PAUSE gate for the personal
+shield as code on the dev branch; activate/pause only the device's
+locally consented selection; re-check authorization every sync; no
+expansion to all-apps/all-except; publication still held.
+
+1. **Remote shield gate (personal route).** `device_app_policies`
+   gains `shield_active` (default false; alembic 0028). The owner
+   toggles it from the dashboard (`PUT
+   /api/devices/{id}/app-policy/shield`: owner-only, guardian-delegation
+   checked, CSRF header required, tenant-scoped, audited as
+   `app_policy.shield_gate`). The device receives it through the
+   existing pull mirror (`GET .../app-policy` now includes
+   `shield_active`; the mirror file stays identity-bound to the
+   endpoint fingerprint).
+   Device-side semantics, all in `AppBlockingView.swift`:
+   - Shield active iff Screen Time authorization is `.approved`
+     AND a selection is stored locally AND the gate is not OFF.
+   - Gate OFF pauses (ManagedSettings store cleared) but KEEPS the
+     local selection; the state reads "Turned off by your
+     administrator" and says the choice stays private on the device.
+   - Gate UNKNOWN (never synced, signed out, server identity
+     changed, corrupt/foreign mirror) = purely local behavior,
+     exactly as before this feature existed; a failed sync changes
+     nothing and the last mirrored gate persists across restarts.
+   - Local Remove deletes the selection; the gate cannot recreate
+     it. Local consent and revocation always win.
+   - An always-visible disclosure states an administrator can turn
+     this blocking on or off remotely, can never see or change which
+     apps were picked, and that local removal always wins.
+   - The selection is never uploaded (static guard: no
+     URLSession/URLRequest/upload call in the shield path), and no
+     `.all`/`.all(except:)` category policy exists anywhere in the
+     shield path (static guard) - remote scope can never exceed the
+     user's explicit local consent.
+   - Every manual sync re-pulls the mirror and bumps a generation
+     counter the section observes, so authorization and gate are
+     re-evaluated on every sync.
+   Server tests (7 new in `test_app_policy.py`): default off,
+   toggle persist + audit, CSRF required, tenant scoped, guardian
+   403, gate independent of `profile_identifier`. Swift static
+   guards pin every device-side rule above.
+2. **Cross-tenant write fixed in the new gate.** First cut of
+   `set_shield_active` skipped the `_device` tenant check, so a
+   foreign device id would have created a policy row under the
+   caller's tenant pointing at another tenant's device. The new
+   tenant-scope test caught it on first run; `_device(...)` now runs
+   first and the test passes (404).
+3. **Save-while-applied consistency (reviewer must-fix).** Before:
+   `put_policy` updated stored contents while `profile_identifier`
+   stayed set, so the DDM declaration followed the NEW contents at
+   the next sync while the classic InstallProfile channel kept
+   serving the OLD profile until someone pressed Apply again - a
+   silent divergence. Chosen semantics (the reviewer's preferred
+   option): saving on an APPLIED policy immediately queues a
+   replacement InstallProfile carrying the new contents under the
+   same stable identifier, and the DDM ServerToken (already derived
+   from contents + updated_at) bumps in the same transaction. No
+   enforcement gap: the on-device profile is replaced in place,
+   never removed first; removal stays exclusive to Unapply. If the
+   device has no active enrollment the save still succeeds and the
+   API says `reapplied: false` with the reason - no silent
+   "saved but not served". API response now carries
+   `reapplied`/`command_id`/`reapply_reason`; the dashboard save
+   message states which of the three happened. Tests: requeue
+   carries the new payload and keeps the stable identifier; DDM
+   ServerToken changes on save-while-applied; save-on-unapplied
+   queues nothing; the mode-switch lifecycle test updated to the
+   new 3-install expectation.
+4. **Apple API audit against the official sample.** Our
+   `URLFilterConfiguration.swift` call sequence matches Apple's
+   FilteringTrafficByURL sample
+   (`loadFromPreferences` -> `setConfiguration(pirServerURL:
+   pirPrivacyPassIssuerURL:pirAuthenticationToken:
+   controlProviderBundleIdentifier:)` -> `prefilterFetchInterval` /
+   `shouldFailClosed` / `isEnabled` -> `saveToPreferences()`);
+   `localizedDescription` verified present on `NEURLFilterManager`
+   in the official documentation JSON. ManagedSettings audit found
+   one latent mismatch: the documented
+   `ShieldSettings.ActivityCategoryPolicy` case is
+   `specific(_:except:)`; ours now passes `except: []` explicitly
+   (the parameter defaults to `[]`, verified in the official
+   reference, so behavior is unchanged).
+
 ## 5. Application blocking: the honest capability split
 
 Verified against Apple's documentation (sources in section 6):
@@ -492,7 +578,6 @@ account or costs money.
 | Task | Requires | Blocks |
 | --- | --- | --- |
 | Compile the iOS targets | A Mac with current Xcode | Any claim that the app builds |
-
 | Run on a real device | Spare iPhone; supervision for the URL Filter / dns-proxy / MDM routes | Any claim of working on-device filtering |
 | `dns-proxy` entitlement | Apple's managed-entitlement approval for the App ID | DNS proxy on any device |
 | `family-controls` entitlement | App ID capability (account holder action) | Screen Time shields |

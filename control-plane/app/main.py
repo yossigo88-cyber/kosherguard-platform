@@ -121,6 +121,10 @@ class AppPolicyBody(BaseModel):
     bundle_ids: list[str] = []
 
 
+class ShieldGateBody(BaseModel):
+    active: bool
+
+
 class AppCommandBody(BaseModel):
     action: str
     itunes_store_id: int | None = None
@@ -1139,7 +1143,32 @@ def create_app(settings: Settings, engine=None, native_mdm_runtime=None) -> Fast
             return error(403,"app baseline changes are owner-only until a tightening proof exists")
         try:
             result = app_ops.put_policy(session, user.tenant_id, device_id,
-                                        body.mode, body.bundle_ids, user.id)
+                                        body.mode, body.bundle_ids, user.id,
+                                        adapter=make_adapter())
+        except app_ops.AppOpsError as exc:
+            return error(exc.status, str(exc))
+        session.commit()
+        return result
+
+    # Remote activation gate for the PERSONAL (unsupervised) shield:
+    # turns the device's locally consented Screen Time selection on or
+    # off remotely. The server never sees which apps are shielded; the
+    # per-app selection stays opaque and device-local, and local
+    # revocation always wins on the device.
+    @app.put("/api/devices/{device_id}/app-policy/shield",
+             dependencies=[Depends(require_csrf_header)])
+    def put_shield_gate(device_id: int, body: ShieldGateBody,
+                        user: User = Depends(current_user),
+                        session: Session = Depends(db_session)):
+        denied = require_guardian(user, "apps")
+        if denied is not None:
+            return denied
+        if user.role != Role.owner:
+            return error(403,"the shield gate is owner-only until a tightening proof exists")
+        try:
+            result = app_ops.set_shield_active(session, user.tenant_id,
+                                               device_id, body.active,
+                                               user.id)
         except app_ops.AppOpsError as exc:
             return error(exc.status, str(exc))
         session.commit()

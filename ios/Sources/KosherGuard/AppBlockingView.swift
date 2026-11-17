@@ -62,6 +62,28 @@ import ManagedSettings
 
 /// Drives the personally-owned app blocking section: authorization,
 /// selection, shield application, removal.
+///
+/// REMOTE ACTIVATION GATE (Stage 10): when this device is linked to a
+/// KosherGuard family account, the mirrored app policy carries a
+/// `shield_active` flag the family administrator sets from the
+/// dashboard. It gates ONLY whether the device's own locally
+/// consented selection is activated:
+///   - The server never sees, chooses or widens WHICH apps are
+///     shielded. The selection's tokens are opaque and device-local
+///     and are never uploaded anywhere.
+///   - Gate OFF pauses the shield but keeps the local selection;
+///     gate back ON reactivates exactly that selection.
+///   - Local removal deletes the selection; the gate cannot recreate
+///     it. Local consent and revocation always win.
+///   - Gate UNKNOWN (never synced, signed out, or server identity
+///     changed) means purely local behavior, exactly as before this
+///     feature existed. A failed sync changes nothing: the last
+///     mirrored gate keeps applying across restarts (it is stored
+///     identity-bound next to the filter snapshot).
+/// The gate cannot exceed the selection: there is deliberately no
+/// remote path to all-apps or all-except category shielding - that
+/// would be broader than the user's explicit local consent and needs
+/// a separate local choice in the picker.
 @Observable
 final class AppShieldViewModel {
     enum State: String {
@@ -74,6 +96,10 @@ final class AppShieldViewModel {
         case readyToChoose = "Choose apps to block"
         /// A selection is stored and applied to the named store.
         case shielding = "App blocking on"
+        /// A selection is stored but the family administrator turned
+        /// the shield off remotely. The choice is kept locally and
+        /// the device owner can change or remove it anytime.
+        case remotePaused = "Turned off by your administrator"
         /// Persistence unavailable (app group missing) - shield NOT
         /// guaranteed to survive relaunch; surfaced, never hidden.
         case persistenceUnavailable = "Shield storage unavailable"
@@ -113,11 +139,26 @@ final class AppShieldViewModel {
                    || !saved.categoryTokens.isEmpty
                    || !saved.webDomainTokens.isEmpty {
                 selection = saved
-                controller.applyShield(selection: saved)
-                state = .shielding
-                note = "\(saved.applicationTokens.count) apps, "
+                let counts = "\(saved.applicationTokens.count) apps, "
                     + "\(saved.categoryTokens.count) categories, "
                     + "\(saved.webDomainTokens.count) websites."
+                if currentRemoteGate() == false {
+                    // Gate OFF: pause only. The selection file stays;
+                    // the administrator cannot see or rebuild it, and
+                    // local removal below still wins.
+                    controller.clearShield()
+                    state = .remotePaused
+                    note = counts + " Kept on this iPhone."
+                } else {
+                    // Gate ON or UNKNOWN: activate the local choice.
+                    controller.applyShield(selection: saved)
+                    state = .shielding
+                    note = counts
+                    if currentRemoteGate() == true {
+                        note += " Your administrator can pause this "
+                            + "remotely."
+                    }
+                }
             } else {
                 state = .readyToChoose
                 note = ""
@@ -157,8 +198,27 @@ final class AppShieldViewModel {
             note = "Could not persist the selection: \(error.localizedDescription)"
             return
         }
-        controller.applyShield(selection: selection)
+        // refresh() applies the shield or pauses it per the remote
+        // gate - never apply directly here, or a paused device would
+        // re-shield the moment the picker closes.
         refresh()
+    }
+
+    /// The mirrored policy's remote gate for the CURRENT server
+    /// identity, or nil when unknown. Reads only the device-local
+    /// mirror written by the pull sync; performs no network access
+    /// and never uploads the selection.
+    private func currentRemoteGate() -> Bool? {
+        let configuration = AppConfiguration.managed()
+        guard let fingerprint = FilterSyncController.bootstrap(
+            for: configuration, tenantID: nil)?.endpointFingerprint,
+            let store = FilterRuleStore.appGroupStore()
+        else { return nil }
+        let policyFile = store.snapshotFile
+            .deletingLastPathComponent()
+            .appendingPathComponent("app-policy.json")
+        return AppBlockingPolicyStore(snapshotFile: policyFile)
+            .load(endpointFingerprint: fingerprint)?.shieldActive
     }
 
     /// Explicit removal only (matches AppShieldController's lifecycle
@@ -177,6 +237,7 @@ final class AppShieldViewModel {
 struct AppBlockingSection: View {
     @State private var model = AppShieldViewModel()
     @State private var pickerPresented = false
+    @Environment(FilterSyncViewModel.self) private var sync
 
     var body: some View {
         LabeledContent("This device", value: model.state.rawValue)
@@ -198,6 +259,22 @@ struct AppBlockingSection: View {
                  + "Time, then return here.")
                 .font(.footnote).foregroundStyle(.secondary)
             Button("Check again") { model.refresh() }
+        case .remotePaused:
+            Text("Your administrator turned app blocking off "
+                 + "remotely. Your app choice stays private on this "
+                 + "iPhone - they cannot see which apps you picked - "
+                 + "and you can change or remove it anytime.")
+                .font(.footnote).foregroundStyle(.secondary)
+            Button("Change blocked apps") { pickerPresented = true }
+                .familyActivityPicker(
+                    isPresented: $pickerPresented,
+                    selection: $model.selection)
+                .onChange(of: pickerPresented) { _, presented in
+                    if !presented { model.applySelection() }
+                }
+            Button("Remove app blocking", role: .destructive) {
+                model.removeBlocking()
+            }
         case .readyToChoose, .shielding, .persistenceUnavailable:
             Button(model.state == .shielding
                    ? "Change blocked apps" : "Choose apps to block") {
@@ -225,6 +302,20 @@ struct AppBlockingSection: View {
                     .font(.footnote).foregroundStyle(.red)
             }
         }
+        // Honest remote-control disclosure, always visible: the user
+        // must know an administrator CAN toggle this shield remotely
+        // before it ever happens.
+        Text("If this device is linked to a KosherGuard family "
+             + "account, an administrator can turn this blocking on "
+             + "or off remotely. They can never see or change which "
+             + "apps you picked, and removing your choice here "
+             + "always wins.")
+            .font(.caption).foregroundStyle(.secondary)
+            .onChange(of: sync.appPolicyGeneration) { _, _ in
+                // A completed policy mirror may have flipped the
+                // remote gate; re-evaluate authorization + gate.
+                model.refresh()
+            }
     }
 }
 #else

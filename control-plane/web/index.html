@@ -461,6 +461,16 @@ body.ro section.panel:not(#account-panel):not(#signout-panel) button { display: 
       <button id="app-unapply" class="link">Unapply policy (queues removal)</button>
       <span class="error" id="app-error"></span>
       <span class="ok" id="app-ok"></span>
+      <div id="app-shield-box" style="margin-top:.6rem">
+        <p class="muted" style="margin:0 0 .3rem">
+          Personal (unsupervised) devices: this only turns the device
+          owner's own Screen Time app selection on or off remotely.
+          You cannot see or choose which apps are shielded here - the
+          selection is private to the device, and the device owner can
+          always change or remove it locally; that wins over this
+          switch. Default is off.</p>
+        <button id="app-shield-toggle" class="link"></button>
+      </div>
     </div>
     <h3 style="margin-top:1.2rem">Actions</h3>
     <label>App Store ID (numeric, for install) <input id="app-store-id"

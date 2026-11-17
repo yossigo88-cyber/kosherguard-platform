@@ -59,7 +59,7 @@ final class AppShieldController {
         store.shield.applicationCategories =
             selection.categoryTokens.isEmpty
                 ? ShieldSettings.ActivityCategoryPolicy.none
-                : .specific(selection.categoryTokens)
+                : .specific(selection.categoryTokens, except: [])
         store.shield.webDomains = selection.webDomainTokens
             .isEmpty ? nil : selection.webDomainTokens
     }

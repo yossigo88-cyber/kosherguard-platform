@@ -73,7 +73,8 @@ class TestAppPolicy:
         r = client.get(f"/api/devices/{dev}/app-policy")
         assert r.status_code == 200
         assert r.json() == {"mode": "blocklist", "bundle_ids": [],
-                            "saved": False, "applied": False}
+                            "saved": False, "applied": False,
+                            "shield_active": False}
 
     def test_put_get_roundtrip(self, client):
         dev = mk_device(client)
@@ -322,10 +323,13 @@ class TestAppPolicyLifecycle:
         cmds = self._commands(engine)
         installs = [p for c, p in cmds if c == "InstallProfile"]
         removals = [p for c, p in cmds if c == "RemoveProfile"]
-        # Same stable identifier on both installs means the second
-        # replaces the first on device; no stale profile remains, so
-        # no removal is needed.
-        assert len(installs) == 2
+        # Save-while-applied requeues immediately (consistency rule),
+        # so the second save queues install #2 and the explicit Apply
+        # re-queues the same contents as install #3. Same stable
+        # identifier on every install means each replaces the previous
+        # on device; no stale profile remains, so no removal is
+        # needed.
+        assert len(installs) == 3
         assert removals == []
         assert all(p["profile"]["PayloadIdentifier"] == PROFILE_IDENTIFIER
                    for p in installs)
@@ -403,3 +407,142 @@ class TestAppPolicyLifecycle:
 
 
 from mfa_support import mfa_login
+
+
+class TestShieldGate:
+    """Remote activation gate for the PERSONAL shield: owner-only,
+    CSRF-protected, tenant-scoped, audited, and independent of the
+    supervised policy's applied marker."""
+
+    def test_default_off_in_mirror(self, client):
+        dev = mk_device(client)
+        r = client.get(f"/api/devices/{dev}/app-policy")
+        assert r.status_code == 200
+        assert r.json()["shield_active"] is False
+
+    def test_toggle_persists_and_audits(self, client):
+        dev = mk_device(client)
+        r = client.put(f"/api/devices/{dev}/app-policy/shield",
+                       json={"active": True}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        assert r.json()["shield_active"] is True
+        got = client.get(f"/api/devices/{dev}/app-policy").json()
+        assert got["shield_active"] is True
+        r = client.put(f"/api/devices/{dev}/app-policy/shield",
+                       json={"active": False}, headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["shield_active"] is False
+        actions = [e["action"]
+                   for e in client.get("/api/audit-logs").json()["events"]]
+        assert "app_policy.shield_gate" in actions
+
+    def test_toggle_requires_csrf_header(self, client):
+        dev = mk_device(client)
+        r = client.put(f"/api/devices/{dev}/app-policy/shield",
+                       json={"active": True})
+        assert r.status_code in (400, 403)
+
+    def test_toggle_is_tenant_scoped(self, client, engine):
+        dev = mk_device(client)
+        other = make_client(engine, "sg-other@example.com", "fam-sg-b")
+        r = other.put(f"/api/devices/{dev}/app-policy/shield",
+                      json={"active": True}, headers=HDR)
+        assert r.status_code == 404
+
+    def test_guardian_cannot_toggle(self, client, engine):
+        with session_scope(engine) as s:
+            tenant_id = s.query(User).filter_by(
+                email="apps@example.com").one().tenant_id
+            s.add(User(tenant_id=tenant_id, email="sg-guard@example.com",
+                       password_hash=security.hash_password(PASSWORD),
+                       role=Role.guardian,
+                       delegated_settings='["apps"]'))
+        g = TestClient(client.app)
+        r = mfa_login(g, json={"email": "sg-guard@example.com",
+                               "password": PASSWORD}, headers=HDR)
+        assert r.status_code == 200, r.text
+        dev = mk_device(client)
+        r = g.put(f"/api/devices/{dev}/app-policy/shield",
+                  json={"active": True}, headers=HDR)
+        assert r.status_code == 403
+
+    def test_gate_independent_of_applied_marker(self, client, engine):
+        dev = mk_device(client)
+        client.put(f"/api/devices/{dev}/app-policy/shield",
+                   json={"active": True}, headers=HDR)
+        with session_scope(engine) as s:
+            row = s.scalar(select(DeviceAppPolicy))
+            assert row is not None
+            assert row.shield_active is True
+            # The gate is not an enforcement action: nothing applied.
+            assert row.profile_identifier is None
+
+
+class TestSaveOnAppliedReapply:
+    """Save-while-applied consistency: both enforcement channels must
+    converge on the new contents with no enforcement gap."""
+
+    def test_save_on_applied_requeues_install_profile(self, client,
+                                                      engine):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        client.put(f"/api/devices/{dev}/app-policy",
+                   json={"mode": "blocklist",
+                         "bundle_ids": ["com.old.app"]}, headers=HDR)
+        r = client.post(f"/api/devices/{dev}/app-policy/apply",
+                        json={}, headers=HDR)
+        assert r.status_code == 200, r.json()
+        r = client.put(f"/api/devices/{dev}/app-policy",
+                       json={"mode": "blocklist",
+                             "bundle_ids": ["com.new.app"]},
+                       headers=HDR)
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["reapplied"] is True
+        assert body.get("command_id")
+        with session_scope(engine) as s:
+            latest = s.scalars(select(MDMCommand)
+                               .order_by(MDMCommand.id.desc())).first()
+            assert latest.command == "InstallProfile"
+            payload = json.loads(latest.payload)["profile"]
+            content = payload["PayloadContent"][0]
+            assert content["blockedAppBundleIDs"] == ["com.new.app"]
+            row = s.scalar(select(DeviceAppPolicy))
+            # Enforcement continuity: still marked applied under the
+            # stable identifier; the replacement profile installs over
+            # it, removal stays exclusive to Unapply.
+            assert row.profile_identifier == PROFILE_IDENTIFIER
+
+    def test_save_on_applied_bumps_ddm_token(self, client, engine):
+        from app import ddm_ops
+        from app.models import MDMEnrollment
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        client.put(f"/api/devices/{dev}/app-policy",
+                   json={"mode": "blocklist",
+                         "bundle_ids": ["com.old.app"]}, headers=HDR)
+        client.post(f"/api/devices/{dev}/app-policy/apply",
+                    json={}, headers=HDR)
+        with session_scope(engine) as s:
+            enr = s.scalar(select(MDMEnrollment))
+            before = ddm_ops.configurations(s, enr)[0]["ServerToken"]
+        client.put(f"/api/devices/{dev}/app-policy",
+                   json={"mode": "blocklist",
+                         "bundle_ids": ["com.new.app"]}, headers=HDR)
+        with session_scope(engine) as s:
+            enr = s.scalar(select(MDMEnrollment))
+            configs = ddm_ops.configurations(s, enr)
+            assert len(configs) == 1
+            assert configs[0]["ServerToken"] != before
+
+    def test_save_on_unapplied_queues_nothing(self, client, engine):
+        dev = mk_device(client)
+        mk_enrollment(client, dev)
+        r = client.put(f"/api/devices/{dev}/app-policy",
+                       json={"mode": "blocklist",
+                             "bundle_ids": ["com.a.b"]}, headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["reapplied"] is False
+        assert "reapply_reason" not in r.json()
+        with session_scope(engine) as s:
+            assert s.scalars(select(MDMCommand)).all() == []

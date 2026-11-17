@@ -94,7 +94,27 @@ async function loadAppPolicy() {
   }
   $("app-mode").value = r.body.mode || "blocklist";
   $("app-bundle-ids").value = (r.body.bundle_ids || []).join("\n");
+  $("app-shield-toggle").textContent = r.body.shield_active
+    ? "Shield is ON remotely - turn off" : "Shield is OFF remotely - turn on";
 }
+
+$("app-shield-toggle").addEventListener("click", async () => {
+  $("app-error").textContent = ""; $("app-ok").textContent = "";
+  const id = $("app-device").value;
+  if (!id) return;
+  const cur = await api(`/api/devices/${id}/app-policy`);
+  const next = !(cur.status === 200 && cur.body.shield_active);
+  const r = await api(`/api/devices/${id}/app-policy/shield`,
+    {method: "PUT", body: JSON.stringify({active: next})});
+  if (r.status === 200) {
+    $("app-ok").textContent = next
+      ? "Shield gate on. The device's own Screen Time selection is now remotely activated."
+      : "Shield gate off. The device's shield is paused remotely.";
+    await loadAppPolicy();
+  } else {
+    $("app-error").textContent = r.body.error || "Shield toggle failed";
+  }
+});
 
 function showAppCmd(r) {
   const box = $("app-cmd-result");
@@ -115,7 +135,14 @@ $("app-save").addEventListener("click", async () => {
     {method: "PUT", headers: HDR, body: JSON.stringify({
       mode: $("app-mode").value,
       bundle_ids: escIds($("app-bundle-ids").value)})});
-  if (r.status === 200) $("app-ok").textContent = "Saved.";
+  if (r.status === 200) {
+    $("app-ok").textContent = r.body.reapplied
+      ? `Saved and re-queued to the device (command #${r.body.command_id}). ` +
+        "The old restrictions stay on the device until the replacement lands."
+      : (r.body.reapply_reason
+        ? `Saved, but the device keeps its old restrictions for now: ${r.body.reapply_reason}`
+        : "Saved. Not applied to the device yet - use Apply to enforce it.");
+  }
   else $("app-error").textContent = r.body.error || "Save failed";
 });
 $("app-apply").addEventListener("click", async () => {

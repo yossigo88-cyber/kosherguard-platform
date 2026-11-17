@@ -3630,6 +3630,74 @@ final class AppShieldReachabilityTests: XCTestCase {
     /// Every entitlements file must declare exactly the keys its
     /// target's code requires - nothing missing, nothing extra to
     /// audit. Keys checked against the sources that use them.
+    /// Remote shield gate (Stage 10): activation-only, consent-bound,
+    /// no upload, no category escalation.
+    func testRemoteShieldGateSemantics() throws {
+        let view = try source(
+            "ios/Sources/KosherGuard/AppBlockingView.swift")
+        for needle in [
+            // Gate-off is a distinct, honest state - not hidden.
+            "case remotePaused",
+            "Turned off by your administrator",
+            // The gate is read from the identity-bound mirror, and the
+            // shield is applied only when the gate is not OFF.
+            "currentRemoteGate()",
+            ".load(endpointFingerprint: fingerprint)?.shieldActive",
+            // Gate OFF pauses via clearShield but keeps the selection.
+            "Kept on this iPhone.",
+            // Authorization is re-checked on every refresh (including
+            // every sync-triggered one): the switch on
+            // authorizationStatus precedes any shield application.
+            "AuthorizationCenter.shared.authorizationStatus",
+            // The sync generation observation re-evaluates on each
+            // completed policy mirror.
+            "sync.appPolicyGeneration",
+            // Always-visible remote-control disclosure (needles stay
+            // inside single string literals of the view source).
+            "administrator can turn this blocking on ",
+            "or off remotely.",
+            "They can never see or change which ",
+            "apps you picked",
+        ] {
+            XCTAssertTrue(view.contains(needle),
+                          "remote gate missing \(needle)")
+        }
+        // The selection is never uploaded and the gate never widens
+        // the consented scope: no network calls, no .all/.all-except
+        // category policy anywhere in the shield path.
+        for forbidden in ["URLSession", "URLRequest",
+                          "session.upload(",
+                          ".all(except:", "ActivityCategoryPolicy.all"] {
+            XCTAssertFalse(view.contains(forbidden),
+                           "shield path must not contain \(forbidden)")
+        }
+        // "uploaded" may appear in documentation only.
+        XCTAssertFalse(view.contains("upload("),
+                       "no upload call in the shield path")
+        let controller = try source(
+            "ios/Sources/KosherGuard/AppShieldController.swift")
+        for forbidden in [".all(except:", "ActivityCategoryPolicy.all"] {
+            XCTAssertFalse(controller.contains(forbidden),
+                           "controller must not escalate scope "
+                           + "(\(forbidden))")
+        }
+        // The contract decodes the gate with a safe default.
+        let policy = try source(
+            "ios/Sources/URLFilter/AppBlockingPolicy.swift")
+        XCTAssertTrue(policy.contains(#"case shieldActive = "shield_active""#))
+        XCTAssertTrue(policy.contains(
+            "decodeIfPresent(\n            Bool.self, forKey: .shieldActive) ?? false"),
+                      "missing gate must decode to false")
+        // The app bumps the observed generation only after a
+        // successful mirror save, and every manual sync re-pulls the
+        // mirror (which re-checks authorization downstream).
+        let app = try source(
+            "ios/Sources/KosherGuard/KosherGuardApp.swift")
+        XCTAssertTrue(app.contains("appPolicyGeneration += 1"))
+        XCTAssertTrue(app.contains(
+            "refreshAppPolicyMirror(configuration: configuration,"))
+    }
+
     func testAllEntitlementFilesConsistent() throws {
         func keys(_ rel: String) throws -> Set<String> {
             let text = try source(rel)

@@ -50,10 +50,19 @@ struct AppBlockingPolicy: Codable, Equatable {
     /// policy for this device (nothing to apply; fail safe = no
     /// shield changes, NOT an unblock of a previous local state).
     let saved: Bool
+    /// Remote ACTIVATION gate for the personal (unsupervised) Screen
+    /// Time shield. The server can only gate whether this device's
+    /// own locally consented FamilyActivitySelection is activated;
+    /// it cannot see, choose or widen which apps are shielded (the
+    /// selection's tokens are opaque and device-local and are never
+    /// uploaded). Missing in older payloads decodes to false - the
+    /// pre-feature behavior where the server gates nothing.
+    let shieldActive: Bool
 
     private enum CodingKeys: String, CodingKey {
         case mode, saved
         case bundleIDs = "bundle_ids"
+        case shieldActive = "shield_active"
     }
 
     enum PolicyError: Error, Equatable {
@@ -66,7 +75,8 @@ struct AppBlockingPolicy: Codable, Equatable {
     static let bundleIDPattern =
         #"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$"#
 
-    init(mode: Mode, bundleIDs: [String], saved: Bool = true) throws {
+    init(mode: Mode, bundleIDs: [String], saved: Bool = true,
+         shieldActive: Bool = false) throws {
         var seen = Set<String>()
         for raw in bundleIDs {
             guard raw.range(of: Self.bundleIDPattern,
@@ -80,6 +90,7 @@ struct AppBlockingPolicy: Codable, Equatable {
         self.mode = mode
         self.bundleIDs = bundleIDs
         self.saved = saved
+        self.shieldActive = shieldActive
     }
 
     init(from decoder: Decoder) throws {
@@ -90,7 +101,10 @@ struct AppBlockingPolicy: Codable, Equatable {
         let saved = try container.decodeIfPresent(Bool.self,
                                                   forKey: .saved)
             ?? true
-        try self.init(mode: mode, bundleIDs: ids, saved: saved)
+        let shieldActive = try container.decodeIfPresent(
+            Bool.self, forKey: .shieldActive) ?? false
+        try self.init(mode: mode, bundleIDs: ids, saved: saved,
+                      shieldActive: shieldActive)
     }
 }
 
