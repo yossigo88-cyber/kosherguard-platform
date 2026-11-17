@@ -1338,6 +1338,93 @@ def create_app(settings: Settings, engine=None, native_mdm_runtime=None) -> Fast
         return {"device_id": device.id, "credential": token, "scope": scope,
                 "policy_id": policy_id}
 
+    # -- Device filter-rules export (iOS on-device list layer) --------
+
+    # Feeds the iOS app's FilterDataProvider rule store with the
+    # guardian's own explicit allow/block domains for the device's
+    # effective policy. ONLY explicit domains are exported - never the
+    # licensed category expansions, which ship exclusively as the
+    # opaque Bloom prefilter (url-filter-server). Same guardian-session
+    # auth as the app's other calls; the guardian can already read
+    # these lists via /api/policies, so this exposes nothing new about
+    # the tenant.
+    #
+    # PUBLICATION BINDING: the export is sourced ONLY from the last
+    # published immutable generation (publisher 'current' symlink,
+    # re-verified against the manifest hashes on every read). The
+    # device's assigned policy document and the device map come from
+    # that SAME generation. Pending policy edits, a changed default
+    # selection or a changed assignment are invisible here until an
+    # authorized publish makes them immutable - the export can never
+    # bypass publication approval. `generation` is the published
+    # revision, monotonic per tenant. Inactive/offboarded devices are
+    # rejected like the adjacent credential routes; the device-state
+    # check and the generation read race safely because a revoked
+    # device only ever loses access (fail closed) and the published
+    # documents are immutable.
+    @app.get("/api/devices/{device_id}/filter-rules")
+    def device_filter_rules(device_id: int,
+                            user: User = Depends(current_user),
+                            session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        row = session.get(Device, device_id)
+        if row is None or row.tenant_id != user.tenant_id:
+            return error(404, "device not found")
+        device = row
+        if device.state != "active":
+            return error(409,
+                         "device is not active; filter rules cannot be served")
+        from .publisher import Publisher
+        publisher = Publisher(publication_ops.tenant_root(
+            settings.publications_root, user.tenant_id))
+        try:
+            generation_dir = publisher.current_generation_dir()
+            if generation_dir is None:
+                return {"device_id": device.id, "tenant_id": user.tenant_id,
+                        "policy_id": None, "generation": 0,
+                        "default_policy": None,
+                        "rules": {}, "reason": "no published policy"}
+            # Hash-verify the whole generation (policy, categories and
+            # every supplemental document) before serving any of it.
+            manifest = publisher.verify_generation(generation_dir)
+        except Exception as exc:
+            return error(500, f"could not read current generation: {exc}")
+        import json as _json
+
+        def _read(name):
+            return _json.loads((generation_dir / name).read_bytes()
+                               .decode("utf-8"))
+
+        # The same generation's device map binds this device to its
+        # assigned policy document; without an entry it gets the
+        # generation's default policy document.
+        device_map = {}
+        if "device-map.json" in manifest.get("extra_sha256", {}):
+            device_map = _read("device-map.json")
+        entry = device_map.get("devices", {}).get(str(device.id))
+        if entry is not None:
+            policy_file = entry["policy"]  # name validated by verify
+            policy_id = entry.get("policy_id")
+        else:
+            policy_file = "policy.json"
+            policy_id = device_map.get(
+                "default_policy_id", manifest.get("policy_id"))
+        doc = _read(policy_file)
+        # Engine semantics (policy_engine.decide): an explicit allow
+        # beats an explicit block, so the allowlist overlays the
+        # blocklist. true = block, false = allow.
+        rules = {str(d).lower().rstrip("."): True for d in doc["blocklist"]}
+        for d in doc["allowlist"]:
+            rules[str(d).lower().rstrip(".")] = False
+        return {"device_id": device.id,
+                "tenant_id": manifest.get("tenant_id", user.tenant_id),
+                "policy_id": policy_id,
+                "generation": int(manifest["generation"]),
+                "default_policy": doc["default_policy"],
+                "rules": rules}
+
     @app.post("/api/devices/{device_id}/credentials/revoke",
               dependencies=[Depends(require_csrf_header)])
     def revoke_device_credentials(device_id: int,
