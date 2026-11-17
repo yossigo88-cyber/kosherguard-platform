@@ -205,6 +205,7 @@ def publish_selected(session: Session, tenant_id: int, root: str,
             generation = publisher.publish(
                 revision, policy_json, categories_json,
                 {"tenant_id": tenant_id, "policy": policy.name,
+                 "policy_id": policy.id,
                  "policy_version": version.version,
                  "published_by": actor_email,
                  "publication_job_id": publication_job_id,
