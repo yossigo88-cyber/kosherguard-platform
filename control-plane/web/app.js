@@ -877,7 +877,7 @@ async function refreshApprovals() {
   document.querySelector("#approvals-table tbody").innerHTML = rows.map(a =>
     `<tr><td>${a.id}</td><td>${esc(a.operation)}</td><td>${esc(a.device || "-")}</td>` +
     `<td>${esc(a.requested_by_email || "user " + a.requested_by_user_id)}</td>` +
-    `<td>${esc(a.status)}${a.status === "executed" && a.decision_detail ? `<br><small>${esc(a.decision_detail)}</small>` : ""}</td>` +
+    `<td>${esc(a.status)}${a.decision_detail ? `<br><small>${esc(a.decision_detail)}</small>` : ""}</td>` +
     `<td>${esc(a.reason || "")}</td><td>${esc(a.expires_at.slice(0, 16).replace("T", " "))}</td>` +
     `<td>${a.status === "pending" ? `<button class="link" data-decide="${a.id}" data-op="${esc(a.operation)}" data-device="${esc(a.device || "-")}" data-by="${esc(a.requested_by_email || "user " + a.requested_by_user_id)}">decide</button>` : ""}</td></tr>`).join("");
 }
