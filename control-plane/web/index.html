@@ -317,6 +317,54 @@ h2 { margin-bottom:.4rem; }
       <textarea id="invite-link" readonly rows="2"></textarea>
     </div>
   </section>
+  <section class="panel hidden" id="approvals-panel">
+    <h2>Sensitive command approvals</h2>
+    <p class="muted">Destructive device operations need a second
+    privileged approver who is not the requester. Approving requires a
+    current authenticator code and typing the operation name; approval
+    executes exactly the recorded operation on the recorded device -
+    nothing else. Requests expire and are single-use.</p>
+    <table id="approvals-table">
+      <thead><tr><th>ID</th><th>Operation</th><th>Status</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="approval-act" class="hidden">
+      <h3 style="margin-top:1.2rem">Decide request <span id="ap-id"></span></h3>
+      <form id="approval-form">
+        <label>Authenticator code <input id="ap-totp" inputmode="numeric" required></label>
+        <label>Type the operation name to confirm <input id="ap-confirm" required></label>
+        <label>Note (optional) <input id="ap-reason"></label>
+        <button type="submit" name="decision" value="approve">Approve and execute</button>
+        <button type="submit" name="decision" value="reject">Reject</button>
+        <span class="error" id="approval-error"></span>
+        <span class="ok" id="approval-ok"></span>
+      </form>
+    </div>
+  </section>
+  <section class="panel hidden" id="staff-panel">
+    <h2>Platform staff</h2>
+    <p class="muted">Staff accounts and their platform roles. Visible to
+    the staff owner only. The last staff owner cannot be demoted or
+    revoked; choosing "revoke" removes staff status.</p>
+    <table id="staff-table">
+      <thead><tr><th>ID</th><th>Email</th><th>Staff role</th><th>MFA</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <h3 style="margin-top:1.2rem">Set a staff role</h3>
+    <form id="staff-role-form">
+      <label>User ID <input id="sf-user-id" required inputmode="numeric"></label>
+      <label>Staff role <select id="sf-role">
+        <option value="">revoke (no staff role)</option>
+        <option value="owner">owner</option>
+        <option value="security_admin">security_admin</option>
+        <option value="support_admin">support_admin</option>
+        <option value="read_only">read_only</option>
+      </select></label>
+      <button type="submit">Apply</button>
+      <span class="error" id="staff-error"></span>
+      <span class="ok" id="staff-ok"></span>
+    </form>
+  </section>
   <section class="panel hidden" id="account-panel">
     <h2>Your account</h2>
     <h3>Change password</h3>
