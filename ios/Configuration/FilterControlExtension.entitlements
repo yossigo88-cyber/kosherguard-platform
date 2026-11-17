@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- STATUS: UNVERIFIED - hand-authored, never compiled or signed.
+     Same entitlement schema as FilterExtension.entitlements (Apple
+     Network Extensions Entitlement doc): the filter-control provider
+     is the same "content-filter-provider" value of
+     com.apple.developer.networking.networkextension; the extension
+     POINT differs (filter-control vs filter-data, see the target's
+     Info.plist), not the entitlement value. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>content-filter-provider</string>
+	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.kosherguard.shared</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>TEAMIDPLACEHOLDER.com.kosherguard.shared</string>
+	</array>
+</dict>
+</plist>

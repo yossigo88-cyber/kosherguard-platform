@@ -19,6 +19,10 @@ struct PrefilterUpdater {
         case integrityMismatch
         case staleVersion
         case fetchFailed
+        /// 401/403: the device credential was rejected - an
+        /// authoritative invalidation (revoked/offboarded), not a
+        /// transient fetch problem.
+        case unauthorized
         case invalidServer
         case tooSoon
     }
@@ -43,10 +47,17 @@ struct PrefilterUpdater {
     struct Snapshot: Codable {
         let manifest: Manifest
         let prefilter: Data
+        /// The endpoint fingerprint of the identity that downloaded
+        /// this snapshot. The cache is IDENTITY-BOUND: a restored
+        /// version from a DIFFERENT server/identity must never
+        /// suppress the first download from the current one
+        /// (restore rejects it, the sync does a full download).
+        let endpointFingerprint: String
     }
 
     let serverBaseURL: URL
     let session: URLSession
+    let endpointFingerprint: String
     private(set) var currentVersion: Int = 0
     private(set) var activeSnapshot: Snapshot?
     private var lastCheck: Date?
@@ -57,8 +68,10 @@ struct PrefilterUpdater {
     // server is still never hammered.
     static let failureRetryInterval: TimeInterval = 60
 
-    init(serverBaseURL: URL, session: URLSession = .shared) {
+    init(serverBaseURL: URL, endpointFingerprint: String = "",
+         session: URLSession = .shared) {
         self.serverBaseURL = serverBaseURL
+        self.endpointFingerprint = endpointFingerprint
         self.session = session
     }
 
@@ -83,7 +96,13 @@ struct PrefilterUpdater {
             req.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
             req.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            guard let http = response as? HTTPURLResponse else {
+                throw UpdateError.fetchFailed
+            }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw UpdateError.unauthorized
+            }
+            guard http.statusCode == 200 else {
                 throw UpdateError.fetchFailed
             }
             return data
@@ -102,7 +121,8 @@ struct PrefilterUpdater {
         let digest = SHA256.hash(data: bits).map { String(format: "%02x", $0) }.joined()
         guard bits.count == manifest.prefilter.bytes,
               digest == manifest.prefilter.sha256 else { throw UpdateError.integrityMismatch }
-        let snapshot = Snapshot(manifest: manifest, prefilter: bits)
+        let snapshot = Snapshot(manifest: manifest, prefilter: bits,
+                                endpointFingerprint: endpointFingerprint)
         // One atomic document: no manifest/version can outlive its bytes.
         if let persistTo {
             try JSONEncoder().encode(snapshot).write(to: persistTo,
@@ -120,7 +140,8 @@ struct PrefilterUpdater {
             from: Data(contentsOf: url))
         let digest = SHA256.hash(data: candidate.prefilter)
             .map { String(format: "%02x", $0) }.joined()
-        guard candidate.manifest.version >= currentVersion,
+        guard candidate.endpointFingerprint == endpointFingerprint,
+              candidate.manifest.version >= currentVersion,
               candidate.manifest.version > 0,
               candidate.prefilter.count == candidate.manifest.prefilter.bytes,
               digest == candidate.manifest.prefilter.sha256 else {

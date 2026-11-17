@@ -1,4 +1,7 @@
-// STATUS: UNCOMPILED, UNSIGNED, UNTESTED - see ios/README.md.
+// STATUS: portable logic compiled and XCTested on Linux with the real
+// Swift toolchain (tools/run-swift-portable-tests.sh). Reading the real
+// com.apple.configuration.managed suite on a supervised device is
+// UNVERIFIED - see ios/README.md.
 import Foundation
 
 /// Server configuration supplied by MDM-managed App Configuration
@@ -9,32 +12,114 @@ import Foundation
 /// which device record it owns. No live server URL or secret is
 /// baked into the build; without managed configuration the app is
 /// honestly "not configured".
-public struct AppConfiguration {
+///
+/// Keys (pushed by the control plane's InstallApplication managed
+/// Configuration - mdm/app_management.py, or by another MDM):
+/// - "controlPlaneBaseURL" (string, https, required): auth, rules
+///   export and credential issuance.
+/// - "datasetBaseURL" (string, https, required for sync): the
+///   url-filter-server base for manifest/prefilter downloads.
+/// - "dohServerURL" (string, https, optional): the dns-edge DoH
+///   endpoint for app-mediated resolution (DNSOverHTTPSClient).
+/// - "deviceID" (integer or digit-string, required): the control
+///   plane's device record id.
+public struct AppConfiguration: Equatable {
     public let controlPlaneBaseURL: URL?
+    public let datasetBaseURL: URL?
+    public let dohServerURL: URL?
     public let deviceID: Int?
+    /// Human-readable per-key problems, for the UI and support.
+    /// A key that is absent and optional produces no issue; absent
+    /// and required, or present and invalid, does.
+    public let issues: [String]
 
     private static let suite = "com.apple.configuration.managed"
 
-    /// Read the managed configuration pushed by MDM. Both keys are
-    /// required for the credential flow; anything missing yields nil
-    /// for that key and the caller reports "not configured".
-    public init(controlPlaneBaseURL: URL?, deviceID: Int?) {
+    public init(controlPlaneBaseURL: URL?, deviceID: Int?,
+                datasetBaseURL: URL? = nil, dohServerURL: URL? = nil,
+                issues: [String] = []) {
         self.controlPlaneBaseURL = controlPlaneBaseURL
+        self.datasetBaseURL = datasetBaseURL
+        self.dohServerURL = dohServerURL
         self.deviceID = deviceID
+        self.issues = issues
     }
 
+    /// Read the managed configuration pushed by MDM. Every supplied
+    /// value is validated; invalid values are dropped (never used)
+    /// and named in `issues`.
     public static func managed(defaults: UserDefaults = .standard) -> AppConfiguration {
         let managed = defaults.dictionary(forKey: suite) ?? [:]
-        let url = (managed["controlPlaneBaseURL"] as? String).flatMap(URL.init(string:))
-        // Credentials must never be sent to plaintext or malformed origins.
-        let secureURL = url.flatMap { candidate -> URL? in
-            guard candidate.scheme?.lowercased() == "https",
-                  candidate.host != nil, candidate.user == nil,
-                  candidate.password == nil else { return nil }
-            return candidate
+        var issues: [String] = []
+
+        func secureURL(_ key: String, required: Bool) -> URL? {
+            guard let raw = managed[key] else {
+                if required { issues.append("\(key) is missing") }
+                return nil
+            }
+            guard let string = raw as? String,
+                  let url = URL(string: string) else {
+                issues.append("\(key) is not a valid URL")
+                return nil
+            }
+            // Credentials must never be sent to plaintext or
+            // malformed origins.
+            guard url.scheme?.lowercased() == "https",
+                  url.host != nil, url.user == nil,
+                  url.password == nil else {
+                issues.append("\(key) must be a plain https:// URL")
+                return nil
+            }
+            return url
         }
-        let id = managed["deviceID"] as? Int
-        return AppConfiguration(controlPlaneBaseURL: secureURL,
-                                deviceID: id.flatMap { $0 > 0 ? $0 : nil })
+
+        let controlPlane = secureURL("controlPlaneBaseURL", required: true)
+        let dataset = secureURL("datasetBaseURL", required: true)
+        let doh = secureURL("dohServerURL", required: false)
+
+        // deviceID: accept a real integer or a digit string (some MDM
+        // consoles only push strings); reject bools, fractions and
+        // non-positives.
+        let deviceID: Int?
+        switch managed["deviceID"] {
+        case let number as NSNumber:
+            // UserDefaults stores booleans as NSNumber too; a bool is
+            // never a device id. Bool numbers carry objCType "c" on
+            // both Apple platforms and swift-corelibs-foundation; a
+            // genuine one-byte id is indistinguishable and also
+            // rejected, which is safe: device ids are server-assigned
+            // row ids, never booleans.
+            if String(cString: number.objCType) == "c" {
+                issues.append("deviceID must be a positive integer")
+                deviceID = nil
+                break
+            }
+            let value = number.intValue
+            if Double(value) == number.doubleValue, value > 0 {
+                deviceID = value
+            } else {
+                issues.append("deviceID must be a positive integer")
+                deviceID = nil
+            }
+        case let string as String:
+            if let value = Int(string), value > 0 {
+                deviceID = value
+            } else {
+                issues.append("deviceID must be a positive integer")
+                deviceID = nil
+            }
+        case .none:
+            issues.append("deviceID is missing")
+            deviceID = nil
+        case .some:
+            issues.append("deviceID must be a positive integer")
+            deviceID = nil
+        }
+
+        return AppConfiguration(controlPlaneBaseURL: controlPlane,
+                                deviceID: deviceID,
+                                datasetBaseURL: dataset,
+                                dohServerURL: doh,
+                                issues: issues)
     }
 }

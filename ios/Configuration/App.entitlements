@@ -1,13 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- STATUS: UNVERIFIED. App Group name is a placeholder pending the
-     real Apple Developer team/bundle IDs. The extension (not the app)
-     carries the url-filter-provider entitlement. -->
+<!-- STATUS: UNVERIFIED - hand-authored, never compiled or signed.
+     The app target invokes NetworkExtension managers (NEFilterManager;
+     the iOS 26 URL Filter track's NEURLFilterManager), so it carries
+     the same com.apple.developer.networking.networkextension array
+     (Apple Network Extensions Entitlement doc):
+     "content-filter-provider" = allow/deny network connections of
+     other apps; "url-filter-provider" = create and manage URL filters.
+     Family Controls (com.apple.developer.family-controls) is a
+     SEPARATE entitlement with its own Apple approval for
+     distribution; the Screen Time path (TN3134: content filter on
+     child devices via Family Controls) is not wired yet - see
+     ios/README.md's blocker ledger. App Group name is a placeholder
+     pending real Apple Developer team/bundle IDs. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>content-filter-provider</string>
+		<string>url-filter-provider</string>
+	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.kosherguard.shared</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>TEAMIDPLACEHOLDER.com.kosherguard.shared</string>
 	</array>
 </dict>
 </plist>

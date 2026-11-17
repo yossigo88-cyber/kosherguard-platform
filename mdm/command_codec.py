@@ -1,15 +1,19 @@
 """Translate platform JSON command arguments to Apple's device plist wire form.
 
 Reject unsupported/ambiguous shapes instead of sending a plausible wrong
-command. Native transport initially supports read-only inventory and signed
-or plist InstallProfile plus RemoveProfile. Other adapters are unchanged.
+command. Native transport supports read-only inventory, signed or plist
+InstallProfile plus RemoveProfile, and managed-app delivery
+(InstallApplication with an optional managed Configuration,
+RemoveApplication). DeclarativeManagement is NOT implemented on the
+native transport: it requires the DDM declaration channel, which only
+the NanoMDM path forwards today.
 """
 import base64
 import plistlib
 
 from .identity import ProvisioningError
 
-NATIVE_COMMANDS = frozenset({"DeviceInformation", "ProfileList", "InstalledApplicationList", "ManagedApplicationList", "InstallProfile", "RemoveProfile", "DeviceLock", "RestartDevice", "EraseDevice"})
+NATIVE_COMMANDS = frozenset({"DeviceInformation", "ProfileList", "InstalledApplicationList", "ManagedApplicationList", "InstallProfile", "RemoveProfile", "DeviceLock", "RestartDevice", "EraseDevice", "InstallApplication", "RemoveApplication"})
 
 
 def encode_command(name, payload):
@@ -33,6 +37,36 @@ def encode_command(name, payload):
         if set(args) - {"Queries"} or ("Queries" in args and (not isinstance(args["Queries"], list) or not all(isinstance(q, str) for q in args["Queries"]))):
             raise ProvisioningError("invalid DeviceInformation queries")
         args.setdefault("Queries", ["UDID", "SerialNumber", "IsSupervised", "OSVersion"])
+    elif name == "InstallApplication":
+        # Wire contract (apple/device-management release branch,
+        # mdm/commands/application.install.yaml): ITunesStoreID locates
+        # the App Store product; Options and Configuration are optional
+        # dictionaries. Configuration is the app's initial managed
+        # configuration (com.apple.configuration.managed), which the
+        # KosherGuard iOS app reads for its server settings. A bundle
+        # ID alone is refused upstream (mdm.app_management) because it
+        # cannot locate the store product.
+        if set(args) - {"ITunesStoreID", "Options", "Configuration"}:
+            raise ProvisioningError("invalid InstallApplication keys")
+        store_id = args.get("ITunesStoreID")
+        if (not isinstance(store_id, int) or isinstance(store_id, bool)
+                or store_id <= 0):
+            raise ProvisioningError(
+                "InstallApplication requires a positive numeric ITunesStoreID")
+        for key in ("Options", "Configuration"):
+            if key in args:
+                if not isinstance(args[key], dict):
+                    raise ProvisioningError(f"{key} must be a dictionary")
+                try:
+                    # plist wire form cannot carry JSON null; reject it
+                    # here rather than crashing at delivery time.
+                    plistlib.dumps(args[key])
+                except (TypeError, ValueError) as exc:
+                    raise ProvisioningError(
+                        f"{key} must be plist-serializable") from exc
+    elif name == "RemoveApplication":
+        if set(args) != {"Identifier"} or not isinstance(args["Identifier"], str) or not args["Identifier"]:
+            raise ProvisioningError("RemoveApplication requires Identifier")
     elif name in {"ProfileList", "InstalledApplicationList", "ManagedApplicationList", "RestartDevice", "EraseDevice", "DeviceLock"} and args:
         # PIN/passcode erase/lock variants are not implemented. Destructive
         # authorization still belongs to existing two-person approval flow.

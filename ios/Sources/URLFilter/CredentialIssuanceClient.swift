@@ -18,12 +18,12 @@ import FoundationNetworking
 ///   exchange does not exist on the server yet; that is a known
 ///   server-side gap for native clients, recorded here, not worked
 ///   around.
-/// - Scopes the PUBLISHED server mints: "dataset" and "proxy". A
-///   "doh" scope request is rejected 400 today; doh minting is part
-///   of a held server change pending the user's decision. This client
-///   parameterizes the scope but callers MUST treat .doh as
-///   unavailable until that server change lands - the failure surface
-///   is the server's 400, surfaced as IssuanceError.scopeUnavailable.
+/// - Scopes the PUBLISHED server mints (verified against
+///   control-plane/app/main.py mint_dataset_credential, branch
+///   full-platform-build): "dataset", "proxy" AND "doh". The doh
+///   scope is live on the server; end-to-end DoH use against dns-edge
+///   remains unproven without an iOS build (see
+///   docs/design/DOH_IOS_TRANSPORT.md).
 /// - Response: {device_id, credential, scope, policy_id?}. The raw
 ///   token is returned once and never stored or logged server-side;
 ///   this client mirrors that: it keeps the token in memory only and
@@ -40,9 +40,9 @@ public struct CredentialIssuanceClient {
     public enum Scope: String {
         case dataset
         case proxy
-        /// Not mintable by the published server (400). Declared so the
-        /// DoH path has a typed placeholder; requestDoh() refuses to
-        /// even send it until the server change lands.
+        /// Minted by the published server. What a doh credential can
+        /// authenticate against dns-edge is still unverified end to
+        /// end (no iOS build), but issuance is available.
         case doh
     }
 

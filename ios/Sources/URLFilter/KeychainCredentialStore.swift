@@ -12,8 +12,32 @@ import Security
 /// no iCloud sync, no migration to a new device - a scoped credential
 /// belongs to THIS device).
 public struct KeychainCredentialStore {
-    public init() {}
+    /// PLACEHOLDER pending the real Apple Developer team ID: the
+    /// keychain access group shared by the app and BOTH filter
+    /// extensions so the control provider can use the same session /
+    /// device credential for its supported rule-maintenance sync.
+    /// Must match the keychain-access-groups entitlement in every
+    /// target (currently absent from the hand-authored entitlements:
+    /// tracked in docs/setup/IOS_BUILD.md). UNVERIFIED.
+    public static let sharedAccessGroup =
+        "TEAMIDPLACEHOLDER.com.kosherguard.shared"
+
+    /// accessGroup: pass KeychainCredentialStore.sharedAccessGroup in
+    /// every production caller (app and extensions); nil keeps the
+    /// app's private keychain (tests and pre-team-id development).
+    public init(accessGroup: String? = nil) {
+        self.accessGroup = accessGroup
+    }
+    let accessGroup: String?
     let service = "com.kosherguard.credentials"
+
+    private func scoped(_ query: [String: Any]) -> [String: Any] {
+        var q = query
+        if let accessGroup {
+            q[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return q
+    }
 
     public enum StoreError: Error {
         case saveFailed(OSStatus)
@@ -31,8 +55,8 @@ public struct KeychainCredentialStore {
         // Replace-any-existing semantics via delete-then-add: simple
         // and atomicity is not required for a cache of a re-mintable
         // credential.
-        SecItemDelete(query as CFDictionary)
-        var attrs = query
+        SecItemDelete(scoped(query) as CFDictionary)
+        var attrs = scoped(query)
         attrs[kSecValueData as String] = data
         attrs[kSecAttrAccessible as String] =
             kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -51,7 +75,7 @@ public struct KeychainCredentialStore {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let status = SecItemCopyMatching(scoped(query) as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess,
               let data = item as? Data else {
@@ -66,8 +90,17 @@ public struct KeychainCredentialStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
         ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(scoped(query) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound
         else { throw StoreError.deleteFailed(status) }
     }
 }
+
+/// Lets FilterSyncController read stored credentials through its
+/// portable CredentialReading seam.
+extension KeychainCredentialStore: CredentialReading {}
+
+/// Writable vault conformance for the sign-in coordinator's atomic
+/// credential bundle (declared here: this file is not part of the
+/// portable test target, which uses in-memory fakes instead).
+extension KeychainCredentialStore: CredentialVault {}
