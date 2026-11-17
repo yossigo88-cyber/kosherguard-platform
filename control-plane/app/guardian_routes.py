@@ -10,9 +10,17 @@ from sqlalchemy.orm import Session  # noqa: F401
 from pydantic import BaseModel
 
 from . import security
-from .db import ScopedSession
+from .db import ScopedSession, lock_tenant
 from .models import (AuthSession, InviteToken, LoginAttempt,  # noqa: F401
                      PendingMfaEnrollment, Role, User, utcnow)
+from .staff_routes import fresh_check as _fresh_check
+
+
+def _aware(value):
+    from datetime import timezone
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 class DelegationBody(BaseModel):
@@ -27,6 +35,8 @@ class InviteBody(BaseModel):
     role: str = "guardian"
 class MfaResetBody(BaseModel):
     password: str
+    totp_code: str | None = None
+    confirm: str | None = None
 
 GUARDIAN_CAPABILITIES = {"policies", "schedules", "devices", "groups", "apps", "publish", "exceptions"}
 
@@ -79,6 +89,20 @@ def register_guardian_routes(app, *, error, current_user, db_session,
             User.email == email)).scalar_one_or_none()
         if existing is not None:
             return error(409, "email already has an account")
+        # One live invite per email: a second invite would hand out a
+        # second valid path to the same account. The partial unique
+        # index (used_at IS NULL) enforces this under concurrency.
+        active = session.execute(select(InviteToken).where(
+            InviteToken.tenant_id == user.tenant_id,
+            InviteToken.email == email,
+            InviteToken.used_at.is_(None))).scalars().all()
+        if any(_aware(i.expires_at) > utcnow() for i in active):
+            return error(409, "an active invite already exists for this email")
+        # The partial unique index includes expired-but-unused rows.
+        # Retire them explicitly before issuing the replacement.
+        for old_invite in active:
+            old_invite.used_at = utcnow()
+        session.flush()
         raw = security.new_session_token()
         invite = InviteToken(
             tenant_id=user.tenant_id, email=email, role=Role(body.role),
@@ -86,6 +110,14 @@ def register_guardian_routes(app, *, error, current_user, db_session,
             invited_by_user_id=user.id,
             expires_at=utcnow() + timedelta(hours=72))
         session.add(invite)
+        try:
+            session.flush()
+        except Exception as exc:
+            from sqlalchemy.exc import IntegrityError
+            session.rollback()
+            if isinstance(exc, IntegrityError):
+                return error(409, "an active invite already exists for this email")
+            raise
         ScopedSession(session, user.tenant_id).audit(
             "guardian.invite", email, actor_user_id=user.id)
         session.commit()
@@ -99,12 +131,14 @@ def register_guardian_routes(app, *, error, current_user, db_session,
               dependencies=[Depends(require_csrf_header)])
     def accept_invite(body: AcceptInviteBody,
                       session: Session = Depends(db_session)):
+        # Row lock: two concurrent accepts of the same token
+        # serialize; the second sees used_at set and is refused.
         invite = session.execute(select(InviteToken).where(
             InviteToken.token_hash == security.hash_session_token(
-                body.token))).scalar_one_or_none()
+                body.token)).with_for_update()).scalar_one_or_none()
         if invite is None or invite.used_at is not None:
             return error(400, "invalid or used invite")
-        if invite.expires_at < utcnow():
+        if _aware(invite.expires_at) <= utcnow():
             return error(400, "invite expired")
         if len(body.password) < 12:
             return error(400, "password too short")
@@ -119,7 +153,14 @@ def register_guardian_routes(app, *, error, current_user, db_session,
             role=invite.role)
         session.add(new_user)
         invite.used_at = utcnow()
-        session.flush()
+        try:
+            session.flush()
+        except Exception as exc:
+            from sqlalchemy.exc import IntegrityError
+            session.rollback()
+            if isinstance(exc, IntegrityError):
+                return error(409, "email already has an account")
+            raise
         ScopedSession(session, invite.tenant_id).audit(
             "guardian.accept_invite", invite.email,
             actor_user_id=new_user.id)
@@ -136,11 +177,22 @@ def register_guardian_routes(app, *, error, current_user, db_session,
             return denied
         if body.role not in ("guardian", "viewer", "owner"):
             return error(400, "invalid role")
+        # Lock the tenant row first: concurrent owner demotions
+        # serialize, so the last-owner check below can never be
+        # satisfied by two racing requests at once.
+        lock_tenant(session, user.tenant_id)
         target = session.get(User, user_id)
         if target is None or target.tenant_id != user.tenant_id:
             return error(404, "guardian not found")
         if target.id == user.id:
             return error(400, "cannot change your own role")
+        if target.role == Role.owner and body.role != "owner":
+            owners = session.scalars(select(User).where(
+                User.tenant_id == user.tenant_id,
+                User.role == Role.owner)).all()
+            if len(owners) <= 1:
+                return error(409, "cannot demote the last owner of the "
+                                  "tenant")
         target.role = Role(body.role)
         ScopedSession(session, user.tenant_id).audit(
             "guardian.role_change",
@@ -157,10 +209,15 @@ def register_guardian_routes(app, *, error, current_user, db_session,
         if denied is not None:
             return denied
         # Fresh authentication: an unattended session must not be
-        # enough to strip a guardian's MFA.
+        # enough to strip a guardian's MFA. Password AND a current MFA
+        # code with explicit confirmation.
         if not security.verify_password(body.password,
                                         user.password_hash):
             return error(403, "fresh authentication failed")
+        bad = _fresh_check(error, user, body.totp_code, body.confirm,
+                           "mfa-reset")
+        if bad is not None:
+            return bad
         target = session.get(User, user_id)
         if target is None or target.tenant_id != user.tenant_id:
             return error(404, "guardian not found")
@@ -176,4 +233,3 @@ def register_guardian_routes(app, *, error, current_user, db_session,
             "guardian.mfa_reset", target.email, actor_user_id=user.id)
         session.commit()
         return user_json(target)
-
