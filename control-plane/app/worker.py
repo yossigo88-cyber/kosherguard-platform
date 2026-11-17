@@ -64,7 +64,12 @@ def run_once(engine, settings, now=None) -> bool:
         job.attempts += 1
         try:
             with session.begin_nested():
-                actor = session.get(User, job.actor_user_id)
+                # Recheck actor authorization only after any tenant-lock wait.
+                # Guardian demotion/delegation revocation uses the same lock.
+                from .db import lock_tenant
+                lock_tenant(session, job.tenant_id)
+                actor = session.get(User, job.actor_user_id,
+                                    populate_existing=True)
                 if job.system_action == "exception-revoke":
                     # Narrow server-initiated cleanup: a revocation must
                     # reach the edge even when the revoking guardian has
@@ -83,9 +88,7 @@ def run_once(engine, settings, now=None) -> bool:
                     if actor.role == Role.guardian and "publish" not in json.loads(actor.delegated_settings):
                         raise PermissionError("publication delegation revoked")
                     actor_email = job.actor_email
-                # Same tenant -> publication-state lock order as API writes.
-                from .db import lock_tenant
-                lock_tenant(session, job.tenant_id)
+                # Tenant -> publication state, held through activation/commit.
                 state = session.scalar(select(PublicationState).where(
                     PublicationState.tenant_id == job.tenant_id
                 ).with_for_update())
