@@ -107,7 +107,9 @@ bundle prefix, PIR hosts) and re-runs the static validator.
 2. Open ios/KosherGuard.xcodeproj, sign in with the developer account,
    keep automatic signing.
 3. `xcodebuild -scheme KosherGuard -destination 'generic/platform=iOS'
-   -allowProvisioningUpdates build`
+   -allowProvisioningUpdates DEVELOPMENT_TEAM=YOURTEAMID build`
+   (the project deliberately carries no committed team ID; pass it on
+   the command line or pick the team once in Xcode's Signing tab)
 4. If the filter extensions fail to sign: the managed Network
    Extension approvals (step 2.2) have not landed yet - expected;
    the app target alone still signs.
