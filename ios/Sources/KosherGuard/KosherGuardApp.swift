@@ -315,6 +315,26 @@ final class FilterSyncViewModel {
                 }
             }
             let confirmed = AppConfiguration.managed()
+            // URL FILTER (iOS 26+): enable/disable follows the
+            // CURRENT managed configuration, re-read after the
+            // lifecycle settles - never a captured copy. Missing PIR
+            // keys simply leave the URL Filter off; the NEFilter
+            // explicit-rule path is unaffected. A removed/invalid
+            // configuration disables it explicitly (fail closed).
+            if #available(iOS 26.0, *) {
+                do {
+                    if confirmed.pirServerURL != nil,
+                       confirmed.pirPrivacyPassIssuerURL != nil {
+                        try await URLFilterConfiguration.enable(
+                            from: confirmed)
+                    } else {
+                        try await URLFilterConfiguration.disableFilter()
+                    }
+                } catch {
+                    store?.recordStatus("URL Filter configuration "
+                        + "failed: \(error)")
+                }
+            }
             await MainActor.run {
                 self.rebuildController(configuration: confirmed,
                                        store: store)

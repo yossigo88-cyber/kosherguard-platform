@@ -51,6 +51,10 @@ public struct CredentialIssuanceClient {
         public let token: String
         let scope: String
         let policyID: Int?
+        /// Seconds until expiry as reported by the issuer at mint
+        /// time. Absent only when talking to an older server build;
+        /// callers must then assume a conservative short lifetime.
+        public let expiresInSeconds: Int?
     }
 
     public enum IssuanceError: Error, Equatable {
@@ -96,12 +100,14 @@ public struct CredentialIssuanceClient {
             let credential: String
             let scope: String
             let policy_id: Int?
+            let expires_in_seconds: Int?
         }
         guard let body = try? JSONDecoder().decode(Body.self, from: data)
         else { throw IssuanceError.malformedResponse }
         return ScopedCredential(deviceID: body.device_id,
                                 token: body.credential,
                                 scope: body.scope,
-                                policyID: body.policy_id)
+                                policyID: body.policy_id,
+                                expiresInSeconds: body.expires_in_seconds)
     }
 }

@@ -1336,7 +1336,10 @@ def create_app(settings: Settings, engine=None, native_mdm_runtime=None) -> Fast
             actor_user_id=user.id)
         session.commit()
         return {"device_id": device.id, "credential": token, "scope": scope,
-                "policy_id": policy_id}
+                "policy_id": policy_id,
+                # Let native clients schedule renewal proactively
+                # instead of discovering expiry as a 401 mid-use.
+                "expires_in_seconds": int(payload["exp"] - payload["iat"])}
 
     # -- Device filter-rules export (iOS on-device list layer) --------
 

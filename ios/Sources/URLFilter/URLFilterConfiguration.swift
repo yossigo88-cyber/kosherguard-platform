@@ -12,22 +12,70 @@ import NetworkExtension
 ///
 /// The PIR database use case must be named
 /// `<app-bundle-id>.url.filtering` and registered in the CloudKit
-/// Console (Identity & Trust page) before the off-device lookup works.
+/// Console (Identity & Trust page) before the off-device lookup works
+/// (developer.apple.com/documentation/networkextension/url-filters,
+/// read 2026-11-17). Registration is an Apple-side setup step listed
+/// in the stage report's Apple-dependent task list.
 @available(iOS 26.0, *)
 struct URLFilterConfiguration {
 
-    /// Configure the system URL Filter for the standalone-app route
-    /// (no supervision, no MDM - and therefore no removal protection;
-    /// the MDM route is the managed path and lives in the MDM
-    /// configuration payload instead).
-    static func enableStandaloneFilter() async throws {
+    enum ConfigurationError: Error, Equatable {
+        /// The managed configuration does not carry the PIR endpoint
+        /// pair, or either value failed URL validation. Enabling the
+        /// URL Filter without them would produce a filter that can
+        /// never resolve a prefilter hit - fail closed instead.
+        case notConfigured(String)
+    }
+
+    /// Configure (or reconfigure) the system URL Filter from the
+    /// CURRENT managed configuration. Values are re-read on every
+    /// call - a captured configuration is never authoritative.
+    ///
+    /// - controlProviderBundleIdentifier: the bundle ID of the
+    ///   control-provider extension target that serves the prefilter
+    ///   (KosherGuardFilterControl).
+    /// - shouldFailClosed: policy default TRUE. When the off-device
+    ///   PIR lookup cannot complete, the system blocks rather than
+    ///   silently allowing uncategorized content past the filter.
+    static func enable(
+        from configuration: AppConfiguration,
+        controlProviderBundleIdentifier: String =
+            "com.kosherguard.app.FilterControlExtension",
+        prefilterFetchInterval: TimeInterval = 3600,
+        shouldFailClosed: Bool = true
+    ) async throws {
+        guard let pirServer = configuration.pirServerURL else {
+            throw ConfigurationError.notConfigured("pirServerURL")
+        }
+        guard let issuer = configuration.pirPrivacyPassIssuerURL else {
+            throw ConfigurationError.notConfigured("pirPrivacyPassIssuerURL")
+        }
         let manager = NEURLFilterManager.shared
+        try await manager.loadFromPreferences()
+        // PRIVACY: the PIR path exists so the server can NEVER learn
+        // which URL a device asked about (queries arrive through
+        // Apple's OHTTP relay, authenticated by Privacy Pass). A
+        // per-device authentication token on this call would
+        // re-identify every query and break that model, so the token
+        // is deliberately empty; whether the deployment adds a
+        // service-wide (identical for all devices) abuse-prevention
+        // token is an operations decision, recorded in the stage
+        // report - never a per-device credential here.
+        try manager.setConfiguration(
+            pirServerURL: pirServer,
+            pirPrivacyPassIssuerURL: issuer,
+            pirAuthenticationToken: "",
+            controlProviderBundleIdentifier: controlProviderBundleIdentifier)
+        manager.prefilterFetchInterval = prefilterFetchInterval
+        manager.shouldFailClosed = shouldFailClosed
+        manager.localizedDescription = "KosherGuard URL Filter"
         manager.isEnabled = true
         try await manager.saveToPreferences()
     }
 
     static func disableFilter() async throws {
         let manager = NEURLFilterManager.shared
+        try await manager.loadFromPreferences()
         manager.isEnabled = false
         try await manager.saveToPreferences()
     }

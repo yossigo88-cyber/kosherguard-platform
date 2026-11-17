@@ -23,10 +23,18 @@ import Foundation
 ///   endpoint for app-mediated resolution (DNSOverHTTPSClient).
 /// - "deviceID" (integer or digit-string, required): the control
 ///   plane's device record id.
+/// - "pirServerURL" (string, https, optional - required to enable the
+///   iOS 26 URL Filter): the Private Information Retrieval endpoint
+///   for off-device verdicts.
+/// - "pirPrivacyPassIssuerURL" (string, https, optional - required
+///   with pirServerURL): the Privacy Pass issuer the system uses for
+///   anonymous PIR authentication.
 public struct AppConfiguration: Equatable {
     public let controlPlaneBaseURL: URL?
     public let datasetBaseURL: URL?
     public let dohServerURL: URL?
+    public let pirServerURL: URL?
+    public let pirPrivacyPassIssuerURL: URL?
     public let deviceID: Int?
     /// Human-readable per-key problems, for the UI and support.
     /// A key that is absent and optional produces no issue; absent
@@ -37,10 +45,14 @@ public struct AppConfiguration: Equatable {
 
     public init(controlPlaneBaseURL: URL?, deviceID: Int?,
                 datasetBaseURL: URL? = nil, dohServerURL: URL? = nil,
+                pirServerURL: URL? = nil,
+                pirPrivacyPassIssuerURL: URL? = nil,
                 issues: [String] = []) {
         self.controlPlaneBaseURL = controlPlaneBaseURL
         self.datasetBaseURL = datasetBaseURL
         self.dohServerURL = dohServerURL
+        self.pirServerURL = pirServerURL
+        self.pirPrivacyPassIssuerURL = pirPrivacyPassIssuerURL
         self.deviceID = deviceID
         self.issues = issues
     }
@@ -76,6 +88,16 @@ public struct AppConfiguration: Equatable {
         let controlPlane = secureURL("controlPlaneBaseURL", required: true)
         let dataset = secureURL("datasetBaseURL", required: true)
         let doh = secureURL("dohServerURL", required: false)
+        // The PIR pair is jointly optional: exactly one present is a
+        // configuration error (surfaced in issues, both dropped).
+        var pir = secureURL("pirServerURL", required: false)
+        var issuer = secureURL("pirPrivacyPassIssuerURL", required: false)
+        if (pir == nil) != (issuer == nil) {
+            issues.append(
+                "pirServerURL and pirPrivacyPassIssuerURL must both be set")
+            pir = nil
+            issuer = nil
+        }
 
         // deviceID: accept a real integer or a digit string (some MDM
         // consoles only push strings); reject bools, fractions and
@@ -120,6 +142,8 @@ public struct AppConfiguration: Equatable {
                                 deviceID: deviceID,
                                 datasetBaseURL: dataset,
                                 dohServerURL: doh,
+                                pirServerURL: pir,
+                                pirPrivacyPassIssuerURL: issuer,
                                 issues: issues)
     }
 }

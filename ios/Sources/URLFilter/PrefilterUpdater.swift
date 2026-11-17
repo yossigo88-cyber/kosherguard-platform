@@ -29,8 +29,18 @@ struct PrefilterUpdater {
 
     struct Manifest: Codable {
         struct Prefilter: Codable {
+            let format: String
+            let bitCount: Int
+            let hashCount: Int
+            let murmurSeed: UInt32
             let bytes: Int
             let sha256: String
+            enum CodingKeys: String, CodingKey {
+                case format, bytes, sha256
+                case bitCount = "bit_count"
+                case hashCount = "hash_count"
+                case murmurSeed = "murmur_seed"
+            }
         }
         let version: Int
         let ruleCount: Int
@@ -41,6 +51,18 @@ struct PrefilterUpdater {
             case version, provenance, prefilter
             case ruleCount = "rule_count"
             case blockedCount = "blocked_count"
+        }
+
+        /// The validated Apple-format parameter set for the system
+        /// URL Filter call. Wrong-format or malformed manifests fail
+        /// closed here: the system is never handed parameters from an
+        /// unvalidated document.
+        func appleParameters() throws -> ApplePrefilterParameters {
+            try ApplePrefilterParameters(
+                format: prefilter.format, bitCount: prefilter.bitCount,
+                hashCount: prefilter.hashCount,
+                murmurSeed: prefilter.murmurSeed,
+                byteCount: prefilter.bytes, sha256: prefilter.sha256)
         }
     }
 
@@ -116,7 +138,11 @@ struct PrefilterUpdater {
             throw UpdateError.staleVersion
         }
         guard manifest.prefilter.bytes > 0, manifest.prefilter.bytes <= 64 * 1024 * 1024,
-              manifest.prefilter.sha256.count == 64 else { throw UpdateError.integrityMismatch }
+              manifest.prefilter.sha256.count == 64,
+              // The Apple-format parameters must validate before any
+              // byte is trusted (wrong format, inconsistent sizing,
+              // out-of-range counts all fail closed).
+              (try? manifest.appleParameters()) != nil else { throw UpdateError.integrityMismatch }
         let bits = try await fetch("v1/dataset/prefilter")
         let digest = SHA256.hash(data: bits).map { String(format: "%02x", $0) }.joined()
         guard bits.count == manifest.prefilter.bytes,
