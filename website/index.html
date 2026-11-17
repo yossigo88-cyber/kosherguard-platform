@@ -11,7 +11,12 @@ body { font-family: Georgia, 'Times New Roman', serif; color: var(--ink); backgr
 header { padding: 1.2rem 6vw; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd5c5; flex-wrap: wrap; gap: .6rem; }
 .logo { font-size: 1.4rem; font-weight: bold; color: var(--accent); }
 nav a { margin-left: 1.2rem; color: var(--ink); text-decoration: none; }
-nav a.cta { background: var(--accent); color: #fff; padding: .45rem 1rem; border-radius: 6px; }
+nav a.cta { background: var(--accent); color: #fff; padding: .45rem 1rem; border-radius: 6px; white-space: nowrap; }
+@media (max-width: 640px) {
+  header { flex-direction: column; align-items: flex-start; }
+  nav { display: flex; flex-wrap: wrap; gap: .6rem 1rem; }
+  nav a { margin-left: 0; }
+}
 .hero { padding: 5rem 6vw 3rem; max-width: 62rem; }
 .hero h1 { font-size: 2.6rem; line-height: 1.2; margin-bottom: 1rem; }
 .hero p { font-size: 1.15rem; max-width: 44rem; }
