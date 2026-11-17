@@ -16,9 +16,9 @@ Legend: [ ] not started, [~] in progress / partially implemented,
 user instruction.
 
 Current verification state (all suites green at the head this file
-ships with): control-plane 343, filtering-engine 337, dns-edge 87,
+ships with): control-plane 356, filtering-engine 337, dns-edge 87,
 mdm 64, proxy-edge 38, url-filter-server 38, category-pipeline 6,
-dashboard 276 - 1,189 tests total, plus three committed load-test
+dashboard 276 - 1,202 tests total, plus three committed load-test
 harnesses (docs/reviews/LOAD_TEST.md).
 
 ## Milestone map (all eight complete through this branch)
@@ -35,7 +35,7 @@ harnesses (docs/reviews/LOAD_TEST.md).
   server (38 tests). DONE except the Apple-blocked native app
 - M6: Operations - structured request logs (no secrets), /health/depth,
   staff-only /metrics, backup/restore runbook + tested scripts. DONE
-- M7: Full testing - 1,189 automated tests across 8 components, security
+- M7: Full testing - 1,202 automated tests across 8 components, security
   negatives, tenant isolation, concurrency, load harnesses. DONE
 - M8: Final delivery - documentation, limitation list, handoff. IN
   PROGRESS (this refresh; final security report and handoff package)
@@ -57,9 +57,9 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 1.10 | Own internet filtering engine | [x] | `filtering-engine/`, 337 tests; symlink fix + regression tests from M1 |
 | 1.11 | Website and application filtering | [x] server-side | DNS engine + dns-edge DoH (87), proxy/PAC (38), per-device app policy + install/remove commands (`mdm/app_management.py`, control-plane app-policy APIs) |
 | 1.12 | Central administration dashboard | [x] | `control-plane/web/` portal (policies, groups, exceptions, schedules, devices, MDM, categories, customers, credentials, guardians, approvals, staff, filtering, apps, audit) + `dashboard/` tree (276 tests); UI e2e verified with local headless browser incl. mobile 390px |
-| 1.13 | Customer and device management | [x] | Tenants, guardians (invite/delegation/role/MFA-reset), devices, groups; staff customers view is names+counts only (tenant isolation) |
+| 1.13 | Customer and device management | [x] | Tenants, guardians (invite/delegation/role/MFA-reset), devices, groups; staff customers view is names+counts only (tenant isolation); customer-tenant onboarding via staff-owner-only POST /api/staff/tenants (7-day hashed owner invite, audited) with staff-panel Add customer form |
 | 1.14 | New customer-facing website | [x] tree, [O] live swap | `website/` built and copy-reviewed (privacy/support pages match actual collection/retention); replacing the live site is a separate approval (Part 2 question 15) |
-| 1.15 | Secure backend and database | [x] | FastAPI + PostgreSQL, Alembic migrations 0001-0023, hashed sessions, TOTP MFA, CSRF header checks, tenant scoping |
+| 1.15 | Secure backend and database | [x] | FastAPI + PostgreSQL, Alembic migrations 0001-0024, hashed sessions, TOTP MFA, CSRF header checks, tenant scoping |
 | 1.16 | Logging, monitoring, backups | [x] | JSON request logs without secrets, /health/depth (503 on failure), staff-only /metrics, audit events; backup/restore runbook + scripts tested (`test_backup_restore.py`) |
 | 2 | ABM + automated enrollment | [B] live, [x] code | As 1.1-1.3 |
 | 3 | Non-removable MDM from day one | [x] design+payloads, [B] device | Profile/restriction payloads; engine loader fixed (M1) |
@@ -71,12 +71,12 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 9 | Category database | [x] | `category-pipeline/` (taxonomy, provenance, builder, 6 tests) + registry-managed category sources with review/activate/rollback, hash-bound imports, two-person activation gates, file sync integrity (control-plane category-source suite) |
 | 10 | Administration dashboard | [x] | As 1.12 |
 | 11 | Customer-facing website | [x] tree, [O] step 7 | Steps 1-6; live replacement is a separately-approved step |
-| 12 | Customer accounts + multi-tenancy | [x] | Family=tenant, multi-guardian with owner-delegated capabilities and protected baseline; tenant-isolation tests |
+| 12 | Customer accounts + multi-tenancy | [x] | Family=tenant, multi-guardian with owner-delegated capabilities and protected baseline; tenant-isolation tests. Part 2A customer portal: secure sign-in (MFA), authorized devices with enrollment/supervision state, online/offline/stale connectivity from stored receipts, last confirmed update, current filtering policy with schedules, permitted delegated settings, structured exception requests (approve/reject creating real audited PolicyExceptions under the requester's delegable limits), support requests |
 | 13 | Database and backend | [x] | As 1.15 |
 | 14 | Security | [x] | MFA everywhere privileged (fresh TOTP + typed confirmation for sensitive ops), hashed sessions, tenant isolation, read_only staff choke point, credential redaction, security-negative tests; final security report pending in M8 |
 | 15 | Hosting and infrastructure | [x] config, [O] deploy | `deploy/` + `render.yaml` configuration; no deployment performed or authorized |
 | 16 | Apple credentials and setup | [B] | `docs/MDM_ENROLLMENT_AND_PUSH.md` + setup instructions deliverable |
-| 17 | Testing | [x] | 1,189 tests green at head across 8 components; load harnesses + smoke tests; filtering-coverage, tenant-isolation, security-negative, concurrency suites all present |
+| 17 | Testing | [x] | 1,202 tests green at head across 8 components; load harnesses + smoke tests; filtering-coverage, tenant-isolation, security-negative, concurrency suites all present |
 | 18 | Final deliverables (22) | [~] | Itemized below |
 | 19 | Development rules | [x] | Logical commits on `full-platform-build`; main untouched; per-area review docs in `docs/reviews/` |
 | 20 | Pre-build assignment | [S] | Completed before this build (44 answers); preserved in docs/reviews |
@@ -96,7 +96,7 @@ harnesses (docs/reviews/LOAD_TEST.md).
 | 9 | Filtering engine | [x] | 337 tests |
 | 10 | Filtering policy database | [x] | `category-pipeline/` + registry category sources |
 | 11 | Administration dashboard | [x] | Portal UI + `dashboard/` (276 tests) |
-| 12 | Customer management | [x] | Tenants/guardians/staff customers view |
+| 12 | Customer management | [x] | Tenants/guardians/staff customers view; staff-owner tenant onboarding endpoint + Add customer UI |
 | 13 | Customer-facing website | [x] tree, [O] live | `website/`; live swap separately approved |
 | 14 | Database and migrations | [x] | Alembic 0001-0023 |
 | 15 | Hosting and deployment configuration | [x] config, [O] deploy | `deploy/`, `render.yaml` |
