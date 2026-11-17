@@ -53,10 +53,11 @@ def create_app(dataset: Dataset,
         try:
             return verify_token(device_token_key, token, "dataset",
                                 revoked_jtis=effective)
-        except TokenError as exc:
+        except TokenError:
             # Deliberately generic: no oracle about which check failed.
-            raise HTTPException(status_code=401,
-                                detail=f"unauthorized: {exc}")
+            # The TokenError message distinguishes expired/bad-signature/
+            # revoked; it is never sent to the client.
+            raise HTTPException(status_code=401, detail="unauthorized")
 
     app = FastAPI(title="KosherGuard URL Filter Server", docs_url=None,
                   redoc_url=None)
