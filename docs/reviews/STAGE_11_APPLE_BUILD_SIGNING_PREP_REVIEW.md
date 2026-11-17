@@ -28,8 +28,8 @@ inspection).
 
 - The development sandbox is Linux-only (verified: `uname -a`,
   no xcodebuild/xcrun/sw_vers). **The agent has no Mac.**
-- No user-owned Mac is confirmed (a Windows PC is confirmed in project
-  memory).
+- No accessible Mac was identified (a Windows PC is the only confirmed
+  hardware in project memory; this is not a claim the user owns none).
 - **Found working route**: GitHub-hosted `macos-26` runners carry
   Xcode 26.6 (default) through 26.0.1 (iOS 26 SDK) and are **free for
   public repositories** (GitHub billing docs, verified today). The
@@ -37,11 +37,13 @@ inspection).
 - LIMITATION, honestly stated: the GitHub token authorized for agent
   pushes lacks the `workflow` scope; GitHub rejected the push of
   `.github/workflows/ios-compile-check.yml` with exactly that error.
-  Per the standing rule, no new credential was requested. The workflow
-  therefore lives at `ci/ios-compile-check.yml` and becomes active
-  after ONE manual user step (copy it to `.github/workflows/` in the
-  GitHub web UI - step 0.3 in docs/setup/APPLE_ACCOUNT_SETUP_STEPS.md).
-  **Until that step, no Xcode compile has run and none is claimed.**
+  Per the standing rule, no new credential was requested and the
+  route was STOPPED. The workflow definition is preserved inert at
+  `ci/ios-compile-check.yml` as a preparation artifact; activating it
+  requires a separately authorized route that does not currently
+  exist, and no user copy/commit chore is implied or approved.
+  **Until such a route exists, no Xcode compile has run and none is
+  claimed.**
 - Paid persistent-Mac options priced in APPLE_BUILD_REQUIREMENTS.md
   section 2b (MacStadium from $109/month; Mac mini purchase from $599;
   AWS EC2 Mac ~$1/hr class with 24h minimum; MacinCloud ~$30+/month
@@ -159,11 +161,14 @@ simulator evidence.
 
 ## 4. What still blocks working iPhone filtering (unchanged from Stage 10, now with owners and costs)
 
-1. A real Xcode compile (owner: anyone - free via CI after step 0.3).
+1. A real Xcode compile (free via GitHub macOS CI, gated on a
+   separately authorized workflow-activation route - currently STOPPED).
 2. $99/yr Apple Developer Program membership (owner: Yossi; payment).
 3. Apple approvals: NE managed values, Family Controls distribution,
    URL Filter PIR onboarding, MDM Vendor CSR (owner: Yossi submits;
    Apple decides).
-4. A Mac for signed builds + Apple Configurator (owner: Yossi; buy/rent/borrow).
+4. A Mac for signed builds + Apple Configurator - no accessible Mac
+   was identified (options priced in APPLE_BUILD_REQUIREMENTS.md 2b;
+   any acquisition or rental is a separate approval).
 5. A spare iPhone, supervision, and the device test phases (owner:
    Yossi approval; may involve erasing the spare device).

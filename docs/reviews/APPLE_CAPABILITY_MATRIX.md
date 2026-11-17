@@ -34,7 +34,7 @@ Related non-entitlement Apple registration:
 | --- | --- | --- | --- |
 | Apple Development | Sign development builds | Xcode automatic signing or developer.apple.com | included in $99/yr program |
 | Apple Distribution | Sign TestFlight/App Store/MDM-distributed builds | Same | included |
-| **MDM Vendor CSR Signing Certificate** | Lets KosherGuard sign customer CSRs to obtain MDM APNs push certificates from identity.apple.com | Account Holder of the **Apple Developer Program ($99/yr)** or Enterprise Program must **contact Apple** to request access (developer.apple.com/help/account/certificates/mdm-vendor-csr-signing-certificate/, fetched 2026-11-17). Alternative routes for the push cert itself: Apple Profile Manager (macOS Server, $20, extracts a cert; test-grade) or mdmcert.download (free, organizations only) - micromdm.io/blog/certificates/ | program membership + Apple approval |
+| **MDM Vendor CSR Signing Certificate** | Lets KosherGuard sign customer CSRs to obtain MDM APNs push certificates from identity.apple.com | Account Holder of the **Apple Developer Program ($99/yr)** or Enterprise Program must **contact Apple** to request access (developer.apple.com/help/account/certificates/mdm-vendor-csr-signing-certificate/, fetched 2026-11-17). Alternative route for the push cert itself: mdmcert.download (free, organizations only) - micromdm.io/blog/certificates/ | program membership + Apple approval |
 | MDM APNs push certificate (per environment) | Authenticates KosherGuard's MDM server to Apple Push | identity.apple.com, CSR signed by the vendor cert above; **expires yearly and must be renewed with the same Apple ID and same push topic or all enrolled devices lose MDM** (micromdm.io/blog/certificates/) | $0 once the vendor cert exists |
 | TLS certificate for the MDM/filter endpoints | HTTPS on control-plane/mdm/url-filter hosts | Existing web PKI (the project already uses Caddy/Let's Encrypt on the staging host) | $0 |
 
@@ -66,6 +66,12 @@ Related non-entitlement Apple registration:
 | MDM Vendor CSR signing certificate | no | required, via "contact us" | **required** |
 | Apple Business (ABM/ASM) account | **free** (no program membership needed) | - | organizational verification by Apple |
 | Automated Device Enrollment (supervision) for owned devices | free via Apple Business, or Apple Configurator on a Mac (erases the device) | - | none |
+
+Scope note: the $99/yr program is the only fee Apple itself charges
+in this plan. Hardware and third-party rental/hosting are separate
+non-Apple costs, and the CloudKit Identity and Trust registration
+tier/cost for the URL Filter is UNVERIFIED (section 1), so the total
+is not final until that is confirmed.
 
 Verified 2026-11-17: $99/yr membership figure (developer.apple.com/
 programs/), Family Controls request flow, TN3134 deployment rows,

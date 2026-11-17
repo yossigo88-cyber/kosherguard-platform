@@ -33,8 +33,8 @@ VERIFIED by direct inspection, 2026-11-17:
   macOS, no `xcodebuild`, no `xcrun`, no `sw_vers`. **The agent does
   not have a local Mac.**
 - Per project memory, the user's confirmed hardware is a **Windows
-  PC**; no user-owned Mac is confirmed. (Ask Yossi before assuming one
-  exists.)
+  PC**. **No accessible Mac was identified** - that is a statement
+  about what could be found, not a claim that the user owns none.
 
 ### 2a. Working route found: GitHub-hosted macOS runners (free)
 
@@ -52,15 +52,15 @@ images/macos/macos-26-Readme.md, fetched 2026-11-17) ships:
   preview" on that image line (runner-images issue 14404).
 
 `ci/ios-compile-check.yml` (added in this stage) contains the
-workflow that runs an **unsigned** compile of the app plus all four
-extensions on every push to `stage-11-*`. It is NOT active yet: the
-git credential authorized for agent pushes lacks GitHub's `workflow`
-scope, so the workflow file cannot be pushed to `.github/workflows/`
-by the agent, and no new credential may be requested. Enablement is a
-one-file manual step for the user: copy `ci/ios-compile-check.yml` to
-`.github/workflows/ios-compile-check.yml` (the GitHub web UI "Add
-file" flow works). Until then, no CI run exists and the compile
-remains unverified. Once enabled, the workflow runs:
+workflow definition for an **unsigned** compile of the app plus all
+four extensions on every push to `stage-11-*`. It is PREPARED, NOT
+ACTIVE: the git credential authorized for agent pushes lacks GitHub's
+`workflow` scope, GitHub rejected the workflow-file push, and no new
+credential may be requested. Enabling it requires a separately
+authorized route that does not currently exist; nothing here should
+be read as a user task. Until such a route exists, no CI run has
+happened and the compile remains unverified. The prepared workflow
+runs:
 
 ```
 xcodebuild -project ios/KosherGuard.xcodeproj -scheme KosherGuard \
@@ -83,7 +83,7 @@ For signed builds and device testing a persistent Mac is needed:
 
 | Option | Cost (checked 2026-11-17) | Notes |
 | --- | --- | --- |
-| GitHub Actions macos-26 (unsigned CI only) | **$0** (public repo) | Already set up this stage. Cannot sign or run devices. |
+| GitHub Actions macos-26 (unsigned CI only) | **$0** (public repo) | Prepared this stage, NOT active (workflow-scope boundary, see 2a). Cannot sign or run devices. |
 | Buy a Mac (Mac mini) | from $599 one-time (Apple list price; verify current) | Cheapest long-term; also runs Apple Configurator for supervising a spare iPhone. |
 | MacStadium dedicated Mac mini | from **$109/month** (macstadium.com/pricing: $109/$149/$199/$249/$449 tiers) | Monthly rental, genuine Apple hardware, full admin. |
 | MacinCloud | roughly $30+/month for rented server plans (comparison listings 2026; verify current plan page before buying) | Cheaper entry tiers exist; check Xcode version on the plan. |

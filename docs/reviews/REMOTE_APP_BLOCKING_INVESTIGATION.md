@@ -31,8 +31,18 @@ extension).
 
 ## 2. Personally owned (unsupervised) iPhones
 
-**Administrator-controlled remote app blocking is NOT available on an
-unsupervised personal iPhone. Verified against current Apple sources:**
+Two different capabilities must not be conflated here:
+
+- **Arbitrary, administrator-CHOSEN app blocking** (the admin picks
+  which personal apps are blocked) is NOT available remotely on an
+  unsupervised personal iPhone. Verified against current Apple
+  sources below.
+- **A consented remote gate** (the server remotely activates/pauses a
+  shield set that the on-device user personally selected and
+  authorized) IS available - that is the Stage 10 personal path.
+  The selection and the revocation both belong to the device user.
+
+Evidence for the first statement:
 
 - `blockedAppBundleIDs` / `allowListedAppBundleIDs` are
   `supervised: true` and forbidden under User Enrollment (Apple

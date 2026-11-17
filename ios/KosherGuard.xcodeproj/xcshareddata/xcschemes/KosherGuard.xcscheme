@@ -6,7 +6,7 @@
   dependencies, all four embedded app extensions. Hand-authored in
   Stage 11 like the rest of the project; the first real xcodebuild
   run is the verification step. LastUpgradeVersion matches the
-  newest Xcode listed in .github/workflows/ios-compile-check.yml
+  newest Xcode listed in ci/ios-compile-check.yml
   (Xcode 26.6 -> 2660).
 -->
 <Scheme
