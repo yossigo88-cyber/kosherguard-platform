@@ -42,13 +42,27 @@ function enrollmentLabel(enr) {
   return s;
 }
 
+const REPORTED_LABELS = {
+  all_served_reported_applied: "Device reported all served policies applied (receipt only)",
+  served_not_fully_reported: "Not all served policies reported applied",
+  no_report_received: "No device report received yet",
+  no_declarations_served: "No policy declarations served yet",
+  no_enrollment: "Not enrolled"
+};
+
 function renderDevices() {
-  document.querySelector("#devices tbody").innerHTML = DEVICES.map(d =>
-    `<tr><td>${esc(d.name)}</td><td>${esc(d.state)}</td>` +
-    `<td>${enrollmentLabel(d.enrollment)}</td>` +
-    `<td>${esc(CONNECTIVITY_LABELS[d.connectivity] || d.connectivity)}</td>` +
-    `<td>${d.last_confirmed_update ? esc(new Date(d.last_confirmed_update).toLocaleString()) : "none yet"}</td>` +
-    `<td>${d.pending_commands}</td></tr>`).join("");
+  document.querySelector("#devices tbody").innerHTML = DEVICES.map(d => {
+    const chain = d.push_chain || {};
+    const latest = chain.latest_command
+      ? `${esc(chain.latest_command.command)}: ${esc(chain.latest_command.status)}`
+      : "none";
+    return `<tr><td>${esc(d.name)}</td><td>${esc(d.state)}</td>` +
+      `<td>${enrollmentLabel(d.enrollment)}</td>` +
+      `<td>${esc(CONNECTIVITY_LABELS[d.connectivity] || d.connectivity)}</td>` +
+      `<td>${esc(REPORTED_LABELS[d.reported_vs_published] || d.reported_vs_published)}</td>` +
+      `<td>${d.last_device_receipt ? esc(new Date(d.last_device_receipt).toLocaleString()) : "none yet"}</td>` +
+      `<td>${latest}${chain.pending ? ` (${chain.pending} pending)` : ""}</td></tr>`;
+  }).join("");
 }
 
 function renderSchedules(schedules) {
