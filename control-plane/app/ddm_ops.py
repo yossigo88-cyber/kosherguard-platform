@@ -303,24 +303,55 @@ def declaration_states(parsed: dict) -> dict:
     return out
 
 
+_DECL_FIELDS = ("identifier", "server-token", "active", "valid",
+                "reasons")
+
+
+def sanitize_status_report(parsed: dict) -> dict:
+    """Minimize a status report to the receipt the platform actually
+    needs (Answer 31): the per-declaration application states. Every
+    other key - including any UNSOLICITED location, personal-app or
+    other sensitive content a device or impersonator puts in the
+    payload - is dropped BEFORE persistence, so the inventory never
+    stores data it must not collect."""
+    out: dict = {}
+    items = parsed.get("StatusItems")
+    mgmt = items.get("management") if isinstance(items, dict) else None
+    decls = (mgmt or {}).get("declarations") if isinstance(
+        mgmt, dict) else None
+    configs = decls.get("configurations") if isinstance(
+        decls, dict) else None
+    if isinstance(configs, list):
+        kept = []
+        for d in configs:
+            if isinstance(d, dict):
+                kept.append({k: d[k] for k in _DECL_FIELDS if k in d})
+        out = {"StatusItems": {"management": {"declarations":
+                                              {"configurations": kept}}}}
+    return out
+
+
 def record_status(session: Session, enrollment: MDMEnrollment,
                   body: bytes) -> None:
-    """Store a device status report verbatim plus the extracted
+    """Store a MINIMIZED device status receipt plus the extracted
     per-declaration states. RECEIPT ONLY: a stored report proves the
     enrollment sent a well-formed report, never that any declaration
     applied - that conclusion needs declaration_states to match a
     served declaration's identifier + server-token with active and
-    valid, checked against what we actually served."""
+    valid, checked against what we actually served. Unsolicited
+    payload fields (location, personal-app data, anything outside the
+    declaration receipt) are dropped before persistence."""
     try:
         parsed = json.loads(body.decode())
     except (ValueError, UnicodeDecodeError):
         raise DDMError("status report must be JSON", 400)
     if not isinstance(parsed, dict):
         raise DDMError("status report must be a JSON object", 400)
+    minimized = sanitize_status_report(parsed)
     session.add(DDMStatusReport(
         tenant_id=enrollment.tenant_id,
         enrollment_id=enrollment.enrollment_id,
-        body=json.dumps(parsed, sort_keys=True),
+        body=json.dumps(minimized, sort_keys=True),
         declaration_states=json.dumps(
-            declaration_states(parsed), sort_keys=True)))
+            declaration_states(minimized), sort_keys=True)))
     enrollment.last_seen_at = utcnow()
