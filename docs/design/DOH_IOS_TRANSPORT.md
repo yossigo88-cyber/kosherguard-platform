@@ -47,6 +47,37 @@ certificate on the DoH TLS handshake?) is undocumented by Apple and
 unknown until tested on a supervised device with development
 signing - a hardware-only unknown, recorded here rather than assumed.
 
+## Milestone resolution (2026-11-17, iOS filtering implementation)
+
+The mismatch is resolved by keeping the server's security bar intact
+and being precise about what each iOS path can carry:
+
+- The server side is UNCHANGED: dns-edge still requires a scoped
+  "doh" credential in the Authorization header and ignores URL-borne
+  tokens. No weakening, no fail-open, no URL tokens (option 3 stays
+  unapproved and unbuilt).
+- The control plane's mint route now issues "doh" scope (verified in
+  control-plane/app/main.py: scope must be 'dataset', 'proxy' or
+  'doh'). The stale client-side comment claiming a 400 refusal was
+  corrected in CredentialIssuanceClient.swift.
+- The app-mediated path (option 1) is the only path implemented in
+  code: DNSOverHTTPSClient attaches the credential for traffic the
+  app itself routes. It gives no system-wide DNS interception and is
+  not claimed to.
+- Native system-wide DNS (the dnsSettings payload / NEURLFilter
+  track) still CANNOT carry per-device identity: Apple documents no
+  header or client-credential field. mTLS presentation by the native
+  DNS client (option 2) remains undocumented by Apple and untested -
+  a hardware experiment, not an assumption.
+- Consequence for the product: per-device authenticated DNS on the
+  system-wide path requires EITHER an Apple capability change,
+  OR hardware-verified mTLS support, OR the user's written approval
+  of short-lived MDM-rotated URL tokens (option 3). Until one of
+  those exists, system-wide DNS identity is a documented hard
+  blocker, and the device's protection stack is: supervised-DNS
+  filtering (unauthenticated dns-edge policy by publication) +
+  on-device explicit-rule extension + iOS 26 URL Filter prefilter/PIR.
+
 ## What is built
 
 - `dns-edge/doh_identity.py`: header-based per-device identity for
