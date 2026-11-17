@@ -430,5 +430,31 @@ class TestReadOnlyStaffViewingOnly:
         assert c.post("/api/admin/categories", json={
             "domain": "x.example", "category": "adult"}, headers=HDR
         ).status_code == 403
-        # Account self-service stays available.
+        # Sweep of representative mutation routes across methods and
+        # surfaces, including the privilege-changing ones.
+        for method, path in [
+                ("put", "/api/policies/1"),
+                ("delete", "/api/exceptions/1"),
+                ("put", "/api/privacy/retention"),
+                ("post", "/api/guardians/invite"),
+                ("put", "/api/guardians/1/role"),
+                ("post", "/api/guardians/1/mfa-reset"),
+                ("post", "/api/staff/1/role"),
+                ("post", "/api/publications"),
+                ("delete", "/api/groups/1/devices/1"),
+                ("post", "/api/mdm/enrollments/1/commands"),
+                ("post", "/api/admin/support/requests/1/advance")]:
+            kw = {} if method == "delete" else {"json": {}}
+            r = getattr(c, method)(path, headers=HDR, **kw)
+            assert r.status_code == 403, (method, path, r.status_code)
+            assert "read-only staff role" in r.json()["detail"], (method, path)
+        # Account self-service stays available and cannot change
+        # privilege: password change works, the account stays read-only.
+        r = c.post("/api/auth/password-change", json={
+            "current_password": PASSWORD,
+            "new_password": "a new long enough password"}, headers=HDR)
+        assert r.status_code == 200
+        me = c.get("/api/auth/me").json()
+        assert me["staff_role"] == "read_only"
+        assert c.post("/api/policies", json={}, headers=HDR).status_code == 403
         assert c.post("/api/auth/logout", headers=HDR).status_code in (200, 204)
