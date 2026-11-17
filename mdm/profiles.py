@@ -1,11 +1,12 @@
 """Enrollment profile (mobileconfig) builder.
 
 Builds the unsigned MDM enrollment profile plist for a device. The
-profile is NOT signed and NOT deliverable: signing requires the Apple
-MDM vendor certificate chain, which does not exist yet (see
+profile is NOT signed and NOT deliverable: signing requires a separately provisioned profile-signing identity
+(not the Apple MDM vendor CSR signing certificate; see
 docs/MDM_ENROLLMENT_AND_PUSH.md prerequisite audit). The identity
 payload is an ACME placeholder matching Apple's current recommendation;
-no SCEP service is implemented.
+no ACME/SCEP service is implemented. A separate operational builder
+below accepts a real device-specific PKCS#12 identity.
 
 This code exists now so the profile structure, per-device identity
 placeholders, and tenant-scoping are settled and testable before any
@@ -123,8 +124,8 @@ def build_enrollment_profile(
     with a ManualSupervisionDeclaration for device_serial. The
     declaration is operator-asserted, not device attestation. Whether iOS
     accepts or enforces the key on a profile containing the MDM payload
-    is UNVERIFIED: no supervised iPhone test exists. Apple's documented
-    enrollment-profile protection is ADE "Prevent unenrollment".
+    is UNVERIFIED: no supervised iPhone test exists. Apple documents the top-level flag for an iOS MDM profile on a
+    supervised device. ADE separately supports Prevent Unenrollment.
     """
     for name, url in (("server_url", server_url), ("checkin_url", checkin_url)):
         if not url.startswith("https://"):
@@ -144,7 +145,7 @@ def build_enrollment_profile(
         "PayloadDisplayName": "Device Identity",
         # Placeholder ACME directory URL. Real issuance is wired when
         # the Apple prerequisites land; nothing here contacts it.
-        "DirectoryURL": "https://mdmenrollment.apple.com/acme",
+        "DirectoryURL": "https://unconfigured.invalid/acme",
         "KeyType": "ECSECPrimeRandom",
         "KeySize": 384,
     }
@@ -160,9 +161,9 @@ def build_enrollment_profile(
         "CheckInURL": checkin_url,
         "CheckOutWhenRemoved": True,
         "ServerCapabilities": ["com.apple.mdm.per-user-connections"],
-        # Unsupervised devices may remove the profile; supervision
-        # (via ADE) is what makes management non-removable. Declared
-        # honestly: supervision status is a device fact, not a claim.
+        # Supervision may come from ADE or Configurator. The top-level
+        # removal option is experimental until tested on real hardware.
+        # Supervision itself is not established by generating this plist.
         "AccessRights": 8191,
     }
     profile = {
@@ -201,3 +202,46 @@ def validate_profile_structure(profile: dict) -> None:
 def parse_profile(data: bytes) -> dict:
     """Parse a profile back (tests and future verification tooling)."""
     return plistlib.loads(data)
+
+
+def build_provisioned_profile(*, identity, mode="ordinary", **kwargs) -> bytes:
+    """Build an unsigned operational PKCS#12 enrollment profile.
+
+    Caller must sign and verify it before delivery. Manual-supervised removal
+    protection remains the existing explicit-declaration experimental path.
+    ADE lock/recovery is configured separately in the Apple-assigned profile,
+    never synthesized from a top-level manual-removal flag.
+    """
+    from .identity import IssuedIdentity, ProvisioningError, https_url
+    if not isinstance(identity, IssuedIdentity):
+        raise ProvisioningError("a freshly issued device identity is required")
+    if mode not in {"ordinary", "manual_supervised", "ade"}:
+        raise ProvisioningError("unknown enrollment strategy")
+    protected = kwargs.get("removal_protection") is not None
+    if protected and mode != "manual_supervised":
+        raise ProvisioningError("experimental removal option is manual-only")
+    if mode == "manual_supervised" and not protected:
+        raise ProvisioningError("manual-supervised mode needs a declaration")
+    for name in ("server_url", "checkin_url"):
+        https_url(kwargs[name])
+    if not kwargs.get("topic", "").startswith("com.apple.mgmt."):
+        raise ProvisioningError("invalid MDM APNs topic")
+    profile = parse_profile(build_enrollment_profile(**kwargs))
+    old_identity, mdm = profile["PayloadContent"]
+    old_identity.update({"PayloadType": "com.apple.security.pkcs12",
+                         "PayloadContent": identity.container,
+                         "Password": identity.password,
+                         "AllowAllAppsAccess": False,
+                         "KeyIsExtractable": False})
+    for key in ("DirectoryURL", "KeyType", "KeySize"):
+        old_identity.pop(key, None)
+    # This implementation serves only the iPhone device channel. Do not
+    # advertise user-channel, bootstrap-token or token capabilities.
+    mdm.pop("ServerCapabilities", None)
+    profile["PayloadDescription"] = (
+        "KosherGuard enrollment with a unique PKCS#12 client identity. "
+        "Contains sensitive private-key material. Hardware UNVERIFIED.")
+    if protected:
+        profile["PayloadDescription"] += " EXPERIMENTAL removal protection."
+    validate_profile_structure(profile)
+    return plistlib.dumps(profile, fmt=plistlib.FMT_XML)
