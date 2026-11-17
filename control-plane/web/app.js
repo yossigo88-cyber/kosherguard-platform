@@ -23,7 +23,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 async function showApp() {
   ["login-panel", "accept-panel"].forEach(id => $(id).classList.add("hidden"));
-  ["groups-panel", "exceptions-panel", "policy-preview-panel", "publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
+  ["groups-panel", "exceptions-panel", "policy-preview-panel", "publication-jobs-panel", "overview-panel", "policies-panel", "schedules-panel", "devices-panel", "mdm-panel", "categories-panel", "customers-panel", "credentials-panel", "guardians-panel", "approvals-panel", "staff-panel", "account-panel", "filtering-panel", "apps-panel", "audit-logs-panel", "signout-panel"].forEach(id => $(id).classList.remove("hidden"));
   const me = await api("/api/auth/me");
   accountInfo = me.body;
   $("who").textContent = me.body.email || "";
@@ -43,6 +43,8 @@ async function refresh() {
   refreshCustomers();
   refreshCredentials();
   refreshGuardians();
+  refreshApprovals();
+  refreshStaff();
   refreshMfaState();
   refreshAuditLogs();
   const policies = await api("/api/policies");
@@ -863,3 +865,71 @@ async function groupMembership(remove){
 }
 $("group-member-form").addEventListener("submit",async e=>{e.preventDefault();await groupMembership(false);});
 $("group-remove-member").addEventListener("click",()=>groupMembership(true));
+
+async function refreshApprovals() {
+  const panel = $("approvals-panel");
+  const r = await api("/api/mdm/sensitive-approvals");
+  if (r.status === 403) { panel.classList.add("hidden"); return; }
+  const rows = r.body.approvals || [];
+  document.querySelector("#approvals-table tbody").innerHTML = rows.map(a =>
+    `<tr><td>${a.id}</td><td>${esc(a.operation)}</td><td>${esc(a.status)}</td>` +
+    `<td>${esc(a.reason || "")}</td><td>${esc(a.expires_at.slice(0, 16).replace("T", " "))}</td>` +
+    `<td>${a.status === "pending" ? `<button class="link" data-decide="${a.id}" data-op="${esc(a.operation)}">decide</button>` : ""}</td></tr>`).join("");
+}
+
+document.querySelector("#approvals-table tbody").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-decide]");
+  if (!b) return;
+  $("ap-id").textContent = b.dataset.decide + " (" + b.dataset.op + ")";
+  $("ap-confirm").value = "";
+  $("ap-totp").value = "";
+  $("approval-act").classList.remove("hidden");
+  $("approval-form").dataset.approvalId = b.dataset.decide;
+});
+
+$("approval-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("approval-error"), ok = $("approval-ok");
+  err.textContent = ""; ok.textContent = "";
+  const id = e.target.dataset.approvalId;
+  const decision = e.submitter ? e.submitter.value : "approve";
+  const r = await api(`/api/mdm/sensitive-approvals/${id}/${decision}`, {
+    method: "POST", headers: HDR,
+    body: JSON.stringify({totp_code: $("ap-totp").value,
+                          confirm: $("ap-confirm").value,
+                          reason: $("ap-reason").value}),
+  });
+  if (r.status === 200) {
+    ok.textContent = decision === "approve" ? "Approved and executed." : "Rejected.";
+    $("approval-act").classList.add("hidden");
+    refreshApprovals();
+  } else {
+    err.textContent = (r.body && r.body.error) || "Decision failed.";
+  }
+});
+
+async function refreshStaff() {
+  const panel = $("staff-panel");
+  const r = await api("/api/staff");
+  if (r.status === 403) { panel.classList.add("hidden"); return; }
+  const rows = r.body.staff || [];
+  document.querySelector("#staff-table tbody").innerHTML = rows.map(u =>
+    `<tr><td>${u.id}</td><td>${esc(u.email)}</td><td>${esc(u.staff_role || "")}</td>` +
+    `<td>${u.mfa_enrolled ? "enrolled" : "NOT enrolled"}</td></tr>`).join("");
+}
+
+$("staff-role-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("staff-error"), ok = $("staff-ok");
+  err.textContent = ""; ok.textContent = "";
+  const r = await api(`/api/staff/${$("sf-user-id").value}/role`, {
+    method: "POST", headers: HDR,
+    body: JSON.stringify({staff_role: $("sf-role").value || null}),
+  });
+  if (r.status === 200) {
+    ok.textContent = "Staff role updated for " + r.body.email + ".";
+    refreshStaff();
+  } else {
+    err.textContent = (r.body && r.body.error) || "Role change failed.";
+  }
+});
