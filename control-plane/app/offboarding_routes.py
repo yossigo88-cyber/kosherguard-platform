@@ -47,6 +47,8 @@ class AttestBody(BaseModel):
 
 class CompleteBody(BaseModel):
     notes: str = ""
+    totp_code: str | None = None
+    confirm: str | None = None
 
 
 def _json(c: OffboardingCase) -> dict:
@@ -70,7 +72,12 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
                                 require_csrf_header, require_guardian,
                                 require_owner, fresh_check):
     def _case(session, user, case_id):
-        case = session.get(OffboardingCase, case_id)
+        # Row lock: verify/attest/complete/cancel transitions serialize
+        # on the case row, and each one re-checks the committed status
+        # before changing it - no double-complete, no verify-after-
+        # cancel interleavings.
+        case = session.scalar(select(OffboardingCase).where(
+            OffboardingCase.id == case_id).with_for_update())
         if case is None or case.tenant_id != user.tenant_id:
             return None
         return case
@@ -219,6 +226,14 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
                 case.abm_release_attested_at is None):
             return error(409, "loss of authority requires the "
                               "ABM-release attestation")
+        # Completion retires devices, revokes credentials and purges
+        # filter-decision rows: a sensitive, hard-to-undo transition
+        # that requires fresh MFA verification and confirmation, the
+        # same as verify and the Apple-side attestations.
+        denied = fresh_check(error, user, body.totp_code, body.confirm,
+                             "complete-offboarding")
+        if denied is not None:
+            return denied
         if body.notes:
             case.notes = (case.notes + "\n" + body.notes).strip()
         tenant = session.get(Tenant, case.tenant_id)
@@ -227,6 +242,11 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
         deleted_logs = 0
         revoked_creds = 0
         if case.device_id is not None and case.kind in DEVICE_KINDS:
+            # Lock the device row before mutating its enrollments and
+            # state so completion never interleaves with a concurrent
+            # enrollment redemption or command issuance.
+            session.scalar(select(Device).where(
+                Device.id == case.device_id).with_for_update())
             for assignment in session.scalars(select(DeviceAssignment).where(
                     DeviceAssignment.device_id == case.device_id,
                     DeviceAssignment.tenant_id == case.tenant_id,
@@ -249,6 +269,8 @@ def register_offboarding_routes(app, *, error, current_user, db_session,
             device = session.get(Device, case.device_id)
             if device is not None:
                 device.state = "offboarded"
+            else:
+                return error(404, "device not found")
         case.status = "completed"
         case.completed_at = utcnow()
         ScopedSession(session, user.tenant_id).audit(
