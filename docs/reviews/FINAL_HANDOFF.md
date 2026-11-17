@@ -1,103 +1,47 @@
-# Final security review and handoff (Milestone 8)
+# Security corrections and handoff (2026-11-17)
 
-Branch: `full-platform-build` in `yossigo88-cyber/kosherguard-platform`
-(https://github.com/yossigo88-cyber/kosherguard-platform/tree/full-platform-build).
-The exact final head SHA is reported in the delivery message that
-accompanies this document's publication commit (this file cannot name
-its own commit); every count and claim below was verified at that head
-against a fresh clone.
+Repository: yossigo88-cyber/kosherguard-platform. Branch: full-platform-build.
+Review baseline: `5254763d1477578c477fa2ee7338e953837dc672`.
+Verified code candidate: `6399667e64b089f9b14915a6472fd402d0e9828f`.
 
-## Verification state at delivery
+## Evidence, not accumulated totals
 
-1,210 automated tests, all green at head across eight components:
-control-plane 364, filtering-engine 337, dns-edge 87, mdm 64,
-proxy-edge 38, url-filter-server 38, category-pipeline 6, dashboard 276.
+A fresh clone at candidate6399667 passed1,272 tests across eight suites:
+control-plane426, filtering-engine337, DNS87, MDM64, proxy38, URL38,
+category6, dashboard276. Control-plane includes20 disposable-PostgreSQL
+race tests, credential commit/filesystem fault tests, role/tenant/MFA
+negatives and SQLite + PostgreSQL migration tests.
 
-Independent-coverage-audit closure: the read-only requirements audit
-run against this branch's earlier head found three buildable gaps. All
-three are closed in code on this branch (commit
-44e48b1d9483b985984931a15cbdbd1c00542cb6, 13 new tests, full
-control-plane suite re-run green at 192+172):
-1. Customer-tenant onboarding: staff-owner-only POST
-   /api/staff/tenants creates the customer tenant plus a 7-day owner
-   invitation (raw token returned once, stored hashed, audited), with
-   a staff-panel Add customer form; invite accept reuses the existing
-   flow (Answers 28/33).
-2. Customer portal (spec Part 2A): devices now show enrollment and
-   supervision state, receipt-based online/stale/offline connectivity,
-   last confirmed update and pending command count; policies show
-   schedules; permitted settings are shown from the account's
-   delegations; structured exception requests (submit/list/approve/
-   reject) create real PolicyExceptions through the same validation
-   and approver rules as direct creation.
-3. Device update-state chain (Answer 23): GET /api/devices carries
-   per device the desired published revision (server intent), the
-   push_chain (per-status command ledger counts - queued = written
-   to the server queue with no delivery recorded, delivered/not_now =
-   accepted by the MDM server's queue awaiting device check-in,
-   acknowledged/error = device answers - plus the latest command;
-   the actual APNs lifecycle is not observed or recorded by this
-   server and is reported as unavailable, never inferred - that
-   observation remains an external deployment limitation),
-   reported_vs_published (the latest stored DDM receipt's declaration
-   states matched by identifier + server-token + active + valid
-   against what the server currently serves that enrollment, with
-   explicit no_enrollment / no_report_received /
-   no_declarations_served / served_not_fully_reported /
-   all_served_reported_applied / comparison_unavailable states -
-   a failed comparison is never collapsed into "nothing served"),
-   and receipt-based connectivity with last device receipt.
-   Regression tests cover matching, stale-token, inactive, invalid,
-   declaration-free, cross-enrollment and comparison-error cases. Every field is labeled as
-   server ledger record or stored receipt; actual on-device
-   enforcement remains unverified. Deepened at commit
-   a408645ab3b659bbdca2b8ceb42cd575ee1a7b1a after the auditor's
-   recheck; suite re-verified green at that head (192+172).
-Three committed load-test harnesses with measured numbers and CI smoke
-tests (docs/reviews/LOAD_TEST.md). UI flows verified end-to-end with a
-local headless browser against the real application (synthetic accounts,
-disposable database): sign-in with TOTP, protected baseline, policy
-preview, sensitive-approval approve/reject with device+requester
-identity, staff role changes, read_only denial, desktop and 390px
-mobile layouts.
+The prior1,210 and1,189 totals are historical and are not exact-head
+verification. The old unresolvable44e48b1d9483b985984931a15cbdbd1c00542cb6
+reference is withdrawn as evidence. The prior baseline had364
+control-plane tests rerun, not a demonstrated full eight-suite rerun.
 
-## Security posture (summary of the detailed review docs)
+Full issue-by-issue findings, code paths, tests, limitations and changed
+files: [security-corrections report](SECURITY_CORRECTIONS_2026-11-17.md).
+Product coverage: [requirements matrix](../REQUIREMENTS_COVERAGE.md).
+The final delivery message names the final published SHA and separates
+candidate-SHA runs from any later documentation/UI-only commits.
 
-- Authentication: hashed server-side session tokens, TOTP MFA required
-  for every privileged account before any administrative access
-  (password-only login is a restricted enrollment session), fresh MFA
-  code plus a typed operation-name confirmation for every sensitive
-  operation (Answer 25).
-- Destructive device operations: two-person approval - a different
-  privileged approver than the requester, single-use, expiring,
-  operation+target-bound requests; support/read-only staff can neither
-  request nor approve even when holding a tenant owner role; the
-  approval UI shows the exact target device and requester and states
-  that queueing is not device-side completion.
-- Staff roles (Answer 29): owner / security_admin / support_admin /
-  read_only. read_only is enforced at a single choke point: every
-  mutating call outside account self-service is rejected regardless of
-  any tenant role the account also holds; the portal hides mutation
-  controls as UX, with the backend enforcing independently.
-- Tenancy: every tenant-scoped query filtered by tenant id; publication
-  roots are per-tenant with no user-controlled path segment; support
-  staff cross-tenant access limited to names+counts lists and four
-  read-only MDM query commands.
-- Secrets hygiene: structured JSON request logs without credentials or
-  bodies; invite tokens returned once and never stored or logged;
-  /metrics restricted to staff; TOTP secrets never logged.
-- Untrusted device input: inbound device payloads allowlisted and
-  minimized before persistence - "we never request it" is not a
-  control.
-- File-integrity: categories and publication artifacts are validated
-  with the engine's own loader, written to tempfiles, atomically
-  replaced, and digest-verified after write; publication refuses to
-  ship a diverged categories file.
-- Detailed per-area reports: SECURITY_FIXES_2026-11-16.md,
-  PRIVACY_ACCESS_MFA_FIXES.md, ENROLLMENT_IDENTITY.md, OFFBOARDING.md,
-  RESTORE_RECOVERY.md, CATEGORY_SOURCES.md, ACCOUNT_ROLES.md,
-  INVENTORY_SUPPORT.md, GROUPS_PROTECTED_BASELINE.md,
-  POLICY_EXCEPTIONS.md, PUBLICATION_WORKER_SCHEDULES.md.
+## Corrected security behavior
+
+- Sensitive approve/reject decisions are locked, fresh-MFA verified,
+  tenant/target bound and single-use. Queued commands and manual Apple
+  steps have distinct honest states, never a false executed result.
+- Tenant-row serialization covers configuration, publication and device
+  lifecycle writes. Bearer ticket redemption and worker publication use
+  matching lock order. Database uniqueness backs current enrollment and
+  unused invitation invariants.
+- Restore readiness requires fresh enrollment-cycle evidence, a valid
+  nonexpired dataset credential issued during that cycle, and published
+  policy bytes matching the effective policy and protected baseline.
+- Credential rotation/revocation commit metadata and cleanup intent
+  before removing bytes. Cleanup failures remain visible and retryable.
+- Ingestion checks the issuance registry, revocation, identity/scope and
+  expiry. Periodic edge-feed propagation is not instant revocation.
+- Support/read-only staff retain the limited tenant overview explicitly
+  included in the existing five-role model. They gain no destructive or
+  policy-changing authority.
 
 ## Consolidated remaining limitations (deliverable 22)
 
@@ -135,12 +79,10 @@ mobile layouts.
    marked built-unverified on device throughout the code; the first
    physical enrollment is a test event, not a confirmation.
 
-## Handoff
 
-- Review entry point: docs/REQUIREMENTS_COVERAGE.md (per-requirement
-  status), this file (security + limitations), docs/reviews/
-  (per-area detail), tools/benchmark_*.py (reproduce the numbers).
-- Everything above is on `full-platform-build`; `main` was never
-  touched. No merges, force-pushes, or branch deletions were performed.
-- Independent review can reproduce every claim: clone the branch, run
-  each component's pytest suite, and run the three benchmark tools.
+## Safety boundary
+
+No merge, force-push, branch deletion, deployment, DNS/live-site change,
+purchase, real Apple credential change, or real-device operation occurred.
+Main remains `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a` at verification.
+This is not a production-ready or iPhone-release-ready product.
