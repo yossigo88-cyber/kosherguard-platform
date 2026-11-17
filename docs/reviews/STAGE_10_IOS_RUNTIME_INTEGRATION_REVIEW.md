@@ -115,7 +115,7 @@ test dependencies (including `psycopg[binary]`, `pgserver`, `mmh3`).
 - Portable iOS logic (real SPM build, pinned swift-crypto, real
   XCTest - no API shims):
   `KG_REPO_ROOT=$PWD bash tools/run-swift-portable-tests.sh`
-  -> **134 passed**, including:
+  -> **136 passed**, including:
   - Apple prefilter cross-language vectors: every FNV-1a, Murmur3
     (5 seeds), Punycode, per-item hash position, bit-array bytes and
     SHA-256 tag recomputed in Swift and required equal to the
@@ -414,6 +414,24 @@ expansion to all-apps/all-except; publication still held.
    toggle persist + audit, CSRF required, tenant scoped, guardian
    403, gate independent of `profile_identifier`. Swift static
    guards pin every device-side rule above.
+
+   Sign-out teardown (review must-fix): the app-policy mirror now
+   lives at `FilterRuleStore.appPolicyMirrorFile` and is removed by
+   `removeIdentityFilesLocked` together with the snapshot/floor/
+   bootstrap on every identity teardown - a signed-out or
+   re-anchored device reverts to gate UNKNOWN (purely local
+   behavior) instead of freezing the last gate indefinitely. The
+   mirror save is `saveAppPolicyMirrorIfCurrent`: under the store
+   lock it writes ONLY when the store's current bootstrap identity
+   still equals the fingerprint the policy was fetched under, so a
+   fetch that was in flight across sign-out loses the race and can
+   never resurrect the old identity's gate. Sign-out also bumps the
+   observed generation via `CredentialController.onIdentityTeardown`
+   -> `FilterSyncViewModel.noteIdentityTeardown`, and the config
+   lifecycle settle bumps it too, so a RUNNING app re-evaluates the
+   gate immediately - not at the next restart. Behavior pinned by
+   two portable tests (identity-checked save; clear() removes the
+   mirror and blocks the late save) plus static guards.
 2. **Cross-tenant write fixed in the new gate.** First cut of
    `set_shield_active` skipped the `_device` tenant check, so a
    foreign device id would have created a policy row under the
@@ -673,3 +691,89 @@ account or costs money.
   as compiled or device-verified.
 - Full diff: `git diff e99a1a4c8a656c90ff6c34faeecbbe4473205ad0..
   acfa56ccae8b066db74e94f170b5b2210d9200c7` (8 commits).
+
+## 11. Publication record (2026-11-17, development checkpoint)
+
+Scope honestly stated: this is a REVIEWED DEVELOPMENT CHECKPOINT of
+the Stage 10 code, published to the branch only. No iOS target has
+been compiled (no Mac/Xcode), nothing has run on an iPhone, the URL
+Filter / DNS proxy / MDM delivery paths are BUILT-UNVERIFIED, and
+the Apple-side gates in section 7 all remain open. This publication
+is not a product completion claim of any kind.
+
+- Repository: yossigo88-cyber/kosherguard-platform
+- Branch: stage-10-ios-runtime-integration (only; main and the
+  published baseline are untouched)
+- Base: e99a1a4c8a656c90ff6c34faeecbbe4473205ad0
+- Final reviewed code HEAD: 82ce9147beb790d12f4034ee56399c2f0f08855e
+  (20 commits). The publication closeout commit adds this section
+  only - no code, test, or configuration change after that HEAD.
+
+Final suite runs on the final tree (2026-11-17, this machine,
+commands as in section 4):
+
+- Swift portable: 136 passed / 0 failed
+- control-plane: 518 passed (a-f 225, g-m 79, n-z 214)
+- mdm: 136 passed
+- url-filter-server: 50 passed
+
+Independent review record: the read-only reviewer agent re-applied
+every patch round (v1 through v10), reproduced suite counts
+independently at v6, v9 and v10, re-downloaded Apple's official
+sample and diffed it, probed authorization/tenant/CSRF/audit paths,
+DDM save/apply/unapply semantics, the remote gate consent scope,
+and the sign-out teardown/race. All findings across v1-v10 are
+closed as of the v10 review report. Two defects were caught inside
+the unpublished branch before any exposure (a missing tenant check
+in set_shield_active; dashboard toggle header/status defects) and
+are recorded in section 4d.
+
+Changed files (base..final HEAD):
+
+    control-plane/alembic/versions/0027_app_policy_profile_identity.py
+    control-plane/alembic/versions/0028_shield_active.py
+    control-plane/app/app_ops.py
+    control-plane/app/ddm_ops.py
+    control-plane/app/main.py
+    control-plane/app/models.py
+    control-plane/tests/test_app_policy.py
+    control-plane/tests/test_ddm.py
+    control-plane/tests/test_device_status.py
+    control-plane/tests/test_filter_logs.py
+    control-plane/tests/test_migrations.py
+    control-plane/web/app.js
+    control-plane/web/index.html
+    docs/reviews/STAGE_10_IOS_RUNTIME_INTEGRATION_REVIEW.md
+    ios/Configuration/App-Info.plist
+    ios/Configuration/App.entitlements
+    ios/Configuration/DNSProxyExtension-Info.plist
+    ios/Configuration/DNSProxyExtension.entitlements
+    ios/Configuration/URLFilterExtension-Info.plist
+    ios/Configuration/URLFilterExtension.entitlements
+    ios/KosherGuard.xcodeproj/project.pbxproj
+    ios/Sources/DNSProxyExtension/DNSProxyProvider.swift
+    ios/Sources/KosherGuard/AppBlockingView.swift
+    ios/Sources/KosherGuard/AppShieldController.swift
+    ios/Sources/KosherGuard/KosherGuardApp.swift
+    ios/Sources/URLFilter/AppBlockingPolicy.swift
+    ios/Sources/URLFilter/AppConfiguration.swift
+    ios/Sources/URLFilter/ApplePrefilter.swift
+    ios/Sources/URLFilter/CredentialIssuanceClient.swift
+    ios/Sources/URLFilter/DNSProxyRelay.swift
+    ios/Sources/URLFilter/DohTokenProvider.swift
+    ios/Sources/URLFilter/FilterRuleStore.swift
+    ios/Sources/URLFilter/PrefilterUpdater.swift
+    ios/Sources/URLFilter/URLFilterConfiguration.swift
+    ios/Sources/URLFilter/URLFilterPrefilterSource.swift
+    ios/Sources/URLFilterExtension/URLFilterControlProvider.swift
+    mdm/app_management.py
+    mdm/tests/test_app_management.py
+    tools/apple-prefilter-vectors.json
+    tools/gen-apple-prefilter-vectors.py
+    tools/run-swift-portable-tests.sh
+    tools/swift-portable-tests.swift
+    url-filter-server/app/apple_prefilter.py
+    url-filter-server/app/bloom.py
+    url-filter-server/app/dataset.py
+    url-filter-server/app/server.py
+    url-filter-server/tests/test_url_filter.py
