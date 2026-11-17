@@ -33,8 +33,16 @@ data, consent, and data-processing terms is a legal question under
 review; this draft makes no legal claims about them.</p>
 <h2>Filtering logs</h2>
 <p>Filtering decisions exist so families can enforce their policies.
-Retention limits and access controls for these logs are part of the
-pending review.</p>
+KosherGuard stores only blocked decisions, and only the blocked
+domain - never full URLs, page paths or free-text reasons. Allowed
+browsing history is never stored, even if a device submits it.
+Blocked entries are physically deleted, not merely hidden, after a
+retention period the family configures between 1 and 30 days; the
+default is 7 days. Viewing the log requires an authenticated family
+account and is limited to that family's data. Routine database
+backups exclude filtering history and restores never bring it back;
+any archives outside the service's own systems are the operator's
+responsibility under the pending legal review.</p>
 <p><a href="index.html">Back to KosherGuard</a></p>
 </body>
 </html>
