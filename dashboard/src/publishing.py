@@ -254,11 +254,13 @@ class Publisher:
 
         generation = str(revision)
         generation_dir = self.generations_dir / generation
+        created = False
         try:
             # Step 2: the generation directory must not exist yet; a
             # revision number is used once, so an existing directory
             # means a serious bug or a replay - refuse, never overwrite.
             os.mkdir(str(generation_dir), 0o700)
+            created = True
 
             # Step 3: write both documents atomically (0600).
             _write_file_atomic(generation_dir / "policy.json", policy_bytes, token)
@@ -289,10 +291,14 @@ class Publisher:
             # The failed generation never becomes current; remove the
             # partial directory best-effort so it cannot be mistaken for
             # a complete one.
-            try:
-                shutil.rmtree(str(generation_dir))
-            except OSError:
-                pass
+            # Only remove the directory this invocation created. A
+            # replay/collision fails at mkdir and must leave the previous
+            # complete generation (possibly current) byte-for-byte intact.
+            if created:
+                try:
+                    shutil.rmtree(str(generation_dir))
+                except OSError:
+                    pass
             raise
 
     def _activate(self, generation: str, token: str) -> None:
