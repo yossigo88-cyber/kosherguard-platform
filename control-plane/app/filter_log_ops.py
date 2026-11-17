@@ -16,7 +16,7 @@ import os
 from sqlalchemy import select, delete, or_
 from sqlalchemy.orm import Session
 
-from .models import Device, FilterDecision, Tenant
+from .models import Device, FilterDecision, IssuedCredential, Tenant
 from datetime import datetime, timedelta, timezone
 import re
 
@@ -74,11 +74,36 @@ def record_decisions(session: Session, claims: dict,
         raise FilterLogError(
             f"batch too large (max {MAX_BATCH})", 400)
     tenant_id = int(claims["tenant_id"])
+    # A valid HMAC signature is not enough: the token's jti must still
+    # be live in the issuance registry - issued to this tenant, unrevoked
+    # and unexpired - or a revoked/expired credential could keep writing
+    # until its natural expiry.
+    jti = claims.get("jti")
+    cred = (session.scalar(select(IssuedCredential).where(
+        IssuedCredential.jti == jti)) if jti else None)
+    now = datetime.now(timezone.utc)
+    if cred is None or cred.tenant_id != tenant_id:
+        raise FilterLogError("credential is not in the issuance registry",
+                             403)
+    if cred.revoked_at is not None:
+        raise FilterLogError("credential has been revoked", 403)
+    exp = cred.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp <= now:
+        raise FilterLogError("credential has expired", 403)
+    if claims.get("scope") and cred.scope != claims["scope"]:
+        raise FilterLogError("credential scope mismatch", 403)
+    if claims.get("exp") is not None and int(exp.timestamp()) != int(claims["exp"]):
+        raise FilterLogError("credential expiry mismatch", 403)
     device_pk = None
     if claims.get("device_id") is not None:
         dev = session.get(Device, int(claims["device_id"]))
         if dev is None or dev.tenant_id != tenant_id:
             raise FilterLogError("credential binds an unknown device", 403)
+        if cred.device_id != dev.id:
+            raise FilterLogError("credential is bound to a different "
+                                 "device", 403)
         device_pk = dev.id
     purge_expired(session, tenant_id=tenant_id)
     accepted = 0
@@ -165,10 +190,11 @@ def edge_status(session: Session, tenant_id: int) -> dict:
             "serving, and credential issuance is not shown as status "
             "because issuance proves nothing about operation."),
         "dns_reporting": (
-            "connected - dns decisions received"
+            "dns decisions received (receipts only; receipt is not a "
+            "liveness or connectivity signal)"
             if "dns" in sources else
-            "connected - ingestion route live, no dns decisions "
-            "reported yet"),
+            "no dns decisions reported yet (the ingestion route accepts "
+            "reports; that is all the control plane can evidence)"),
     }
 
 
