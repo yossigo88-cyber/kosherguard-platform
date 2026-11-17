@@ -42,12 +42,13 @@ th, td { text-align:left; padding:.45rem .3rem; border-bottom:1px solid #eee5d3;
   <section class="panel hidden" id="devices-panel">
     <h2>Your devices</h2>
     <table id="devices"><thead><tr>
-      <th>Name</th><th>State</th><th>Enrollment</th><th>Connectivity</th>
-      <th>Reported vs published</th><th>Last device receipt</th>
+      <th>Name</th><th>State</th><th>Enrollment</th><th>Check-in history</th>
+      <th>Reported vs published</th><th>Last policy/command receipt</th>
       <th>Command status (latest)</th>
     </tr></thead><tbody></tbody></table>
-    <p class="note">Connectivity and update times come from stored device
-    check-in receipts only; they are not live presence. Command status is
+    <p class="note">Check-in history comes from stored device check-ins, not live presence.
+    Policy/command receipts count only DDM status reports or command
+    acknowledgements: a check-in alone does not create one. Command status is
     the server's command ledger only; the actual APNs push lifecycle is
     not observed by this server and is reported as unavailable. The
     server does not verify actual on-device enforcement.</p>
