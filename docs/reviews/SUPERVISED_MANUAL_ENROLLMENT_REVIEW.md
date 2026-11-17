@@ -6,7 +6,9 @@ Base: e699b2a9db2b0f5d10848b7c0a812707e0f0c2a2 on `full-platform-build`. Researc
 
 Apple's TopLevel page (https://developer.apple.com/documentation/devicemanagement/toplevel, read 2026-11-17) says: "If present and set to true, the user can't delete the profile unless the profile has a removal password and the user provides it." It then says "On iOS users can't remove a MDM profile. Requires a supervised device." The key is a top-level key of the Configuration payload and needs supervision. Confirmed.
 
-Reading of the iOS sentence: the TopLevel page's sentence "On iOS users can't remove a MDM profile. Requires a supervised device." is its own paragraph (independent review of the page structure). It does not say how the key interacts with a profile that itself contains the `com.apple.mdm` payload, and Apple publishes no statement that iOS accepts or enforces the key on an enrollment profile. Earlier project notes record iOS once rejecting an MDM-payload profile with this flag; that is unverified here. So the feature is implemented as an EXPERIMENTAL artifact option for the enrollment profile, and acceptance and enforcement stay unknown until a supervised iPhone test. Apple's documented enrollment-profile control remains ADE "Prevent unenrollment" (https://support.apple.com/guide/deployment/automated-device-enrollment-management-dep73069dd57/web: "A supervised device can't be unenrolled by the user").
+Reading: Apple documents three things on that page: the key is a top-level profile key; "On iOS users can't remove a MDM profile"; and it "Requires a supervised device" (the iOS sentence is its own paragraph; direct JSON: https://developer.apple.com/tutorials/data/documentation/devicemanagement/toplevel.json). The intended use here is Settings-deletion protection for the supervised enrollment profile on the manual supervised route. That is the candidate this feature builds.
+
+NOT PROVEN: that iOS accepts THIS generated artifact (an unsigned profile containing the `com.apple.mdm` payload plus the top-level key) or enforces the key on it. No supervised iPhone test exists. Earlier project notes record iOS once rejecting an MDM-payload profile carrying this flag; that is unverified here. The artifact is therefore marked EXPERIMENTAL. Separately, Apple's other documented enrollment-profile lock is ADE "Prevent unenrollment" (https://support.apple.com/guide/deployment/automated-device-enrollment-management-dep73069dd57/web: "A supervised device can't be unenrolled by the user"), which this route does not use.
 
 ## 2. Code change (corrected)
 
@@ -25,7 +27,7 @@ Tests: `mdm/tests/test_supervised_profile.py` (defaults preserved, key location,
 |---|---|---|
 | Manual supervision without Apple Business | Configurator Prepare > Manual Configuration > supervise. Device is erased. No Business registration, no provisional clock, no ADE re-enrollment. | https://support.apple.com/guide/deployment/about-device-supervision-dep1d89f0bff/web ; https://support.apple.com/guide/apple-configurator-mac/prepare-an-iphone-ipad-or-apple-tv-manually-cad99bc2a859/mac |
 | Apple Business + ADE | Device assigned to an MDM in Apple Business, supervised wirelessly at setup, can set Prevent unenrollment. Configurator-added devices carry a 30-day user release. | https://support.apple.com/guide/business/add-devices-using-apple-configurator-axm200a54d59/web |
-| Profile removal restriction | `PayloadRemovalDisallowed` on a profile, supervised only. Per section 1, documented clearly for MDM-delivered profiles. | TopLevel link above |
+| Profile removal restriction | Top-level `PayloadRemovalDisallowed=true`, supervised devices only; Apple documents iOS non-removal of an MDM profile. Applied here to the enrollment profile as an experimental, untested candidate. | TopLevel link above |
 
 ## 4. Restore, recovery, DFU (corrected)
 
@@ -77,8 +79,8 @@ Source: https://developer.apple.com/support/downloads/terms/apple-developer-prog
 
 ## 8. Protects against / cannot protect against
 
-Protects (if tests confirm): Settings removal of profiles the MDM installs on a supervised iPhone; on-device erase if that restriction is applied.
-Cannot protect: a computer restore in Recovery/DFU; loss of supervision after it; any claim for the enrollment profile itself; physical access; filtering by itself; devices where supervision is absent.
+Intended protection (acceptance and enforcement NOT PROVEN on hardware): the user deleting the supervised iPhone's enrollment profile in Settings, per Apple's TopLevel documentation; and on-device "Erase All Content and Settings" if that supervised restriction is separately applied.
+Does not protect: a clean factory restore, Recovery/DFU restore or any erase (supervision and management are lost; no ADE record brings them back on this route); a restore of a supervised backup to a different device (comes back unsupervised). Restoring a supervised backup to the SAME device may keep supervision per Apple, but that is a restore path, not a protection. Also not covered: physical access, a false operator declaration, any claim the filtering works, devices without supervision.
 
 ## 9. Remaining blockers
 
