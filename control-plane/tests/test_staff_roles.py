@@ -86,9 +86,14 @@ class TestStaffMatrix:
             "domain": "x.example", "category": "adult",
             "source": "t"}, headers=HDR).status_code == 200
 
-    def test_all_staff_can_list_tenants_but_not_guardianless(self, engine):
+    def test_authorized_staff_can_read_limited_tenant_roster(self, engine):
+        """Preserve Answer 29's limited support/read-only overview."""
         c = TestClient(make_app(engine))
+        login(c, "sec@example.com")
+        assert c.get("/api/admin/tenants").status_code == 200
         login(c, "ro@example.com")
+        assert c.get("/api/admin/tenants").status_code == 200
+        login(c, "support@example.com")
         assert c.get("/api/admin/tenants").status_code == 200
         c2 = TestClient(c.app)
         # plain tenant user without staff role: 403
@@ -184,10 +189,14 @@ class TestTwoPersonApproval:
             "totp_code": fresh_code(appr, "sec@example.com"),
             "confirm": "EraseDevice"}, headers=HDR)
         assert r.status_code == 200, r.text
-        assert r.json()["status"] == "executed"
-        # now the device command exists exactly once
+        # Honest lifecycle: approval records the command in the server
+        # queue; it is never called "executed" before the device
+        # acknowledges it.
+        assert r.json()["status"] == "approved_command_queued"
+        # now the device command exists exactly once, in the queue
         cmds = appr.get(f"/api/mdm/enrollments/{pk}/commands").json()["commands"]
         assert [c["command"] for c in cmds] == ["EraseDevice"]
+        assert cmds[0]["status"] == "queued"
         # decided approvals cannot be re-decided
         assert appr.post(f"/api/mdm/sensitive-approvals/{aid}/approve",
                          json={"totp_code": fresh_code(appr, "sec@example.com"),
@@ -197,17 +206,23 @@ class TestTwoPersonApproval:
     def test_fresh_verification_and_confirmation_required(self, engine):
         c = TestClient(make_app(engine))
         login(c, "parent@example.com")
+        pk = c.app.state.test_enrollment_pk
+        # a request against a nonexistent enrollment is refused before
+        # any approval is recorded
+        assert c.post("/api/mdm/enrollments/999999/commands", json={
+            "command": "EraseDevice", "confirm": "EraseDevice",
+            "reason": "x"}, headers=HDR).status_code == 404
         # no TOTP code
-        assert c.post("/api/mdm/enrollments/1/commands", json={
+        assert c.post(f"/api/mdm/enrollments/{pk}/commands", json={
             "command": "EraseDevice", "confirm": "EraseDevice",
             "reason": "x"}, headers=HDR).status_code == 403
         # wrong confirmation string
-        assert c.post("/api/mdm/enrollments/1/commands", json={
+        assert c.post(f"/api/mdm/enrollments/{pk}/commands", json={
             "command": "EraseDevice",
             "totp_code": fresh_code(c, "parent@example.com"),
             "confirm": "yes", "reason": "x"}, headers=HDR).status_code == 400
         # no reason
-        assert c.post("/api/mdm/enrollments/1/commands", json={
+        assert c.post(f"/api/mdm/enrollments/{pk}/commands", json={
             "command": "EraseDevice",
             "totp_code": fresh_code(c, "parent@example.com"),
             "confirm": "EraseDevice"}, headers=HDR).status_code == 400
@@ -248,8 +263,12 @@ class TestTwoPersonApproval:
             "totp_code": fresh_code(appr, "sec@example.com"),
             "confirm": "ABMRelease"}, headers=HDR)
         assert r.status_code == 200
-        assert r.json()["status"] == "executed"
+        # No live ABM integration: approval is the authorization
+        # record only, and says a manual runbook step is still required
+        # - never "executed".
+        assert r.json()["status"] == "approved_manual_action_required"
         assert "runbook" in r.json()["decision_detail"]
+        assert "NOT" in r.json()["decision_detail"]
 
     def test_binding_operation_and_target(self, engine):
         """Approval executes exactly what was requested: confirm must
@@ -277,7 +296,15 @@ class TestTwoPersonApproval:
         assert r.status_code == 200
         cmds = appr.get(f"/api/mdm/enrollments/{pk}/commands").json()["commands"]
         assert cmds[0]["command"] == "EraseDevice"
-        assert cmds[0]["payload"] == {"pin": "123456"}
+        # The stored payload is bound and intact (verifiable in the
+        # ledger), but API responses redact secretish keys like PINs.
+        assert cmds[0]["payload"] == {"pin": "[redacted]"}
+        from app.models import MDMCommand
+        with session_scope(engine) as s:
+            stored = s.query(MDMCommand).filter_by(
+                command="EraseDevice").one()
+            import json as _json
+            assert _json.loads(stored.payload) == {"pin": "123456"}
 
     def test_requester_demoted_while_pending_voids_approval(self, engine):
         req = TestClient(make_app(engine))
@@ -372,7 +399,8 @@ class TestTwoPersonApproval:
         assert [c["command"] for c in cmds] == ["EraseDevice"]
         from app.models import SensitiveCommandApproval
         with session_scope(engine) as s:
-            assert s.get(SensitiveCommandApproval, aid).status == "executed"
+            assert s.get(SensitiveCommandApproval, aid).status == (
+                "approved_command_queued")
 
     def test_expired_approval_cannot_be_approved(self, engine):
         from datetime import timedelta
@@ -420,7 +448,7 @@ class TestReadOnlyStaffViewingOnly:
         login(c, "ro@example.com")
         me = c.get("/api/auth/me").json()
         assert me["staff_role"] == "read_only"
-        # Viewing authorized information is allowed.
+        # Limited tenant-overview reads are explicitly authorized.
         assert c.get("/api/admin/tenants").status_code == 200
         assert c.get("/api/policies").status_code == 200
         # Tenant configuration mutation is rejected before validation.
