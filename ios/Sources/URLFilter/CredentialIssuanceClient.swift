@@ -1,5 +1,8 @@
 // STATUS: UNCOMPILED, UNSIGNED, UNTESTED - see ios/README.md.
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Client for the control plane's scoped device-credential issuance
 /// route (POST /api/devices/{device_id}/dataset-credential).
@@ -25,11 +28,16 @@ import Foundation
 ///   token is returned once and never stored or logged server-side;
 ///   this client mirrors that: it keeps the token in memory only and
 ///   never writes it to disk, UserDefaults, or logs.
-struct CredentialIssuanceClient {
+public struct CredentialIssuanceClient {
     let baseURL: URL
     let session: URLSession
 
-    enum Scope: String {
+    public init(baseURL: URL, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
+    }
+
+    public enum Scope: String {
         case dataset
         case proxy
         /// Not mintable by the published server (400). Declared so the
@@ -38,14 +46,14 @@ struct CredentialIssuanceClient {
         case doh
     }
 
-    struct ScopedCredential {
+    public struct ScopedCredential {
         let deviceID: Int
-        let token: String
+        public let token: String
         let scope: String
         let policyID: Int?
     }
 
-    enum IssuanceError: Error, Equatable {
+    public enum IssuanceError: Error, Equatable {
         case scopeUnavailable(String)
         case unauthorized
         case deviceNotFound
@@ -58,14 +66,8 @@ struct CredentialIssuanceClient {
     /// Request a credential for a scope the published server mints.
     /// `sessionCookie` is the guardian session cookie value obtained
     /// from /api/auth/login; this client does not perform login.
-    func mint(deviceID: Int, scope: Scope,
+    public func mint(deviceID: Int, scope: Scope,
               sessionCookie: String) async throws -> ScopedCredential {
-        // doh is known-unavailable on the published server; fail fast
-        // with the honest reason instead of round-tripping a 400.
-        guard scope != .doh else {
-            throw IssuanceError.scopeUnavailable(
-                "doh minting is not on the published server (held server change pending)")
-        }
         var req = URLRequest(url: baseURL
             .appendingPathComponent("api/devices")
             .appendingPathComponent(String(deviceID))
