@@ -197,10 +197,11 @@ def register_staff_routes(app, *, error, current_user, db_session,
             try:
                 # Re-validates the enrollment (tenant ownership AND
                 # current state) at queue time, not request time.
-                row = mdm_ops.issue_command(
-                    session, a.tenant_id, a.enrollment_pk, a.operation,
-                    json.loads(a.payload or "{}"), user.id,
-                    adapter=make_adapter(), allow_destructive=True)
+                with session.begin_nested():
+                    row = mdm_ops.issue_command(
+                        session, a.tenant_id, a.enrollment_pk, a.operation,
+                        json.loads(a.payload or "{}"), user.id,
+                        adapter=make_adapter(), allow_destructive=True)
                 # Honest lifecycle: the command is in the server
                 # queue. It is EXECUTED only when the device itself
                 # acknowledges it, which this approval cannot know -
@@ -212,8 +213,13 @@ def register_staff_routes(app, *, error, current_user, db_session,
                     "execution is confirmed only by a later device "
                     "acknowledgement, which is not claimed here")
             except mdm_ops.MDMError as exc:
-                a.status = "approved"
-                a.decision_detail = f"approved; queueing failed: {exc}"
+                a.status = "approved_queue_failed"
+                a.decision_detail = (
+                    "approval recorded but no command queued; target is no "
+                    "longer eligible or queue validation failed. Resolve the "
+                    "target lifecycle problem and create a NEW request with "
+                    "fresh verification and a second approver; this decision "
+                    "cannot be retried or reported as executed")
         else:
             # ABM release / protection removal / certificate operation:
             # no live integration in this build. The approval is the
