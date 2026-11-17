@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import (CategoryRule, CategorySource, CategorySourceUpdate,
-                     Device, DeviceAssignment, Policy,
+                     Device, DeviceAssignment, MDMEnrollment, Policy,
                      PolicyVersion, PublicationState)
 from .policy_ops import PolicyError
 from .publisher import Publisher, PublicationError, canonical_json
@@ -139,6 +139,12 @@ def publish_selected(session: Session, tenant_id: int, root: str,
                      categories_path: str | None = None,
                      publication_job_id: int | None = None) -> dict:
     """Publish the tenant's selected default policy as a new generation."""
+    # Tenant row lock first (the same lock the request path takes in
+    # current_user), then the publication-state row: one lock order
+    # everywhere, so a publish can never interleave with a concurrent
+    # policy/device/group/exception write.
+    from .db import lock_tenant
+    lock_tenant(session, tenant_id)
     state = session.scalar(select(PublicationState).where(
         PublicationState.tenant_id == tenant_id).with_for_update())
     if state is None or state.selected_policy_id is None:
@@ -187,6 +193,10 @@ def publish_selected(session: Session, tenant_id: int, root: str,
         # (possibly empty) to ship.
         extras["device-map.json"] = canonical_json({
             "default_policy_id": policy.id, "devices": mapping})
+    enrollment_cycles = {str(row.device_id): row.id for row in
+        session.scalars(select(MDMEnrollment).where(
+            MDMEnrollment.tenant_id == tenant_id,
+            MDMEnrollment.state == "enrolled"))}
     state.revision = (state.revision or 0) + 1
     revision = state.revision
     publisher = Publisher(tenant_root(root, tenant_id))
@@ -197,7 +207,8 @@ def publish_selected(session: Session, tenant_id: int, root: str,
                 {"tenant_id": tenant_id, "policy": policy.name,
                  "policy_version": version.version,
                  "published_by": actor_email,
-                 "publication_job_id": publication_job_id},
+                 "publication_job_id": publication_job_id,
+                 "enrollment_cycles": enrollment_cycles},
                 extra_documents=extras)
     except PublicationError as exc:
         raise PolicyError(f"publication failed: {exc}", 500)
@@ -216,7 +227,9 @@ def publish_revocation_cleanup(session: Session, tenant_id: int, root: str,
     exception changes stay pending. The only mutation is removing
     exception entries whose revocation is recorded in the database.
     """
+    from .db import lock_tenant
     from .models import PolicyException
+    lock_tenant(session, tenant_id)
     state = session.scalar(select(PublicationState).where(
         PublicationState.tenant_id == tenant_id).with_for_update())
     if state is None:
@@ -269,7 +282,8 @@ def publish_revocation_cleanup(session: Session, tenant_id: int, root: str,
             {"tenant_id": tenant_id,
              "published_by": actor_email,
              "publication_job_id": publication_job_id,
-             "cleanup": f"removed {removed} revoked exception entrant(s)"},
+             "cleanup": f"removed {removed} revoked exception entrant(s)",
+             "enrollment_cycles": manifest.get("enrollment_cycles", {})},
             extra_documents=extras)
         session.flush()
         return {"revision": state.revision, "generation": generation,
