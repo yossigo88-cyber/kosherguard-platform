@@ -22,7 +22,8 @@ from app import security  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.db import session_scope  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.models import Device, MDMEnrollment, Role, Tenant, User  # noqa: E402
+from app.models import (AuditEvent, Device, MDMEnrollment, Role,  # noqa: E402
+                        Tenant, User)
 
 PASSWORD = "a long enough password"
 HDR = {"X-KosherGuard-Request": "1"}
@@ -458,3 +459,74 @@ class TestReadOnlyStaffViewingOnly:
         assert me["staff_role"] == "read_only"
         assert c.post("/api/policies", json={}, headers=HDR).status_code == 403
         assert c.post("/api/auth/logout", headers=HDR).status_code in (200, 204)
+
+
+class TestTenantOnboarding:
+    """Customer-tenant onboarding (B1; Answers 28/33: invitation-only
+    pilot, staff-assisted). The ONLY way a tenant comes into existence
+    is a staff owner creating it plus an owner invitation."""
+
+    def test_onboard_owner_only(self, engine):
+        c = TestClient(make_app(engine))
+        login(c, "sec@example.com")
+        assert c.post("/api/staff/tenants", json={
+            "tenant_name": "family-y",
+            "owner_email": "dad@family-y.example"},
+            headers=HDR).status_code == 403
+        login(c, "support@example.com")
+        assert c.post("/api/staff/tenants", json={
+            "tenant_name": "family-y",
+            "owner_email": "dad@family-y.example"},
+            headers=HDR).status_code == 403
+        login(c, "parent@example.com")
+        assert c.post("/api/staff/tenants", json={
+            "tenant_name": "family-y",
+            "owner_email": "dad@family-y.example"},
+            headers=HDR).status_code == 403
+
+    def test_onboard_full_flow_and_isolation(self, engine):
+        c = TestClient(make_app(engine))
+        login(c, "owner@example.com")
+        r = c.post("/api/staff/tenants", json={
+            "tenant_name": "family-y",
+            "owner_email": "dad@family-y.example"}, headers=HDR)
+        assert r.status_code == 200, r.text
+        token = r.json()["invite_token"]
+        new_tenant_id = r.json()["tenant_id"]
+        assert new_tenant_id != c.app.state.test_tenant_id
+        # invite token stored hashed, usable once via the existing
+        # accept flow; the new owner then logs in
+        r = c.post("/api/invites/accept", json={
+            "token": token, "password": "brand new password1"},
+            headers=HDR)
+        assert r.status_code == 200
+        assert r.json()["role"] == "owner"
+        assert c.post("/api/invites/accept", json={
+            "token": token, "password": "brand new password1"},
+            headers=HDR).status_code == 400
+        c2 = TestClient(c.app)
+        mfa_login(c2, json={"email": "dad@family-y.example",
+                            "password": "brand new password1"},
+                  headers=HDR)
+        # tenant isolation: the new customer sees none of family-x's
+        # devices, and family-x staff-cookie user can't see theirs
+        assert c2.get("/api/devices").json()["devices"] == []
+        assert c.get("/api/devices").json()["devices"] != []
+        with session_scope(engine) as s:
+            from sqlalchemy import select
+            t = s.scalar(select(Tenant).where(Tenant.name == "family-y"))
+            assert t is not None
+            audits = s.execute(select(AuditEvent).where(
+                AuditEvent.tenant_id == t.id)).scalars().all()
+            assert any(a.action == "staff.tenant_onboard"
+                       for a in audits)
+
+    def test_onboard_validation(self, engine):
+        c = TestClient(make_app(engine))
+        login(c, "owner@example.com")
+        assert c.post("/api/staff/tenants", json={
+            "tenant_name": "", "owner_email": "a@b.example"},
+            headers=HDR).status_code == 400
+        assert c.post("/api/staff/tenants", json={
+            "tenant_name": "ok-name", "owner_email": "not-an-email"},
+            headers=HDR).status_code == 400
