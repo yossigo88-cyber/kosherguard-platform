@@ -49,8 +49,13 @@ struct PrefilterUpdater {
     let session: URLSession
     private(set) var currentVersion: Int = 0
     private(set) var activeSnapshot: Snapshot?
-    private var lastAttempt: Date?
+    private var lastCheck: Date?
+    private var lastFailure: Date?
     static let minimumRefreshInterval: TimeInterval = 45 * 60
+    // A failed attempt may retry after this short backoff: a transient
+    // error must not suppress updates for the whole cadence, but the
+    // server is still never hammered.
+    static let failureRetryInterval: TimeInterval = 60
 
     init(serverBaseURL: URL, session: URLSession = .shared) {
         self.serverBaseURL = serverBaseURL
@@ -64,10 +69,15 @@ struct PrefilterUpdater {
               serverBaseURL.password == nil, !credential.isEmpty else {
             throw UpdateError.invalidServer
         }
-        if let lastAttempt, now.timeIntervalSince(lastAttempt) < Self.minimumRefreshInterval {
+        if let lastCheck, now.timeIntervalSince(lastCheck) < Self.minimumRefreshInterval {
             throw UpdateError.tooSoon
         }
-        lastAttempt = now
+        if let lastFailure, now.timeIntervalSince(lastFailure) < Self.failureRetryInterval {
+            throw UpdateError.tooSoon
+        }
+        // Stamped up front: every throwing exit before a completed check
+        // counts as a failure and gets the short backoff, not the cadence.
+        lastFailure = now
         func fetch(_ path: String) async throws -> Data {
             var req = URLRequest(url: serverBaseURL.appendingPathComponent(path))
             req.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
@@ -80,7 +90,12 @@ struct PrefilterUpdater {
         }
         let manifestData = try await fetch("v1/dataset/manifest")
         let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
-        guard manifest.version > currentVersion else { throw UpdateError.staleVersion }
+        guard manifest.version > currentVersion else {
+            // A completed check with nothing new: full cadence applies.
+            lastCheck = now
+            lastFailure = nil
+            throw UpdateError.staleVersion
+        }
         guard manifest.prefilter.bytes > 0, manifest.prefilter.bytes <= 64 * 1024 * 1024,
               manifest.prefilter.sha256.count == 64 else { throw UpdateError.integrityMismatch }
         let bits = try await fetch("v1/dataset/prefilter")
@@ -95,6 +110,8 @@ struct PrefilterUpdater {
         }
         activeSnapshot = snapshot
         currentVersion = manifest.version
+        lastCheck = now
+        lastFailure = nil
         return manifest
     }
 
