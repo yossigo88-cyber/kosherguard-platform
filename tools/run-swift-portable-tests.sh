@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Compile only portable Foundation/network/dataset code, NOT an iOS build.
-# swift-crypto is Apple's CryptoKit-compatible implementation for Linux tests.
+# Real SPM build with the pinned swift-crypto dependency and real XCTest -
+# no API shims. Requires a Swift toolchain on PATH (see
+# docs/setup/IOS_BUILD.md for the exact toolchain used in CI evidence).
+# This proves nothing about NetworkExtension, Apple APIs, signing or
+# device behavior; those files are not compiled here at all.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${KG_SWIFT_TEST_WORK:-$(mktemp -d)}"
 mkdir -p "$WORK/Sources/Core" "$WORK/Tests/CoreTests"
-cp "$ROOT/ios/Sources/URLFilter/"{AuthSessionClient,CredentialIssuanceClient,AppConfiguration,PrefilterUpdater}.swift "$WORK/Sources/Core/"
+cp "$ROOT/ios/Sources/URLFilter/"{AuthSessionClient,CredentialIssuanceClient,AppConfiguration,PrefilterUpdater,FilterRuleStore,FilterRulesClient,FilterSyncController,FilterVerdictEngine,SignInCoordinator}.swift "$WORK/Sources/Core/"
 cp "$ROOT/tools/swift-portable-tests.swift" "$WORK/Tests/CoreTests/CoreTests.swift"
 cat > "$WORK/Package.swift" <<'SWIFT'
 // swift-tools-version: 5.9
@@ -18,4 +22,4 @@ let package = Package(name: "PortableReview", dependencies: [
 ])
 SWIFT
 cd "$WORK"
-swift test --jobs 4
+KG_REPO_ROOT="$ROOT" swift test --jobs 4
