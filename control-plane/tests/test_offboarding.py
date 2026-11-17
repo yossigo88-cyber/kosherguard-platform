@@ -89,6 +89,18 @@ def attest(c, case_id, step, email="owner@example.com"):
                         "confirm": f"attest-{step}"}, headers=HDR)
 
 
+
+def complete(c, case_id, email="owner@example.com", **extra):
+    """Completion requires fresh MFA + confirmation (same bar as
+    verify and the Apple-side attestations)."""
+    body = {"totp_code": fresh_code(c, email),
+            "confirm": "complete-offboarding"}
+    body.update(extra)
+    return c.post(f"/api/offboarding/cases/{case_id}/complete",
+                  json=body, headers=HDR)
+
+
+
 class TestCaseLifecycle:
     def test_create_and_list(self, client):
         case = mk_case(client)
@@ -137,8 +149,7 @@ class TestCaseLifecycle:
 
     def test_complete_requires_verification(self, client):
         case = mk_case(client)
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 409
 
     def test_cancel_flow(self, client):
@@ -147,8 +158,7 @@ class TestCaseLifecycle:
                         headers=HDR)
         assert r.status_code == 200
         assert r.json()["status"] == "canceled"
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 409
 
 
@@ -161,16 +171,13 @@ class TestCompletion:
 
     def test_transfer_requires_attestations(self, client):
         case, _ = self._transfer_case(client)
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 409
         assert attest(client, case["id"], "activation_lock").status_code == 200
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 409
         assert attest(client, case["id"], "abm_release").status_code == 200
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 200, r.json()
         assert r.json()["status"] == "completed"
 
@@ -198,8 +205,7 @@ class TestCompletion:
             s.add(FilterDecision(tenant_id=tenant.id, device_id=dev,
                                  source="proxy", domain="x.com",
                                  action="blocked"))
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 200
         body = r.json()
         assert body["data_retention_until"] is not None
@@ -215,12 +221,9 @@ class TestCompletion:
     def test_dispute_requires_resolution_notes(self, client):
         case = mk_case(client, "dispute")
         assert verify(client, case["id"]).status_code == 200
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 400
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={"notes": "resolved: ownership confirmed"},
-                        headers=HDR)
+        r = complete(client, case["id"], notes="resolved: ownership confirmed")
         assert r.status_code == 200
 
 
@@ -236,8 +239,7 @@ class TestCompletion:
                                    expires_at=utcnow() + timedelta(hours=1)))
         attest(client, case["id"], "activation_lock")
         attest(client, case["id"], "abm_release")
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 200
         with session_scope(engine) as s:
             cred = s.query(IssuedCredential).filter_by(
@@ -258,8 +260,7 @@ class TestCompletion:
                                 state="enrolled"))
         attest(client, case["id"], "activation_lock")
         attest(client, case["id"], "abm_release")
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 200
         with session_scope(engine) as s:
             enr = s.query(MDMEnrollment).filter_by(
@@ -293,8 +294,7 @@ class TestCompletion:
                                    expires_at=utcnow() + timedelta(hours=1)))
         case = mk_case(client, "cancellation", dev, "nonpayment")
         assert verify(client, case["id"]).status_code == 200
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 200
         assert r.json()["data_retention_until"] is not None
         with session_scope(engine) as s:
@@ -314,8 +314,7 @@ class TestCompletion:
         command is ever issued by the case flow."""
         case = mk_case(client, "cancellation", notes="nonpayment")
         assert verify(client, case["id"]).status_code == 200
-        r = client.post(f"/api/offboarding/cases/{case['id']}/complete",
-                        json={}, headers=HDR)
+        r = complete(client, case['id'])
         assert r.status_code == 200, r.json()
         assert r.json()["status"] == "completed"
         assert r.json()["data_retention_until"] is not None
