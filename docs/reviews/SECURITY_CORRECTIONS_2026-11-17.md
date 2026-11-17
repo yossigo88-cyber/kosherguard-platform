@@ -79,9 +79,8 @@ there is no verified hard global deadline. Ingestion consults the current
 issuance registry directly; already running edges rely on their configured
 feed. This is a remaining operational limitation, not instantaneous logout.
 No configured lint/type/security checker was available: compileall and
-JavaScript syntax checks do not substitute for mypy/ruff/bandit. The UI
-change is a small decision-detail conditional; visual browser behavior was
-not independently exercised and is not claimed as verified.
+JavaScript syntax checks do not substitute for mypy/ruff/bandit. The scoped UI display changes were rendered and visually inspected as
+described in the final verification below.
 
 ## Findings and corrections by original handoff part
 
@@ -115,8 +114,8 @@ snapshot minus revoked entries, not unrelated saved drafts.
 
 Evidence: PG exception double approval, approve/reject, publish/create,
 publish/revoke, first worker publication/approval and post-activation
-crash/revoke recovery; test_exception_requests.py,
-test_exception_revoke_authority.py and hardening rollback test.
+crash/revoke recovery; test_exceptions.py, test_exception_requests.py and
+test_security_hardening.py::test_revocation_rollback_message_is_honest and hardening rollback test.
 A publish that orders before a mutation represents that prior snapshot;
 a later publish includes the committed change. Revocation queues durable
 narrow cleanup. This is serialization, not a promise every saved change
@@ -286,7 +285,63 @@ were touched. No merge, force-push or branch deletion occurred. Apple
 approval, native compilation/signing and physical-device testing remain
 separate. This is not production-ready or iPhone-release-ready.
 
-## Files changed at candidate6399667
+## Final verification at2826cad
+
+A fresh GitHub checkout at `2826cad29941ba4ec0fe7e8bbaa3ce3a5ae3a415`
+passed all eight suites: control-plane431, filtering-engine337, DNS87,
+MDM64, proxy38, URL38, category6, dashboard276 (130+34+67+45).
+Total: **1,277 passed**. Every run used `python -m pytest tests -q`
+from its component directory with `--junitxml` and exit-preserving log
+capture, except dashboard: its sorted `tests/test_*.py` paths were split
+into four batches and passed to `python -m pytest` with the same options.
+No failed run is counted as a pass. Earlier extraction checks first failed
+on a nonexistent test path and then a missing json import; those were
+corrected before the two complete431-pass fresh-checkout verifications.
+
+`git diff --check` passes. All42 baseline-diff files byte-match the intended
+local files. Added lines had no private-key/cloud-token pattern matches;
+this is a bounded scan, not proof of no possible secret. Python compileall
+and JS syntax checks pass. No configured mypy/ruff/bandit or equivalent
+project-wide lint/type/security run was available; these were not executed.
+
+Real rendered UI inspection at2826cad used a disposable seeded SQLite app,
+real API requests and MFA authentication, and headless Chrome. The approval
+table visibly showed the manual-action state with NOT executed/runbook
+text, queue-failed state with no-command/NEW request/second-approver text,
+and only the fresh pending replacement request had a decide button. The
+portal showed reported-within-hour/stale/offline/never classifications,
+receipt-only/not-live-presence caveat, APNs unavailable and no enforcement
+claim. Both screenshots were inspected for readability and clipping; the
+server/browser were stopped afterward. These checks prove rendered display,
+not live device behavior or all responsive-browser combinations.
+
+Independent read-only review accepted all six followup findings against
+code9d6d17b and documentation2826cad, after independently rerunning431
+control-plane tests including20 PostgreSQL matrix tests. Its one remaining
+documentation correction was a nonexistent test filename, corrected here.
+The final label correction at `456384d57c6bfe5212db886be8796e0e5862f1cf`
+changes four files: portal/app.js, portal/index.html, device_status_routes.py
+and test_device_status.py. A fresh checkout at456384d passed the complete
+control-plane suite: **432 passed**, including20 PostgreSQL matrix tests.
+The earlier eight-suite1,277 result remains2826cad; it is not relabeled as
+all eight suites rerun at456384d. Component code outside control-plane and
+the two portal files is unchanged. JavaScript syntax checks also pass.
+
+Primary portal labels now state only Reported within the hour / Last report
+1-24h ago / No report for over24h / Never reported. The API classification
+formerly named `offline` is now `no_report_over_24h`; external API consumers
+must update that enum mapping. Other classification names are unchanged.
+The separate column is Last policy/command receipt, and the note explains
+that a check-in does not create a DDM status or command-acknowledgement
+receipt. A regression checks these exact labels and API expectation. A new
+real rendered screenshot at456384d was inspected: no Online/Offline status
+assertion, readable columns, no clipping, and receipt categories clear.
+
+The final delivery identifies the published head. Any later commits after
+456384d used to publish this ledger are documentation-only; equivalence is
+verified before delivery.
+
+## All42 files changed from baseline
 
 - `control-plane/alembic/versions/0025_security_hardening.py`
 - `control-plane/app/credential_ops.py`
@@ -296,6 +351,7 @@ separate. This is not production-ready or iPhone-release-ready.
 - `control-plane/app/device_status_routes.py`
 - `control-plane/app/enrollment_routes.py`
 - `control-plane/app/exception_request_routes.py`
+- `control-plane/app/exception_routes.py`
 - `control-plane/app/filter_log_ops.py`
 - `control-plane/app/guardian_routes.py`
 - `control-plane/app/main.py`
@@ -321,9 +377,11 @@ separate. This is not production-ready or iPhone-release-ready.
 - `control-plane/tests/test_restore.py`
 - `control-plane/tests/test_security_hardening.py`
 - `control-plane/tests/test_staff_roles.py`
+- `control-plane/web/app.js`
 - `dns-edge/tests/test_doh_identity.py`
-
-Later documentation/UI-only corrections are separately named in the final
-delivery message. Do not label an earlier candidate test run as a run
-against a later commit. Historical UI screenshots/load measurements are
-not rerun evidence in this correction.
+- `docs/REQUIREMENTS_COVERAGE.md`
+- `docs/reviews/FINAL_HANDOFF.md`
+- `docs/reviews/RESTORE_RECOVERY.md`
+- `docs/reviews/SECURITY_CORRECTIONS_2026-11-17.md`
+- `portal/app.js`
+- `portal/index.html`
