@@ -4,7 +4,7 @@ last confirmed update).
 
 Honest layering, asserted in tests: connectivity is derived from
 stored device check-in receipts only (never_reported /
-recently_reporting / stale / offline); last_confirmed_update is the
+recently_reporting / stale / no_report_over_24h); last_confirmed_update is the
 latest stored device receipt (acknowledged command or DDM status
 report); nothing claims verified on-device enforcement.
 """
@@ -92,7 +92,7 @@ class TestDeviceStatusChain:
         d = devices_by_name(c)
         assert d["fresh-iphone"]["connectivity"] == "recently_reporting"
         assert d["stale-ipad"]["connectivity"] == "stale"
-        assert d["offline-mac"]["connectivity"] == "offline"
+        assert d["offline-mac"]["connectivity"] == "no_report_over_24h"
         assert d["never-seen"]["connectivity"] == "never_reported"
 
     def test_enrollment_and_receipt_fields(self, engine):
@@ -283,3 +283,16 @@ def test_old_enrollment_commands_do_not_affect_current_status(engine):
     assert row["push_chain"]["pending"] == 0
     assert row["push_chain"]["by_status"] == {}
     assert row["push_chain"]["latest_command"] is None
+
+
+def test_portal_receipt_labels_do_not_assert_live_presence():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    js = (repo / "portal/app.js").read_text()
+    html = (repo / "portal/index.html").read_text()
+    for label in ("Reported within the hour", "Last report 1-24h ago",
+                  "No report for over 24h", "Never reported"):
+        assert label in js
+    assert '"Online (' not in js and '"Offline (' not in js
+    assert "Last policy/command receipt" in html
+    assert "a check-in alone does not create one" in html
