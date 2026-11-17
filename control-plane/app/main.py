@@ -273,30 +273,43 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         if user is None:
             from fastapi import HTTPException
             raise HTTPException(status_code=401, detail="invalid session")
-        request.state.mfa_verified = bool(row.mfa_verified)
-        # A password-only login is a restricted enrollment session, not
-        # permission to operate the tenant. Read checks also cover existing
-        # sessions, role promotion and accounts whose MFA was reset.
-        if (user.role in (Role.owner, Role.guardian) or user.is_platform_admin
-                or user.staff_role is not None):
-            enrollment_paths = {"/api/auth/me", "/api/auth/logout",
-                "/api/auth/mfa/enroll-start", "/api/auth/mfa/enroll-confirm",
-                "/api/auth/password-change"}
-            if request.url.path not in enrollment_paths and (
-                    not user.totp_secret or not row.mfa_verified):
+        def check_authorization(user: User, row: AuthSession) -> None:
+            """Every gate that depends on session/user state, applied both
+            before and after the tenant-lock wait below."""
+            request.state.mfa_verified = bool(row.mfa_verified)
+            expires = row.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires <= utcnow():
+                session.delete(row)
+                session.commit()
+                from fastapi import HTTPException
+                raise HTTPException(status_code=401, detail="session expired")
+            # A password-only login is a restricted enrollment session, not
+            # permission to operate the tenant. Read checks also cover existing
+            # sessions, role promotion and accounts whose MFA was reset.
+            if (user.role in (Role.owner, Role.guardian) or user.is_platform_admin
+                    or user.staff_role is not None):
+                enrollment_paths = {"/api/auth/me", "/api/auth/logout",
+                    "/api/auth/mfa/enroll-start", "/api/auth/mfa/enroll-confirm",
+                    "/api/auth/password-change"}
+                if request.url.path not in enrollment_paths and (
+                        not user.totp_secret or not row.mfa_verified):
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=403,
+                        detail="verified MFA required; enroll then sign in with a code")
+            # Answer 29: read_only staff may VIEW authorized information
+            # only. Block every mutating call outside account self-service
+            # (/api/auth/*), even when the account also holds a tenant owner
+            # role - the same precedence as the destructive-command limit.
+            if (user.staff_role == StaffRole.read_only.value
+                    and request.method not in ("GET", "HEAD", "OPTIONS")
+                    and not request.url.path.startswith("/api/auth/")):
                 from fastapi import HTTPException
                 raise HTTPException(status_code=403,
-                    detail="verified MFA required; enroll then sign in with a code")
-        # Answer 29: read_only staff may VIEW authorized information
-        # only. Block every mutating call outside account self-service
-        # (/api/auth/*), even when the account also holds a tenant owner
-        # role - the same precedence as the destructive-command limit.
-        if (user.staff_role == StaffRole.read_only.value
-                and request.method not in ("GET", "HEAD", "OPTIONS")
-                and not request.url.path.startswith("/api/auth/")):
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403,
-                detail="read-only staff role: viewing authorized information only")
+                    detail="read-only staff role: viewing authorized information only")
+
+        check_authorization(user, row)
         # Serialize tenant configuration writes against each other and
         # against publication/default changes: every mutating call on
         # these paths takes a FOR UPDATE lock on the TENANT row (which
@@ -310,6 +323,23 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "/api/exception-requests", "/api/credentials",
                 "/api/offboarding", "/api/mdm", "/api/privacy")):
             lock_tenant(session, user.tenant_id)
+            # The wait above can span another transaction's commit: a
+            # delegation, role, MFA, expiry or session change that landed
+            # while this request queued must apply to it. lock_tenant's
+            # contract requires refreshing authorization objects read
+            # before waiting; the ingestion path and the worker already
+            # do this. A deleted session row means the request's own
+            # credentials were revoked mid-wait: refuse.
+            # refresh raises InvalidRequestError when its SELECT finds no row.
+            from sqlalchemy.exc import InvalidRequestError
+            try:
+                session.refresh(row)
+                session.refresh(user)
+            except InvalidRequestError:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=401,
+                                    detail="session revoked")
+            check_authorization(user, row)
         return user
 
     @app.middleware("http")
