@@ -37,9 +37,22 @@ Steps (exactly what the 2026-11-17 milestone evidence used):
    API shims and no substitute crypto.
 3. Expected result at this revision: 36 tests, 0 failures.
 
-## 2. Real iOS build (blocked - requirements ledger)
+## 2. Real iOS build (requirements ledger)
 
-An actual Xcode build needs, in order:
+UPDATED Stage 11 (2026-11-17): the full, source-verified requirements
+now live in docs/setup/APPLE_BUILD_REQUIREMENTS.md (macOS/Xcode matrix
+and Mac-access options), docs/reviews/APPLE_CAPABILITY_MATRIX.md
+(every entitlement/certificate/profile with approval + cost), and
+docs/setup/APPLE_ACCOUNT_SETUP_STEPS.md (the owner's exact steps).
+The repo now carries a shared scheme
+(ios/KosherGuard.xcodeproj/xcshareddata/xcschemes/KosherGuard.xcscheme)
+and a GitHub Actions unsigned-compile job definition
+(ci/ios-compile-check.yml - copy it into .github/workflows/ to
+enable; the agent's git credential lacks the workflow scope, so this
+last step is manual) so the first real iOS SDK compile can run on
+every push to stage-11-*; run
+`python3 tools/validate-ios-project.py` before any build. Summary of
+the ledger, in order:
 
 1. macOS with a current Xcode (the project declares
    `compatibilityVersion = "Xcode 14.0"`, `IPHONEOS_DEPLOYMENT_TARGET

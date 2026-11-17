@@ -1,0 +1,72 @@
+# Stage 11: first real Xcode compile of the iOS app + 4 extensions.
+#
+# ENABLEMENT (one manual step): the GitHub token authorized for agent
+# pushes does not have the `workflow` scope, so GitHub refuses to
+# accept files under .github/workflows/ from it. To enable this
+# workflow, copy this file to .github/workflows/ios-compile-check.yml
+# (the GitHub web UI "Add file" flow works fine for this). Until then
+# it is inert text and nothing runs. No purchase or new credential is
+# needed: the repo is public, and GitHub Actions usage is free for
+# standard GitHub-hosted runners in public repositories
+# (docs.github.com/en/actions/concepts/billing-and-usage; unchanged by
+# the 2026 Actions pricing update, which keeps public repos free).
+#
+# WHY THIS EXISTS: the development sandbox has no macOS, but the
+# macos-26 runner image ships Xcode 26.x with the iOS 26 SDK
+# (github.com/actions/runner-images images/macos/macos-26-Readme.md:
+# Xcode 26.6 default plus 26.5/26.4.1/26.3/26.2/26.1.1/26.0.1), which
+# covers the iOS 26 URL Filter APIs.
+#
+# WHAT THIS PROVES: the hand-authored pbxproj and every Swift source
+# compile against the real iOS SDK. It is an UNSIGNED compile
+# (CODE_SIGNING_ALLOWED=NO): it says nothing about entitlements,
+# signing, provisioning or device behavior.
+name: iOS compile check
+
+on:
+  push:
+    branches: [stage-11-*]
+  pull_request:
+    branches: [stage-11-*]
+  workflow_dispatch:
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate project structure (no Xcode needed)
+        run: python3 tools/validate-ios-project.py
+
+  xcode-compile:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6 (iOS 26.5 SDK)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version
+
+      - name: List project (diagnostics)
+        run: xcodebuild -list -project ios/KosherGuard.xcodeproj
+
+      - name: Unsigned compile of app + all 4 extensions
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/KosherGuard.xcodeproj \
+            -scheme KosherGuard \
+            -destination 'generic/platform=iOS' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee xcodebuild.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+          retention-days: 30
