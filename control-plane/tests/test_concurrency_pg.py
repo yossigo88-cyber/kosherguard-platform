@@ -479,8 +479,25 @@ class TestPublicationVsExceptionRace:
 
         results = race(publish, create_exc)
         assert sorted(results.values()) == [200, 200], results
-        # The system is still fully operable afterwards.
+        # The snapshot must match the actual transaction order, not just
+        # return two 200s. Both audits are flushed under the tenant lock,
+        # so their IDs establish which transaction committed first.
+        from app.models import AuditEvent
+        with session_scope(engine) as session:
+            tid = app.state.test_ids[0]
+            events = session.query(AuditEvent).filter_by(tenant_id=tid).all()
+            created = next(e.id for e in events if e.action == "exception.create")
+            published = next(e.id for e in events if e.action == "publication.publish")
+            eid = session.query(PolicyException).filter_by(tenant_id=tid).one().id
+        overlay = TestWorkerPublicationMatrix()._overlay(app)
+        ids = {e["exception_id"] for entries in overlay.values() for e in entries}
+        assert (eid in ids) == (created < published), (created, published, overlay)
+        # A later publication MUST include the committed create, no matter
+        # which of the original racing transactions won the lock first.
         assert c.post("/api/publications", headers=HDR).status_code == 200
+        assert {e["exception_id"] for entries in
+                TestWorkerPublicationMatrix()._overlay(app).values()
+                for e in entries} == {eid}
 
     def test_publish_racing_exception_revoke(self, engine):
         """A publish racing an exception revoke (which enqueues its
