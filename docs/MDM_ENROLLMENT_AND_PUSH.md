@@ -1,6 +1,12 @@
 # Stage 6: iPhone Enrollment and Push Notifications - Preparation and Blockers
 
 Date: November 14, 2026
+
+> Historical Stage6 audit, superseded for current implementation by
+> [Real MDM enrollment infrastructure review](reviews/REAL_MDM_ENROLLMENT_REVIEW.md).
+> Read that report for implemented native PKCS12/CMS/TLS/check-in/attended ADE
+> paths, tests and remaining authorization/device/production blockers.
+> This historical document is not a current assertion that no code exists.
 Status: **Preparation documentation only. No MDM enrollment or push-notification
 functionality exists, and none was demonstrated. The required Apple
 prerequisites are not available (see section 1).**
@@ -115,8 +121,13 @@ discretion (A10 5.3); the entire fleet design must tolerate that.
    (filtering DNS settings, restrictions, app rules) and records each
    response.
 
-Only ADE enrollment can be made non-removable by the management service;
-manually enrolled users can always remove the profile.
+ADE separately supports Prevent Unenrollment. Apple also documents the
+profile top-level PayloadRemovalDisallowed key for supervised iOS MDM
+profiles; supervision may be established with Configurator without Apple
+Business. This project's manual-supervision enrollment option remains
+EXPERIMENTAL: acceptance and Settings-removal enforcement of the generated
+artifact have not been tested on an iPhone. No manual automatic reenrollment
+after clean erase is promised. See the current review linked above.
 
 ## 6. Push-notification and command flow (target)
 
