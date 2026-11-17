@@ -406,3 +406,29 @@ class TestTwoPersonApproval:
 
 import mfa_support  # noqa: E402
 from mfa_support import mfa_login  # noqa: E402
+
+
+class TestReadOnlyStaffViewingOnly:
+    def test_read_only_staff_cannot_mutate_even_as_tenant_owner(self, engine):
+        """Answer 29: read_only staff may view authorized information
+        only. The account in this fixture also holds the tenant owner
+        role; the read-only staff limit still wins (same precedence as
+        the destructive-command limit), while reads and account
+        self-service stay open."""
+        c = TestClient(make_app(engine))
+        login(c, "ro@example.com")
+        me = c.get("/api/auth/me").json()
+        assert me["staff_role"] == "read_only"
+        # Viewing authorized information is allowed.
+        assert c.get("/api/admin/tenants").status_code == 200
+        assert c.get("/api/policies").status_code == 200
+        # Tenant configuration mutation is rejected before validation.
+        r = c.post("/api/policies", json={}, headers=HDR)
+        assert r.status_code == 403
+        assert "read-only staff role" in r.json()["detail"]
+        # Category administration is mutation too.
+        assert c.post("/api/admin/categories", json={
+            "domain": "x.example", "category": "adult"}, headers=HDR
+        ).status_code == 403
+        # Account self-service stays available.
+        assert c.post("/api/auth/logout", headers=HDR).status_code in (200, 204)
