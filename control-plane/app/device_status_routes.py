@@ -52,15 +52,19 @@ def register_device_status_routes(app, *, error, current_user,
         devices = []
         for d in rows:
             enrollment = session.scalars(select(MDMEnrollment).where(
-                MDMEnrollment.device_id == d.id).order_by(
+                MDMEnrollment.device_id == d.id,
+                MDMEnrollment.tenant_id == user.tenant_id).order_by(
                     MDMEnrollment.id.desc())).first()
             last_seen = enrollment.last_seen_at if enrollment else None
-            ack = session.scalar(select(func.max(MDMCommand.updated_at))
+            # Every command-derived figure below is scoped to the
+            # CURRENT enrollment only: commands queued against an old
+            # (replaced/offboarded) enrollment of the same device must
+            # never leak into the device's current status.
+            ack = (session.scalar(select(func.max(MDMCommand.updated_at))
                 .where(MDMCommand.tenant_id == user.tenant_id,
-                       MDMCommand.status == "acknowledged")
-                .join(MDMEnrollment,
-                      MDMCommand.enrollment_pk == MDMEnrollment.id)
-                .where(MDMEnrollment.device_id == d.id))
+                       MDMCommand.status == "acknowledged",
+                       MDMCommand.enrollment_pk == enrollment.id))
+                if enrollment else None)
             receipt = (session.scalar(select(func.max(
                 DDMStatusReport.received_at)).where(
                     DDMStatusReport.tenant_id == user.tenant_id,
@@ -68,14 +72,13 @@ def register_device_status_routes(app, *, error, current_user,
                     enrollment.enrollment_id))
                 if enrollment else None)
             confirmed = [t for t in (ack, receipt) if t is not None]
-            pending = session.scalar(select(func.count())
+            pending = (session.scalar(select(func.count())
                 .select_from(MDMCommand)
                 .where(MDMCommand.tenant_id == user.tenant_id,
                        MDMCommand.status.in_(
-                           ("queued", "delivered", "not_now")))
-                .join(MDMEnrollment,
-                      MDMCommand.enrollment_pk == MDMEnrollment.id)
-                .where(MDMEnrollment.device_id == d.id))
+                           ("queued", "delivered", "not_now")),
+                       MDMCommand.enrollment_pk == enrollment.id))
+                if enrollment else 0)
             assignment = session.scalars(select(DeviceAssignment).where(
                 DeviceAssignment.device_id == d.id,
                 DeviceAssignment.active.is_(True))).first()
@@ -89,19 +92,17 @@ def register_device_status_routes(app, *, error, current_user,
             # observed by this server (NanoMDM owns push in a real
             # deployment), so apns is reported as unavailable, never
             # inferred from ledger states.
-            status_counts = {r[0]: r[1] for r in session.execute(
+            status_counts = ({r[0]: r[1] for r in session.execute(
                 select(MDMCommand.status, func.count())
-                .where(MDMCommand.tenant_id == user.tenant_id)
-                .join(MDMEnrollment,
-                      MDMCommand.enrollment_pk == MDMEnrollment.id)
-                .where(MDMEnrollment.device_id == d.id)
+                .where(MDMCommand.tenant_id == user.tenant_id,
+                       MDMCommand.enrollment_pk == enrollment.id)
                 .group_by(MDMCommand.status)).all()}
-            latest_cmd = session.scalars(select(MDMCommand)
-                .where(MDMCommand.tenant_id == user.tenant_id)
-                .join(MDMEnrollment,
-                      MDMCommand.enrollment_pk == MDMEnrollment.id)
-                .where(MDMEnrollment.device_id == d.id)
+                if enrollment else {})
+            latest_cmd = (session.scalars(select(MDMCommand)
+                .where(MDMCommand.tenant_id == user.tenant_id,
+                       MDMCommand.enrollment_pk == enrollment.id)
                 .order_by(MDMCommand.id.desc())).first()
+                if enrollment else None)
             # Reported-vs-published comparison: the latest stored DDM
             # receipt's declaration states matched against what the
             # server currently serves this enrollment. Only an
