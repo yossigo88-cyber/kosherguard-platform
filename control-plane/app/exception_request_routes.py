@@ -85,6 +85,14 @@ def register_exception_request_routes(app, *, error, current_user,
     @app.get("/api/exception-requests")
     def list_exception_requests(user: User = Depends(current_user),
                                 session: Session = Depends(db_session)):
+        # Request details (requester email, reason, device, requested
+        # filtering change) are sensitive: visible to the same roles
+        # that may CREATE exceptions directly - the owner and guardians
+        # with the explicit "exceptions" delegation. Ordinary viewers
+        # and non-delegated guardians do not see them.
+        denied = require_guardian(user, "exceptions")
+        if denied is not None:
+            return denied
         from .models import ExceptionRequest
         rows = session.scalars(select(ExceptionRequest).where(
             ExceptionRequest.tenant_id == user.tenant_id).order_by(
@@ -99,7 +107,11 @@ def register_exception_request_routes(app, *, error, current_user,
         denied = require_guardian(user, "exceptions")
         if denied is not None:
             return denied
-        r = session.get(ExceptionRequest, request_id)
+        # Row lock: two concurrent decisions serialize; the second sees
+        # the committed status and is refused. One decision, one
+        # exception, one consistent audit trail.
+        r = session.scalar(select(ExceptionRequest).where(
+            ExceptionRequest.id == request_id).with_for_update())
         if r is None or r.tenant_id != user.tenant_id:
             return error(404, "exception request not found")
         if r.status != "pending":
