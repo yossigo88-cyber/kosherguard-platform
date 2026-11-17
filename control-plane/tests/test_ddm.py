@@ -196,6 +196,11 @@ class TestEnrollmentAuthorization:
         c = make_client(engine, {"KG_DDM_HMAC_KEY": HMAC_KEY})
         with session_scope(engine) as s:
             dev = s.query(Device).filter_by(name="kid-phone").one()
+            # One-current-enrollment invariant: a re-enrollment
+            # placeholder replaces the previous current record.
+            old = s.query(MDMEnrollment).filter_by(
+                enrollment_id="ENR-1").one()
+            old.state = "replaced"
             s.add(MDMEnrollment(tenant_id=dev.tenant_id,
                                 device_id=dev.id,
                                 enrollment_id="ENR-PENDING",
@@ -271,20 +276,33 @@ class TestEnrollmentAuthorization:
         assert r.status_code == 401
 
     def test_ambiguous_pending_udid_refused(self, engine):
+        """Ambiguity defense, two layers. The database invariant now
+        makes a second CURRENT enrollment for one device impossible
+        (partial unique index); the resolve_or_bind guard stays as
+        defense in depth for records that predate it. This test
+        verifies the database layer refuses the duplicate outright."""
+        import pytest as _pytest
+        from sqlalchemy.exc import IntegrityError
         c = self._pending_client(engine)
+        with _pytest.raises(IntegrityError):
+            with session_scope(engine) as s:
+                dev = s.query(Device).filter_by(name="kid-phone").one()
+                row = s.query(MDMEnrollment).filter_by(
+                    enrollment_id="ENR-PENDING").one()
+                row.device_udid = "UDID-DUP"
+                s.add(MDMEnrollment(tenant_id=dev.tenant_id,
+                                    device_id=dev.id,
+                                    enrollment_id="pending-other",
+                                    device_udid="UDID-DUP",
+                                    state="pending"))
+        # And a single matching pending still binds and serves.
         with session_scope(engine) as s:
-            dev = s.query(Device).filter_by(name="kid-phone").one()
             row = s.query(MDMEnrollment).filter_by(
                 enrollment_id="ENR-PENDING").one()
             row.device_udid = "UDID-DUP"
-            s.add(MDMEnrollment(tenant_id=dev.tenant_id,
-                                device_id=dev.id,
-                                enrollment_id="pending-other",
-                                device_udid="UDID-DUP",
-                                state="pending"))
         r = c.get("/api/ddm/tokens",
                   headers=ddm_headers(enrollment="UDID-DUP"))
-        assert r.status_code == 409
+        assert r.status_code == 200
 
     def test_checkin_binds_real_nanomdm_id(self, engine):
         """The actual NanoMDM identifier mapping: NanoMDM forwards its
