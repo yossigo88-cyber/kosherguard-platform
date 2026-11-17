@@ -782,13 +782,97 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         return {"id": device.id, "name": device.name,
                 "state": device.state}
 
+    def _connectivity_class(last_seen):
+        """Receipt-based classification, NOT live presence: the server
+        only knows when a device last reported. recently_reporting <
+        1h; stale 1-24h; offline > 24h; never_reported when the
+        enrollment has never contacted us."""
+        if last_seen is None:
+            return "never_reported"
+        seen = last_seen
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        age = utcnow() - seen
+        if age < timedelta(hours=1):
+            return "recently_reporting"
+        if age < timedelta(hours=24):
+            return "stale"
+        return "offline"
+
     @app.get("/api/devices")
     def list_devices(user: User = Depends(current_user),
                      session: Session = Depends(db_session)):
+        """Devices with the Answer-23 update-state chain, honestly
+        layered: desired state (assignments/publication) is server
+        intent; command ledger states (queued/delivered/acknowledged)
+        are server push records; last_seen/DDM reports are STORED
+        DEVICE RECEIPTS. None of these proves actual on-device
+        enforcement - the response says so per device."""
+        from sqlalchemy import func
+        from .models import (DDMStatusReport, DeviceAssignment,
+                             MDMCommand, PublicationState)
         rows = session.scalars(select(Device).where(
             Device.tenant_id == user.tenant_id).order_by(Device.id))
-        return {"devices": [{"id": d.id, "name": d.name, "state": d.state}
-                            for d in rows]}
+        pub = session.get(PublicationState, user.tenant_id)
+        published_revision = pub.revision if pub else 0
+        devices = []
+        for d in rows:
+            enrollment = session.scalars(select(MDMEnrollment).where(
+                MDMEnrollment.device_id == d.id).order_by(
+                    MDMEnrollment.id.desc())).first()
+            last_seen = enrollment.last_seen_at if enrollment else None
+            ack = session.scalar(select(func.max(MDMCommand.updated_at))
+                .where(MDMCommand.tenant_id == user.tenant_id,
+                       MDMCommand.status == "acknowledged")
+                .join(MDMEnrollment,
+                      MDMCommand.enrollment_pk == MDMEnrollment.id)
+                .where(MDMEnrollment.device_id == d.id))
+            receipt = (session.scalar(select(func.max(
+                DDMStatusReport.received_at)).where(
+                    DDMStatusReport.tenant_id == user.tenant_id,
+                    DDMStatusReport.enrollment_id ==
+                    enrollment.enrollment_id))
+                if enrollment else None)
+            confirmed = [t for t in (ack, receipt) if t is not None]
+            pending = session.scalar(select(func.count())
+                .select_from(MDMCommand)
+                .where(MDMCommand.tenant_id == user.tenant_id,
+                       MDMCommand.status.in_(
+                           ("queued", "delivered", "not_now")))
+                .join(MDMEnrollment,
+                      MDMCommand.enrollment_pk == MDMEnrollment.id)
+                .where(MDMEnrollment.device_id == d.id))
+            assignment = session.scalars(select(DeviceAssignment).where(
+                DeviceAssignment.device_id == d.id,
+                DeviceAssignment.active.is_(True))).first()
+            devices.append({
+                "id": d.id, "name": d.name, "state": d.state,
+                "assigned_policy_id":
+                    assignment.policy_id if assignment else None,
+                "published_revision": published_revision,
+                "enrollment": ({
+                    "state": enrollment.state,
+                    "supervision_requested":
+                        enrollment.supervision_requested,
+                    "supervision_verified":
+                        enrollment.supervision_verified,
+                    "last_seen_at": (enrollment.last_seen_at.isoformat()
+                                     if enrollment.last_seen_at else None),
+                } if enrollment else None),
+                "connectivity": _connectivity_class(last_seen),
+                "connectivity_basis":
+                    "device check-in receipts only; not live presence",
+                "pending_commands": pending,
+                "last_confirmed_update": (max(confirmed).isoformat()
+                                          if confirmed else None),
+                "last_confirmed_update_basis":
+                    "latest stored device receipt (acknowledged command "
+                    "or DDM status report)",
+                "enforcement_note":
+                    "server state and stored receipts only; actual "
+                    "on-device enforcement is not verified by this "
+                    "server"})
+        return {"devices": devices}
 
     @app.post("/api/devices/{device_id}/assignment",
               dependencies=[Depends(require_csrf_header)])
@@ -1438,6 +1522,11 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "delegated_settings": json.loads(row.delegated_settings),
                 "created_at": row.created_at.isoformat()}
 
+    from .exception_request_routes import register_exception_request_routes
+    register_exception_request_routes(app, error=error,
+        current_user=current_user, db_session=db_session,
+        require_csrf_header=require_csrf_header,
+        require_guardian=require_guardian)
     register_guardian_routes(app, error=error,
         current_user=current_user, db_session=db_session,
         require_csrf_header=require_csrf_header, require_owner=require_owner,
