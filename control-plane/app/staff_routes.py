@@ -19,7 +19,8 @@ from pydantic import BaseModel
 
 from . import mdm_ops, security
 from .db import ScopedSession
-from .models import (Role, SensitiveCommandApproval, StaffRole, User,
+from .models import (Device, MDMEnrollment, Role,
+                     SensitiveCommandApproval, StaffRole, User,
                      utcnow)
 from mdm.adapter import DESTRUCTIVE_COMMANDS  # noqa: F401 (re-exported)
 
@@ -69,8 +70,8 @@ def fresh_check(error, user: User, totp_code: str | None,
     return None
 
 
-def approval_json(a: SensitiveCommandApproval) -> dict:
-    return {
+def approval_json(a: SensitiveCommandApproval, session=None) -> dict:
+    body = {
         "id": a.id, "operation": a.operation, "status": a.status,
         "reason": a.reason, "tenant_id": a.tenant_id,
         "enrollment_pk": a.enrollment_pk,
@@ -79,6 +80,23 @@ def approval_json(a: SensitiveCommandApproval) -> dict:
         "expires_at": a.expires_at.isoformat(),
         "decided_at": a.decided_at.isoformat() if a.decided_at else None,
     }
+    if session is not None:
+        # An approver must see WHO asked and WHICH device is targeted
+        # before approving - not just a request id and free text. Both
+        # are same-tenant rows: the approval list is already scoped to
+        # the caller's tenant, so this adds no cross-tenant disclosure.
+        requester = session.get(User, a.requested_by_user_id)
+        body["requested_by_email"] = requester.email if requester else None
+        device_label = None
+        if a.enrollment_pk is not None:
+            enrollment = session.get(MDMEnrollment, a.enrollment_pk)
+            if enrollment is not None:
+                device = session.get(Device, enrollment.device_id)
+                name = device.name if device else None
+                udid = enrollment.device_udid or enrollment.enrollment_id
+                device_label = f"{name} ({udid})" if name else udid
+        body["device"] = device_label
+    return body
 
 
 def sensitive_privileged(user: User) -> bool:
@@ -106,7 +124,7 @@ def register_staff_routes(app, *, error, current_user, db_session,
         rows = session.scalars(select(SensitiveCommandApproval).where(
             SensitiveCommandApproval.tenant_id == user.tenant_id)
             .order_by(SensitiveCommandApproval.id.desc()).limit(100)).all()
-        return {"approvals": [approval_json(a) for a in rows]}
+        return {"approvals": [approval_json(a, session) for a in rows]}
 
     @app.post("/api/mdm/sensitive-approvals/{approval_id}/approve",
               dependencies=[Depends(require_csrf_header)])
@@ -177,7 +195,7 @@ def register_staff_routes(app, *, error, current_user, db_session,
             f"{a.operation} approved by user {user.id}: {a.decision_detail}",
             actor_user_id=user.id)
         session.commit()
-        return approval_json(a) | {"decision_detail": a.decision_detail}
+        return approval_json(a, session) | {"decision_detail": a.decision_detail}
 
     @app.post("/api/mdm/sensitive-approvals/{approval_id}/reject",
               dependencies=[Depends(require_csrf_header)])
@@ -199,7 +217,7 @@ def register_staff_routes(app, *, error, current_user, db_session,
             "mdm.sensitive.reject", f"{a.operation}: {a.decision_detail}",
             actor_user_id=user.id)
         session.commit()
-        return approval_json(a)
+        return approval_json(a, session)
 
     @app.get("/api/staff")
     def staff_list(user: User = Depends(current_user),
