@@ -2,6 +2,10 @@ import os
 import sys
 import uuid
 
+# Tests run with a lowered (but still bounded) PBKDF2 cost so the
+# suite stays fast; production default is 600k (app/security.py).
+os.environ.setdefault("KG_PBKDF2_ITERATIONS", "50000")
+
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
