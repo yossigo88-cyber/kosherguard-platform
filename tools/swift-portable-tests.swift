@@ -109,4 +109,41 @@ final class PortableTests: XCTestCase {
         do { _ = try await updater.refresh(credential:"fixture",now:now.addingTimeInterval(1)); XCTFail("polled too soon") }
         catch PrefilterUpdater.UpdateError.tooSoon {}
     }
+
+    func testSuccessEnforcesFortyFiveMinuteCadence() async throws {
+        FixtureProtocol.handler = { request in
+            (200,[:],request.url!.path.hasSuffix("manifest") ? self.manifest : Data("abc".utf8))
+        }
+        var updater = PrefilterUpdater(serverBaseURL:base,session:session())
+        let t0 = Date()
+        _ = try await updater.refresh(credential:"fixture",now:t0)
+        // Re-check inside the cadence is refused before any fetch.
+        do { _ = try await updater.refresh(credential:"fixture",now:t0.addingTimeInterval(60)); XCTFail("polled too soon after success") }
+        catch PrefilterUpdater.UpdateError.tooSoon {}
+        // After the cadence the check really happens; an unchanged
+        // version surfaces as staleVersion, proving the fetch ran.
+        do { _ = try await updater.refresh(credential:"fixture",now:t0.addingTimeInterval(45*60)); XCTFail("expected staleVersion") }
+        catch PrefilterUpdater.UpdateError.staleVersion {}
+    }
+
+    func testTransientFailureRetriesAfterShortBackoff() async throws {
+        var fail = true
+        FixtureProtocol.handler = { request in
+            if fail { return (401,[:],Data()) }
+            return (200,[:],request.url!.path.hasSuffix("manifest") ? self.manifest : Data("abc".utf8))
+        }
+        var updater = PrefilterUpdater(serverBaseURL:base,session:session())
+        let t0 = Date()
+        do { _ = try await updater.refresh(credential:"fixture",now:t0); XCTFail("accepted 401") }
+        catch PrefilterUpdater.UpdateError.fetchFailed {}
+        // Inside the short backoff the retry is refused before any fetch.
+        do { _ = try await updater.refresh(credential:"fixture",now:t0.addingTimeInterval(30)); XCTFail("retry storm: polled inside backoff") }
+        catch PrefilterUpdater.UpdateError.tooSoon {}
+        // After the backoff - far inside the old 45-minute suppression -
+        // the retry is attempted and succeeds.
+        fail = false
+        let result = try await updater.refresh(credential:"fixture",now:t0.addingTimeInterval(61))
+        XCTAssertEqual(result.version,2)
+        XCTAssertEqual(updater.currentVersion,2)
+    }
 }
