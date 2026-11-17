@@ -47,12 +47,15 @@ def reconcile(session: Session, tenant_id: int,
     string), detail. Rows for commands not owned by tenant_id are
     ignored - cross-tenant status data is never written.
     """
-    from app.models import MDMCommand  # deferred: control-plane import
+    from app.models import MDMCommand, MDMProvision  # deferred: control-plane import
+    from sqlalchemy import select
 
     result = ReconcileResult()
     for row in status_rows:
         cmd = session.get(MDMCommand, row.get("command_id"))
-        if cmd is None or cmd.tenant_id != tenant_id:
+        native = (session.scalar(select(MDMProvision.id).where(
+            MDMProvision.enrollment_pk == cmd.enrollment_pk)) if cmd else None)
+        if cmd is None or cmd.tenant_id != tenant_id or native is not None:
             result.skipped += 1
             continue
         mapped = DEVICE_STATUS_MAP.get(row.get("status"))
