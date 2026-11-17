@@ -10,9 +10,19 @@
 # No production secrets participate; the fixture seed dies with the run.
 set -euo pipefail
 
-COMMIT=$(awk '/^commit:/{print $2}' "$(dirname "$0")/../PINNED")
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+COMMIT=$(awk '/^commit:/{print $2}' "$SCRIPT_DIR/../PINNED")
 WORK=$(mktemp -d)
-trap 'kill ${GW_PID:-0} ${STUB_PID:-0} 2>/dev/null || true; rm -rf "$WORK"' EXIT
+cleanup() {
+  local pid
+  for pid in ${GW_PID:-} ${STUB_PID:-}; do
+    # Never `kill 0` here: an unset PID defaulting to 0 would signal this
+    # script's whole process group (including its caller).
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  done
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 EXPECTED="kosherguard-fixture-target-response"
 GW_PORT=${GW_PORT:-3999}
@@ -26,7 +36,8 @@ mkdir "$WORK/gw" && tar xzf "$WORK/gw.tar.gz" -C "$WORK/gw" --strip-components=1
 cd "$WORK/gw"
 npm ci --omit=dev --no-audit --no-fund --loglevel=error
 
-cp "$(dirname "$0")/interop-client.mjs" "$WORK/gw/interop-client.mjs"
+# SCRIPT_DIR is absolute: $(dirname "$0") would break here after the cd.
+cp "$SCRIPT_DIR/interop-client.mjs" "$WORK/gw/interop-client.mjs"
 
 echo "== generating ephemeral fixture seed (not stored, not logged) =="
 FIXTURE_SEED=$(node -e 'console.log(require("crypto").randomBytes(32).toString("base64"))')
