@@ -501,6 +501,37 @@ class PolicyException(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ExceptionRequest(Base):
+    """A STRUCTURED request for a filtering exception (spec Part 2A:
+    customers request exceptions or policy changes; Answer 20: scoped,
+    time-limited exceptions with reason/approver/window/audit).
+
+    Distinct from a free-text support ticket: it carries the exact
+    scope and window the customer asks for, and approving it creates a
+    real PolicyException with the approver recorded - the request
+    itself changes nothing while pending."""
+    __tablename__ = 'exception_requests'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey('tenants.id'), index=True)
+    requester_user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    kind: Mapped[str] = mapped_column(String(30))
+    scope_type: Mapped[str] = mapped_column(String(10))
+    device_id: Mapped[int | None] = mapped_column(ForeignKey('devices.id'), nullable=True)
+    group_id: Mapped[int | None] = mapped_column(ForeignKey('device_groups.id'), nullable=True)
+    domains: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    reason: Mapped[str] = mapped_column(Text)
+    duration_minutes: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), nullable=False,
+                                        default="pending")
+    decided_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id'), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    exception_id: Mapped[int | None] = mapped_column(
+        ForeignKey('policy_exceptions.id'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class GroupMembership(Base):
     __tablename__ = 'group_memberships'
     __table_args__ = (UniqueConstraint('device_id'),)
