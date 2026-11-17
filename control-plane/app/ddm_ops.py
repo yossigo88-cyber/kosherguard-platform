@@ -243,7 +243,17 @@ def _app_policy(session: Session, enrollment: MDMEnrollment,
 
 
 def configurations(session: Session, enrollment: MDMEnrollment) -> list[dict]:
-    """The configuration declarations this enrollment should sync."""
+    """The configuration declarations this enrollment should sync.
+
+    Serving follows the policy's applied state (review follow-up): a
+    saved-but-never-applied policy delivers nothing on any channel,
+    and after unapply (profile_identifier cleared) the declaration
+    leaves the manifest, so the device withdraws the app-settings
+    configuration at its next sync. Declaration removal is
+    acknowledged by the device asynchronously; that ack is not
+    tracked, so 'unapplied' here means withdrawal is queued/pending,
+    not confirmed on device.
+    """
     import os
     import sys
     sys.path.insert(0, os.path.abspath(os.path.join(
@@ -251,7 +261,7 @@ def configurations(session: Session, enrollment: MDMEnrollment) -> list[dict]:
     import app_management  # noqa: E402
 
     policy = _app_policy(session, enrollment)
-    if policy is None:
+    if policy is None or policy.profile_identifier is None:
         return []
     token = hashlib.sha256(
         f"{policy.id}:{policy.mode}:{policy.bundle_ids}:{policy.updated_at}"

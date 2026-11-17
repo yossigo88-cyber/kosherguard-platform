@@ -127,9 +127,12 @@ $("app-unapply").addEventListener("click", async () => {
   const id = $("app-device").value;
   if (!window.confirm(
       "Unapply the app policy from this device?\n\n" +
-      "This queues a RemoveProfile command that lifts the app " +
-      "allow/block restrictions from the device. The saved policy " +
-      "stays and can be re-applied. Continue?")) {
+      "This queues a RemoveProfile command and stops serving the " +
+      "declarative app-settings configuration. Restrictions lift " +
+      "only when the device acts: classic-managed devices at command " +
+      "pickup, declaratively managed devices at their next sync. " +
+      "Removal is not confirmed until then. The saved policy stays " +
+      "and can be re-applied. Continue?")) {
     $("app-cmd-result").innerHTML =
       '<p class="muted">Unapply cancelled; nothing was queued.</p>';
     return;

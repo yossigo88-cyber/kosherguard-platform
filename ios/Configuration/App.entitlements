@@ -6,12 +6,14 @@
      (Apple Network Extensions Entitlement doc):
      "content-filter-provider" = allow/deny network connections of
      other apps; "url-filter-provider" = create and manage URL filters.
-     Family Controls (com.apple.developer.family-controls) is a
-     SEPARATE entitlement with its own Apple approval for
-     distribution; the Screen Time path (TN3134: content filter on
-     child devices via Family Controls) is not wired yet - see
-     ios/README.md's blocker ledger. App Group name is a placeholder
-     pending real Apple Developer team/bundle IDs. -->
+     Family Controls (com.apple.developer.family-controls) IS now
+     listed below because AppBlockingView/AppShieldController call
+     AuthorizationCenter, FamilyActivityPicker and ManagedSettingsStore
+     - but it carries its own Apple approval for distribution and is
+     NOT yet requested or granted; without it the shield calls are
+     ineffective and the UI reports not-authorized honestly. App Group
+     name is a placeholder pending real Apple Developer team/bundle
+     IDs. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -20,6 +22,8 @@
 		<string>content-filter-provider</string>
 		<string>url-filter-provider</string>
 	</array>
+	<key>com.apple.developer.family-controls</key>
+	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.kosherguard.shared</string>

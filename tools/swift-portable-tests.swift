@@ -3542,3 +3542,106 @@ final class AppBlockingPolicyClientTests: XCTestCase {
         } catch AppBlockingPolicyClient.FetchError.malformedResponse {}
     }
 }
+
+/// Reachability and entitlement guards for the personally-owned app
+/// blocking route (independent-review finding: AppShieldController was
+/// unreachable). The UI layer is Apple-only and UNCOMPILED here, so
+/// these are static checks of the call graph and the entitlements it
+/// requires - they fail if the wiring is removed or drifts.
+final class AppShieldReachabilityTests: XCTestCase {
+
+    private func repoRoot() throws -> URL {
+        guard let root = ProcessInfo.processInfo
+            .environment["KG_REPO_ROOT"]
+        else { throw XCTSkip("KG_REPO_ROOT not set") }
+        return URL(fileURLWithPath: root)
+    }
+
+    private func source(_ rel: String) throws -> String {
+        try String(contentsOf: repoRoot().appendingPathComponent(rel),
+                   encoding: .utf8)
+    }
+
+    /// The app must actually EMBED the blocking section: controller
+    /// code that no view calls is dead code, and dead code is not a
+    /// feature.
+    func testMainViewEmbedsAppBlockingSection() throws {
+        let app = try source("ios/Sources/KosherGuard/KosherGuardApp.swift")
+        XCTAssertTrue(app.contains("AppBlockingSection()"),
+                      "FilterStatusView must embed AppBlockingSection")
+        XCTAssertTrue(app.contains("App blocking (this device)"),
+                      "the section must be visibly labelled")
+    }
+
+    /// The section must perform the full real flow: Apple's consent
+    /// prompt, the picker, shield application and explicit removal -
+    /// each a direct call into the controller/framework, not a stub.
+    func testSectionCallsRealShieldFlow() throws {
+        let view = try source(
+            "ios/Sources/KosherGuard/AppBlockingView.swift")
+        for needle in [
+            // The view asks the controller; the controller owns the
+            // Apple call (checked in testControllerLifecycleDiscipline).
+            "controller.requestAuthorization()",
+            "familyActivityPicker(",
+            "controller.applyShield(selection:",
+            "controller.clearShield()",
+            "AppShieldController()",
+            "AuthorizationCenter.shared.authorizationStatus",
+        ] {
+            XCTAssertTrue(view.contains(needle),
+                          "AppBlockingView missing \(needle)")
+        }
+        // Consent discipline: authorization may only be requested from
+        // the button action, never on appear/init.
+        XCTAssertFalse(view.contains(".onAppear"),
+                       "consent must not be requested on appear")
+        XCTAssertFalse(view.contains("requestAuthorization() }\n\n    init"),
+                       "consent must not be requested from init")
+        // An unknown future authorization state must degrade to
+        // NOT authorized, never to shielding.
+        XCTAssertTrue(view.contains("@unknown default"),
+                      "unknown AuthorizationStatus must fail closed")
+    }
+
+    /// The controller must only clear shields explicitly (no implicit
+    /// clear on fetch/sync paths) and the store must be named so
+    /// settings persist across launches.
+    func testControllerLifecycleDiscipline() throws {
+        let controller = try source(
+            "ios/Sources/KosherGuard/AppShieldController.swift")
+        XCTAssertTrue(controller.contains(
+            #"ManagedSettingsStore.Name("kosherguard-app-blocking")"#))
+        // The controller owns the Apple consent call.
+        XCTAssertTrue(controller.contains(
+            "AuthorizationCenter.shared.requestAuthorization"))
+        // Removal is a real store clear, not a no-op.
+        XCTAssertTrue(controller.contains("clearAllSettings"))
+        // No network/policy path may touch shields: the controller
+        // must not reference the policy client/store at all.
+        for forbidden in ["AppBlockingPolicyClient",
+                          "AppBlockingPolicyStore", "URLSession"] {
+            XCTAssertFalse(controller.contains(forbidden),
+                           "shield controller must stay device-local "
+                           + "(found \(forbidden))")
+        }
+    }
+
+    /// Every entitlement the new flow needs must be declared in the
+    /// app target's entitlements file (still requiring Apple's
+    /// approval; declared != granted).
+    func testFamilyControlsEntitlementDeclared() throws {
+        let ent = try source("ios/Configuration/App.entitlements")
+        XCTAssertTrue(ent.contains("com.apple.developer.family-controls"),
+                      "family-controls entitlement must be declared")
+        XCTAssertTrue(ent.contains("group.com.kosherguard.shared"),
+                      "app group for selection persistence must be declared")
+        // The selection store must use the same app group the
+        // entitlements declare, with no silent private fallback.
+        let view = try source(
+            "ios/Sources/KosherGuard/AppBlockingView.swift")
+        XCTAssertTrue(view.contains("FilterRuleStore.appGroupIdentifier"))
+        XCTAssertFalse(view.contains("documentDirectory"),
+                       "no silent fallback to a private container")
+    }
+}

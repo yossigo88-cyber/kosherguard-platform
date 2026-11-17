@@ -65,12 +65,17 @@ def client(engine):
     return make_client(engine, {"KG_DDM_HMAC_KEY": HMAC_KEY})
 
 
-def put_policy(c):
+def put_policy(c, apply=True):
     r = c.get("/api/devices")
     dev = r.json()["devices"][0]["id"]
     r = c.put(f"/api/devices/{dev}/app-policy", headers=HDR,
               json={"mode": "blocklist", "bundle_ids": ["com.bad.app"]})
     assert r.status_code == 200, r.json()
+    if apply:
+        # DDM serving follows the policy's applied state.
+        r = c.post(f"/api/devices/{dev}/app-policy/apply", headers=HDR,
+                   json={})
+        assert r.status_code == 200, r.json()
     return dev
 
 
@@ -113,6 +118,29 @@ class TestDDMServing:
                 == "com.kosherguard.appsettings")
         assert (first["Declarations"]["Configurations"][0]["ServerToken"]
                 != second["Declarations"]["Configurations"][0]["ServerToken"])
+
+    def test_saved_but_unapplied_serves_nothing(self, client):
+        # A policy that was saved but never applied must not reach the
+        # device on ANY channel (review follow-up to finding A1).
+        put_policy(client, apply=False)
+        items = client.get("/api/ddm/declaration-items",
+                           headers=ddm_headers()).json()
+        assert items["Declarations"]["Configurations"] == []
+
+    def test_unapply_withdraws_declaration_from_manifest(self, client):
+        dev = put_policy(client)
+        items = client.get("/api/ddm/declaration-items",
+                           headers=ddm_headers()).json()
+        assert len(items["Declarations"]["Configurations"]) == 1
+        r = client.post(f"/api/devices/{dev}/app-policy/unapply",
+                        headers=HDR, json={})
+        assert r.status_code == 200, r.json()
+        items = client.get("/api/ddm/declaration-items",
+                           headers=ddm_headers()).json()
+        # Gone from the manifest: the device withdraws the declaration
+        # at its next sync. The withdrawal itself is acknowledged by
+        # the device asynchronously and is not tracked here.
+        assert items["Declarations"]["Configurations"] == []
 
     def test_no_policy_empty_configurations(self, client):
         items = client.get("/api/ddm/declaration-items",

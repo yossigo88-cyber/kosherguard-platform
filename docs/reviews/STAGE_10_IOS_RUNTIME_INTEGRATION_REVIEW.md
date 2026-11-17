@@ -195,18 +195,25 @@ The first review round found and this revision fixed:
    "Not installed" - it now reflects what the app actually
    attempted (enabled/disabled/failed), still honestly short of
    claiming a running system filter.
-7. **Legacy applicationaccess keys (pre-existing, now
-   load-bearing).** Verified against Apple's published
-   device-management schema mirror (GitHub apple/device-management,
-   release branch; secondary to Apple Developer documentation): the
-   current payload documents ONLY `allowListedAppBundleIDs`
-   (supervised, deprecated iOS 27.0). The allowlist builder now
-   emits that documented key. NO blocklist key exists in the
-   current schema - blocklist mode emits the historical
-   `blacklistedAppBundleIDs` and is explicitly UNDOCUMENTED,
-   gated on supervised-device proof before any launch-blocking
-   claim. Allowlist mode (or the iOS 27 declarative
-   `app.settings` configuration) is the recommended path.
+7. **Applicationaccess keys (CORRECTED 2026-11-17 after an
+   independent-review catch).** An earlier version of this section
+   claimed the current schema documents ONLY
+   `allowListedAppBundleIDs` and no blocklist key. That was FALSE:
+   it came from a partial read of the schema. Re-fetched in full
+   (apple/device-management release branch
+   mdm/profiles/com.apple.applicationaccess.yaml, 124,587 bytes):
+   BOTH current keys exist - `allowListedAppBundleIDs` (line 2117)
+   and `blockedAppBundleIDs` (line 3836), each iOS/tvOS 15.0+,
+   supervised, deprecated 27.0 in favor of the declarative
+   `com.apple.configuration.app.settings` configuration. Apple's
+   own text for `blockedAppBundleIDs`: the system prevents
+   SHOWING OR LAUNCHING the listed apps - genuine launch
+   prevention on supervised devices. The legacy
+   `blacklistedAppBundleIDs` (iOS 9.3, deprecated 15.0) exists but
+   is NOT used. The blocklist builder now emits the documented
+   `blockedAppBundleIDs`; tests assert the legacy key never
+   appears. Device-side behavior remains BUILT-UNVERIFIED until
+   the Part 17 supervised-device phase.
 8. **FamilyControls consent.** `AppShieldController` requires the
    system authorization prompt (`AuthorizationCenter.
    requestAuthorization(for: .individual)`) which Apple always
@@ -266,24 +273,88 @@ recorded legacy identifier exactly; unapply without an applied/saved
 policy is 409; migration test updated to 0027 and asserts the new
 column (8).
 
-**Blocklist delivery path (re-verified 2026-11-17 against the
+**Blocklist delivery paths (re-verified 2026-11-17 against the full
 release-branch schemas).** Blocklist mode is NOT parked behind the
-device gate: the documented current mechanism is already implemented
-and served - `ddm_ops.configurations` issues a
+device gate and no longer relies on any undocumented key. Two
+documented paths, by device era: (a) iOS 15-26 supervised, classic
+channel - `apply` queues InstallProfile carrying
+`blockedAppBundleIDs` (documented current key; prevents showing or
+launching per Apple); (b) iOS 27+ supervised, declarative channel -
+`ddm_ops.configurations` serves a
 `com.apple.configuration.app.settings` declaration with
-`Allowed.DeniedApps` (schema: `DeniedApps`/`AppIdentifier`, iOS 27+,
-supervised) to every DDM-syncing enrollment holding a blocklist
-policy, and the declaration identifier is now stable
-(`com.kosherguard.appsettings`, ServerToken tracks content). The
-classic InstallProfile path additionally emits the historical
-`blacklistedAppBundleIDs` key, which no longer appears in the current
-applicationaccess schema (re-grepped 2026-11-17: only
-`allowListedAppBundleIDs` is documented; no `blockedAppBundleIDs`
-exists): it is kept as best-effort for pre-DDM enrollments and is
-explicitly UNDOCUMENTED. Whether a current iOS device still honors
-the historical key, and all InstallProfile/RemoveProfile/DDM delivery
-claims, remain device-gate work (section 7): nothing here asserts
-on-device behavior.
+`Allowed.DeniedApps` to every DDM-syncing enrollment whose policy is
+APPLIED. Applied-state gating: a saved-but-never-applied policy is
+served on neither channel, and unapply both queues RemoveProfile and
+removes the declaration from the manifest (device withdraws at next
+sync; withdrawal ack is asynchronous and untracked - reported as
+queued/pending, never as lifted). The declaration identifier is
+stable (`com.kosherguard.appsettings`, ServerToken tracks content).
+All on-device behavior remains device-gate work (section 7): nothing
+here asserts a verified on-device result.
+
+## 4c. Third review pass corrections (2026-11-17)
+
+1. **blockedAppBundleIDs (KEY FIX).** The reviewer's re-read of the
+   full release YAML (124,587 bytes) proved section 4a item 7's "no
+   blocklist key" claim false; corrected above. Blocklist mode now
+   emits the documented `blockedAppBundleIDs` (iOS 15+, supervised,
+   deprecated 27.0; "prevents showing or launching" per Apple). The
+   legacy `blacklistedAppBundleIDs` (9.3, deprecated 15.0) is not
+   emitted; tests assert its absence.
+2. **DDM applied-state gating (state bug confirmed by review).**
+   `ddm_ops.configurations` previously served the app-settings
+   declaration whenever a policy ROW existed: saving a policy alone
+   would have applied it to DDM devices at next sync, and unapply
+   cleared only the classic profile marker, leaving declarative
+   restrictions served forever. Serving now requires the applied
+   marker (`profile_identifier` non-NULL): save alone serves nothing,
+   apply serves, unapply withdraws (declaration leaves the manifest;
+   device removes it at next sync; the removal ack is asynchronous
+   and untracked, reported as pending). Tests: saved-not-applied =
+   no serve, apply = serve, unapply = withdraw, mode/content change
+   = stable identifier + changed ServerToken.
+3. **AppShieldController reachability (reviewer: controller was
+   unreachable, cannot call personal app blocking complete
+   controller-only).** New `AppBlockingView.swift` embeds a reachable
+   "App blocking (this device)" section in the main view: consent
+   button -> `AuthorizationCenter.requestAuthorization(for:.individual)`
+   (Apple's system prompt is the only consent UX; never requested on
+   appear or from init, never auto-retried) -> `familyActivityPicker`
+   for the user to choose apps/categories/sites -> selection persisted
+   as Codable JSON in the declared app group ->
+   `AppShieldController.applyShield`. Explicit "Remove app blocking"
+   clears the named store and deletes the selection. Denial,
+   restrictions and `@unknown default` authorization states all
+   degrade to visibly NOT protected; missing app-group container is
+   surfaced as a red warning, never a silent private-container
+   fallback. UNCOMPILED (FamilyControls/ManagedSettings are Apple-only
+   SDKs): static guards in the portable suite assert the main view
+   embeds the section, the section calls the real flow, no consent on
+   appear/init, and the entitlements declare family-controls +
+   the app group. `App.entitlements` now declares
+   `com.apple.developer.family-controls` (declared != granted:
+   Apple's separate approval is still required and unrequested).
+4. **URL Filter extension point identifier: still unresolved,
+   plainly.** Re-checked Apple's sources 2026-11-17:
+   `pir-service-example`'s TestingInstructionsNEURLFilter.md (fetched
+   in full, 10,058 bytes) documents the manager/protocol/token flow
+   but never names the extension's `NSExtensionPointIdentifier`;
+   developer.apple.com/documentation/networkextension/url-filters.md
+   likewise. The value remains the marked PLACEHOLDER in
+   `URLFilterExtension-Info.plist`; the Xcode 26 "URL Filter App
+   Extension" template (requires the Mac/Xcode gate, section 7) is
+   the authoritative source. No guessed value was promoted to a
+   claim.
+5. **Dashboard wording precision.** Panel blurb now says "nothing
+   here has been verified on an iPhone yet" (was passive
+   "validated in the device-testing phase"); unapply reads "Unapply
+   policy (queues removal)" with a dialog stating restrictions lift
+   only when the device acts (command pickup / next sync) and that
+   removal is not confirmed until then; apply reads "queues install;
+   serves declarative policy". Rendered in headless Chrome and
+   pixel-inspected (backend-less static render of the production
+   markup/CSS - NOT an authenticated-workflow test and not presented
+   as one).
 
 ## 5. Application blocking: the honest capability split
 

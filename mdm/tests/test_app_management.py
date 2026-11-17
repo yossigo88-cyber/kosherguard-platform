@@ -44,15 +44,21 @@ class TestBundleIDValidation:
 
 
 class TestApplicationAccessPayload:
-    def test_blocklist_uses_blacklist_key(self):
+    def test_blocklist_uses_documented_blocked_key(self):
+        # blockedAppBundleIDs: documented current key (iOS 15+,
+        # supervised, deprecated 27.0) in the full release YAML;
+        # the legacy blacklistedAppBundleIDs (9.3, deprecated 15.0)
+        # must NOT appear.
         p = application_access_payload("blocklist", ["com.bad.app"])
         assert p["PayloadType"] == "com.apple.applicationaccess"
-        assert p["blacklistedAppBundleIDs"] == ["com.bad.app"]
+        assert p["blockedAppBundleIDs"] == ["com.bad.app"]
         assert "allowListedAppBundleIDs" not in p
+        assert "blacklistedAppBundleIDs" not in p
 
     def test_allowlist_uses_whitelist_key(self):
         p = application_access_payload("allowlist", ["com.good.app"])
         assert p["allowListedAppBundleIDs"] == ["com.good.app"]
+        assert "blockedAppBundleIDs" not in p
         assert "blacklistedAppBundleIDs" not in p
 
     def test_rejects_unknown_mode(self):

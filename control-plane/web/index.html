@@ -445,8 +445,8 @@ body.ro section.panel:not(#account-panel):not(#signout-panel) button { display: 
   <section class="panel hidden" id="apps-panel">
     <h2>Applications</h2>
     <p class="muted">Per-device app allow/block list and install, remove
-    and inventory actions. Actions queue standard MDM commands; device
-    behavior is validated in the device-testing phase.</p>
+    and inventory actions. Actions queue standard MDM commands; nothing
+    here has been verified on an iPhone yet.</p>
     <label>Device <select id="app-device"></select></label>
     <div id="app-policy-box">
       <label>Mode <select id="app-mode">
@@ -457,8 +457,8 @@ body.ro section.panel:not(#account-panel):not(#signout-panel) button { display: 
         <textarea id="app-bundle-ids" rows="4"
           placeholder="com.example.app"></textarea></label>
       <button id="app-save">Save policy</button>
-      <button id="app-apply" class="link">Apply to device (queues InstallProfile)</button>
-      <button id="app-unapply" class="link">Unapply policy (queues RemoveProfile - lifts app restrictions)</button>
+      <button id="app-apply" class="link">Apply to device (queues install; serves declarative policy)</button>
+      <button id="app-unapply" class="link">Unapply policy (queues removal)</button>
       <span class="error" id="app-error"></span>
       <span class="ok" id="app-ok"></span>
     </div>

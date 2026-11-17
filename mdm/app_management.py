@@ -13,15 +13,21 @@ mdm/profiles/com.apple.applicationaccess.yaml, read 2026-11-17):
 - ALLOWLIST mode emits the DOCUMENTED key allowListedAppBundleIDs
   (iOS 15.0+, supervised only, deprecated iOS 27.0 in favor of the
   declarative com.apple.configuration.app.settings configuration).
-- BLOCKLIST mode has NO key in the current schema: the historical
-  blacklistedAppBundleIDs name (and the presumed current
-  blockedAppBundleIDs) appear nowhere in the release YAML. This
-  builder emits the historical blacklistedAppBundleIDs key and the
-  payload is therefore UNDOCUMENTED for that mode - it must be
-  treated as unverified until a supervised test device proves the
-  key is still honored (spec Part 17), and operators should prefer
-  allowlist mode or the iOS 27 declarative configuration. This is
-  not a claim of working launch blocking.
+- BLOCKLIST mode emits the DOCUMENTED key blockedAppBundleIDs
+  (iOS 15.0+, supervised only, deprecated iOS 27.0, same declarative
+  replacement). Apple's description: the system prevents SHOWING OR
+  LAUNCHING the listed apps - genuine launch prevention on
+  supervised devices, not merely network denial. The legacy
+  blacklistedAppBundleIDs key (iOS 9.3, deprecated 15.0) is NOT
+  used. An earlier read of this module claimed no blocklist key
+  existed in the current schema; that was a partial-read error,
+  corrected against the full release YAML (124,587 bytes, both keys
+  present).
+
+Both modes also flow through the declarative
+com.apple.configuration.app.settings configuration (DeniedApps /
+AllowedApps) for iOS 27+ via ddm_ops; the profile keys above cover
+iOS 15-26 supervised devices.
 
 All applicationaccess behavior remains BUILT-UNVERIFIED on device;
 no payload here has been validated against a supervised device.
@@ -102,7 +108,7 @@ def application_access_payload(mode: str, bundle_ids) -> dict:
     if mode == "allowlist":
         payload["allowListedAppBundleIDs"] = ids
     else:
-        payload["blacklistedAppBundleIDs"] = ids
+        payload["blockedAppBundleIDs"] = ids
     return payload
 
 

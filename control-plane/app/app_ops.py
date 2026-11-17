@@ -119,7 +119,8 @@ def apply_policy(session: Session, tenant_id: int, device_id: int,
     first so the stale restrictions are actually lifted (review
     finding A1). The identifier last queued is recorded on the policy
     row only after the install command is queued; a queueing failure
-    leaves the record unchanged.
+    leaves the record unchanged. Recording it also starts DDM serving
+    of the app-settings declaration to syncing devices.
     """
     _device(session, tenant_id, device_id)
     row = _policy_row(session, tenant_id, device_id)
@@ -156,6 +157,11 @@ def unapply_policy(session: Session, tenant_id: int, device_id: int,
     identifier recorded when the policy was last applied. The stored
     policy intent (mode and bundle ids) is kept so it can be
     re-applied; profile_identifier is cleared to mark it not applied.
+    Clearing it also stops DDM serving of the app-settings declaration
+    (ddm_ops.configurations), so declaratively managed devices withdraw
+    that configuration at their next sync. Neither the RemoveProfile
+    result nor the declaration withdrawal is confirmed until the
+    device acts: this queues removal, it does not prove it.
     """
     _device(session, tenant_id, device_id)
     row = _policy_row(session, tenant_id, device_id)

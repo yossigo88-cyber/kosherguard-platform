@@ -168,8 +168,12 @@ def make_app_with_app_policy(engine, bundle_ids='["com.example.game"]'):
         s.add_all([e, e2])
         s.flush()
         from app.models import DeviceAppPolicy
+        # profile_identifier set: the policy is in the APPLIED state,
+        # which is what makes ddm_ops serve the declaration.
         s.add(DeviceAppPolicy(tenant_id=tenant.id, device_id=d.id,
-                              mode="blocklist", bundle_ids=bundle_ids))
+                              mode="blocklist", bundle_ids=bundle_ids,
+                              profile_identifier=(
+                                  "com.kosherguard.profile.appaccess")))
     settings = Settings({"KG_DATABASE_URL": "postgresql://placeholder",
                          "KG_PUBLICATIONS_ROOT": "/tmp/kg-pub-test"})
     return create_app(settings, engine=engine)

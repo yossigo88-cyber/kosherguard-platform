@@ -388,8 +388,10 @@ final class FilterSyncViewModel {
         // device-local copy of the control plane's application
         // policy, bound to the current endpoint identity. On the
         // supervised route the MDM profile is the enforcement; this
-        // mirror feeds the personally-owned route's visibility and
-        // future shield application. A fetch failure changes nothing
+        // mirror feeds dashboard visibility only - on a
+        // personally-owned device the server policy CANNOT select
+        // apps (opaque device-local tokens), so it never drives
+        // AppShieldController. A fetch failure changes nothing
         // (fail safe: the last good policy stays).
         if let baseURL = configuration.controlPlaneBaseURL,
            let deviceID = configuration.deviceID,
@@ -500,6 +502,14 @@ struct FilterStatusView: View {
                         .foregroundStyle(.secondary)
                     Button("Sync filter data now") { sync.syncNow() }
                         .disabled(!sync.canSync)
+                }
+                // Personally-owned, device-local app blocking (Screen
+                // Time route). Separate from the supervised MDM
+                // bundle-ID policy on purpose: the server cannot pick
+                // apps here. Consent is Apple's system prompt, only
+                // ever from the button inside this section.
+                Section("App blocking (this device)") {
+                    AppBlockingSection()
                 }
                 Section("Device credential sign-in") {
                     CredentialSignInView()
