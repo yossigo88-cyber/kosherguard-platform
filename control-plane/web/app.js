@@ -105,12 +105,13 @@ $("app-shield-toggle").addEventListener("click", async () => {
   const cur = await api(`/api/devices/${id}/app-policy`);
   const next = !(cur.status === 200 && cur.body.shield_active);
   const r = await api(`/api/devices/${id}/app-policy/shield`,
-    {method: "PUT", body: JSON.stringify({active: next})});
+    {method: "PUT", headers: HDR, body: JSON.stringify({active: next})});
   if (r.status === 200) {
+    // Reload first: loadAppPolicy clears the status line on entry.
+    await loadAppPolicy();
     $("app-ok").textContent = next
       ? "Shield gate on. The device's own Screen Time selection is now remotely activated."
       : "Shield gate off. The device's shield is paused remotely.";
-    await loadAppPolicy();
   } else {
     $("app-error").textContent = r.body.error || "Shield toggle failed";
   }

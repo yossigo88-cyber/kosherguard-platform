@@ -441,7 +441,28 @@ expansion to all-apps/all-except; publication still held.
    ServerToken changes on save-while-applied; save-on-unapplied
    queues nothing; the mode-switch lifecycle test updated to the
    new 3-install expectation.
-4. **Apple API audit against the official sample.** Our
+4. **Authenticated dashboard pixel proof (2026-11-17).** The new
+   controls were verified through a REAL authenticated workflow, not
+   unhidden markup: the production app booted on a local pgserver
+   Postgres, a tenant/owner/device/enrollment seeded, MFA enrolled
+   through the real `/api/auth/mfa/*` endpoints, headless Chrome
+   signed in through the actual login form (email + password +
+   TOTP), then exercised the Applications panel: gate default OFF
+   with the honest disclaimer, toggle ON (server state + label
+   flip), save while unapplied ("Saved. Not applied to the device
+   yet - use Apply to enforce it."), Apply ("Queued InstallProfile"),
+   edit + save while applied ("Saved and re-queued to the device
+   (command #N). The old restrictions stay on the device until the
+   replacement lands."). Screenshots retained with the checkpoint
+   report. The run caught and fixed two real UI defects in the new
+   code before publication: the toggle's PUT omitted the
+   `X-KosherGuard-Request`/Content-Type headers (CSRF guard would
+   have rejected every dashboard toggle), and the toggle's
+   confirmation line was set before `loadAppPolicy()`, which clears
+   it on entry - the confirmation would never have rendered. Both
+   were in unpublished new code; reported for independent severity
+   assessment per the standing rule.
+5. **Apple API audit against the official sample.** Our
    `URLFilterConfiguration.swift` call sequence matches Apple's
    FilteringTrafficByURL sample
    (`loadFromPreferences` -> `setConfiguration(pirServerURL:
