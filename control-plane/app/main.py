@@ -308,7 +308,7 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
                 "/api/policies", "/api/devices", "/api/groups",
                 "/api/publications", "/api/exceptions",
                 "/api/exception-requests", "/api/credentials",
-                "/api/offboarding", "/api/mdm")):
+                "/api/offboarding", "/api/mdm", "/api/privacy")):
             lock_tenant(session, user.tenant_id)
         return user
 
@@ -1247,6 +1247,8 @@ def create_app(settings: Settings, engine=None) -> FastAPI:
         row = session.get(Device, device_id)
         if row is None or row.tenant_id != user.tenant_id:
             return error(404, "device not found")
+        if row.state != "active":
+            return error(409, "device is not active; credentials cannot be minted")
         device = row
         scope = (body.scope if body else "dataset").strip()
         if scope not in ("dataset", "proxy", "doh"):
