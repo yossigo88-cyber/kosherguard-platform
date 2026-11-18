@@ -18,9 +18,11 @@ NetworkExtension, NEURLFilter wire format or a physical device - those
 remain device-gated and are named as such in the final report.
 """
 
+import http.server
 import importlib.util
 import os
 import sys
+import threading
 
 import pyotp
 import pytest
@@ -49,6 +51,7 @@ ufapp = importlib.util.module_from_spec(_spec)
 sys.modules["ufapp"] = ufapp
 _spec.loader.exec_module(ufapp)
 from ufapp.dataset import URLRule, build_dataset  # noqa: E402
+from ufapp.revocations import RevocationFeed  # noqa: E402
 from ufapp.server import create_app as uf_create_app  # noqa: E402
 
 PASSWORD = "a long enough password"
@@ -212,3 +215,49 @@ def test_connected_personal_lane_flow(rig):
                    headers=HDR).json()
     assert again["created"] is False
     assert again["state"] == "offboarded"
+
+    # 11. The ALREADY-MINTED token must die too. The edge reads the
+    #     real /api/credential-revocations feed (authenticated with
+    #     the device's own dataset token - the documented edge-reader
+    #     path); its content comes from the control plane's actual
+    #     post-offboarding database state. A real RevocationFeed pulls
+    #     that body over real HTTP (local loopback server) into the
+    #     live shared set the running verifier consults.
+    class FeedHandler(http.server.BaseHTTPRequestHandler):
+        body = b'{"revoked_jtis": []}'
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(type(self).body)
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), FeedHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        feed = RevocationFeed(
+            f"http://127.0.0.1:{server.server_address[1]}",
+            token_provider=lambda: token)
+        live = TestClient(uf_create_app(
+            dataset, device_token_key=TOKEN_KEY.encode(),
+            revocation_feed=feed))
+        # Before the offboarding revocation propagates: the token still
+        # works - revocation is NOT instant; it lands on the next feed
+        # refresh (production loop interval: 60s) and every token also
+        # expires on its own short TTL regardless.
+        assert feed.refresh() == 0
+        assert live.get("/v1/dataset/manifest", headers=auth) \
+            .status_code == 200
+        # The feed body is the control plane's REAL endpoint output,
+        # read as the edge would read it.
+        body = c.get("/api/credential-revocations", headers=auth)
+        assert body.status_code == 200, body.json()
+        FeedHandler.body = body.content
+        assert feed.refresh() >= 1
+        # After the refresh the previously minted token is refused.
+        assert live.get("/v1/dataset/manifest", headers=auth) \
+            .status_code == 401
+    finally:
+        server.shutdown()
+        server.server_close()
