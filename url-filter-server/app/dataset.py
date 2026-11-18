@@ -53,6 +53,16 @@ def build_dataset(rules: list[URLRule], version: int,
     prefilter hit that is actually excepted (Bloom false positives and
     exceptions resolve off-device).
 
+    DEVICE KEY SET: the prefilter Bloom is built from
+    pir_export.device_block_keywords - the exact keys the device PIR
+    dataset carries (normalized, www-stripped, exact allows excluded,
+    ancestor block/allow conflicts REFUSED loudly at publish time).
+    Apple's default ParsingConfiguration enumerates up the domain
+    hierarchy, so a Bloom built from raw block URLs could match an
+    ancestor key the PIR dataset refused, or miss Apple's canonical
+    (www-stripped, lowercased) query form; one shared key set keeps
+    the prefilter and the PIR dataset consistent by construction.
+
     The prefilter uses Apple's documented URL Filter construction
     (apple_prefilter.py): FNV-1a 32 + MurmurHash3 32 with double
     hashing, Punycoded entries. The manifest publishes every parameter
@@ -61,14 +71,20 @@ def build_dataset(rules: list[URLRule], version: int,
     """
     if version < 1:
         raise ValueError("version must be >= 1")
+    # Relative import: this module is loaded under different package
+    # names by the server suite (app.dataset) and the control-plane
+    # E2E (ufapp.dataset via importlib); `from app.pir_export` breaks
+    # in the E2E context where `app` is the control-plane package.
+    from .pir_export import device_block_keywords
     blocked = [r for r in rules if r.verdict == "block"]
     for r in rules:
         if r.verdict not in ("block", "allow"):
             raise ValueError(f"unknown verdict: {r.verdict!r}")
-    prefilter = ApplePrefilter(max(1, len(blocked)), fp_rate,
+    device_keys = device_block_keywords(rules)
+    prefilter = ApplePrefilter(max(1, len(device_keys)), fp_rate,
                                murmur_seed)
-    for r in blocked:
-        prefilter.add(r.url)
+    for key in device_keys:
+        prefilter.add(key)
 
     verdicts = json.dumps(
         {r.url: {"verdict": r.verdict, "category": r.category}

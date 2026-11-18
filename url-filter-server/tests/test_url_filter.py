@@ -466,3 +466,57 @@ class TestDeviceExportWWWCanonicalization:
             [URLRule("a.example", "block", "ads"),
              URLRule("www.a.example", "allow", "")]))
         assert rows == []
+
+
+class TestDeviceAncestorConflictRefusal:
+    """Apple's enumerated matching has NO allow verdict: a block key
+    that is a strict domain ancestor of an allowed key would block the
+    allowed host with no way to carve the exception on the personal
+    URL Filter lane. The pipeline must REFUSE such pairs loudly at
+    publish time, never silently block the allowed site or silently
+    drop the block."""
+
+    def test_ancestor_block_with_descendant_allow_refused(self):
+        import pytest
+        from app.pir_export import device_block_keywords
+        with pytest.raises(ValueError) as exc:
+            device_block_keywords(
+                [URLRule("ads.example", "block", "ads"),
+                 URLRule("safe.ads.example", "allow", "")])
+        assert "safe.ads.example" in str(exc.value)
+        assert "ads.example" in str(exc.value)
+
+    def test_deep_ancestor_conflict_refused(self):
+        import pytest
+        from app.pir_export import device_block_keywords
+        with pytest.raises(ValueError):
+            device_block_keywords(
+                [URLRule("example", "block", ""),
+                 URLRule("a.b.example", "allow", "")])
+
+    def test_ancestor_allow_with_descendant_block_is_expressible(self):
+        """The reverse direction is fine: the allow key is never
+        emitted, and the descendant block key blocks only its own
+        subtree - no conflict."""
+        from app.pir_export import device_block_keywords
+        keys = device_block_keywords(
+            [URLRule("example", "allow", ""),
+             URLRule("bad.example", "block", "")])
+        assert keys == ["bad.example"]
+
+    def test_bloom_uses_the_same_device_key_set(self):
+        """The on-device prefilter must match the PIR dataset's keys:
+        exact-allowed hosts are absent from BOTH, and Apple's
+        canonical (www-stripped, lowercased) form is what the Bloom
+        answers for."""
+        from app.dataset import build_dataset
+        ds = build_dataset(
+            [URLRule("WWW.Ads.EXAMPLE", "block", "ads"),
+             URLRule("allowed.example", "allow", "")],
+            version=1, provenance="test")
+        assert ds.prefilter.might_contain("ads.example")
+        # The exact-allowed host is not a device key; its Bloom bit
+        # may still be set only by false positive, so assert the
+        # stronger property: it is absent from the device key set.
+        from app.pir_export import device_block_keywords
+        assert device_block_keywords(ds.rules) == ["ads.example"]

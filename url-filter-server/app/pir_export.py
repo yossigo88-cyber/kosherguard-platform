@@ -111,48 +111,93 @@ DEVICE_EXPORT_MARKER = (
     "NEURLFilter; value is Apple's ignored placeholder")
 
 
-def export_device_textpb(rules: list[URLRule]) -> str:
-    """Serialize the DEVICE (NEURLFilter) dataset: BLOCK ROWS ONLY.
+def device_keyword(url: str) -> str:
+    """The canonical DEVICE dataset key for a rule URL: normalized
+    (lowercase, no trailing dot) and www-stripped, because Apple's
+    default ParsingConfiguration lowercases and strips the `www`
+    subdomain from requested URLs (init docs, fetched 2026-11-17).
+    A www-prefixed or differently-cased key would be a dead row."""
+    keyword = normalize_keyword(url)
+    if not keyword:
+        raise ValueError("empty keyword")
+    if keyword.startswith("www."):
+        keyword = keyword[len("www."):]
+    return keyword
 
-    Presence semantics: on device, a keyword PRESENT in this dataset is
-    BLOCKED - the system ignores the value (Apple's placeholder "1").
-    An allow row emitted here would therefore BLOCK the allowed site,
-    so this export:
 
-    - never emits allow rules;
-    - applies allow-over-block precedence per normalized keyword,
-      mirroring the on-device engine's explicit-allow-beats-block
-      order (FilterVerdictEngine): a keyword with ANY allow rule is
-      excluded even when a (category) block rule also names it;
-    - collapses duplicate block keywords to one row;
-    - emits Apple's placeholder value, not a verdict string: carrying
-      "block:<category>" here would pretend the value has on-device
-      meaning it does not have.
+def _strict_domain_ancestors(host: str) -> list[str]:
+    """Every strict domain ancestor: a.b.example.com -> [b.example.com,
+    example.com, com]. Label-based, NOT public-suffix aware (the PSL
+    is out of scope; a block of an effective TLD simply conflicts
+    loudly with every allow beneath it)."""
+    parts = host.split(".")
+    return [".".join(parts[i:]) for i in range(1, len(parts))]
 
-    Invalid rows still raise (unknown verdict, empty keyword): an
-    export that silently drops a malformed BLOCK rule would silently
-    weaken filtering.
+
+def device_block_keywords(rules: list[URLRule]) -> list[str]:
+    """The exact key set the DEVICE (NEURLFilter) dataset may contain.
+
+    Grounded in Apple's documentation (fetched 2026-11-17): the
+    dataset has NO allow concept (presence means block; the value is
+    a placeholder), and the default ParsingConfiguration makes the
+    system enumerate ALL sub-URL combinations walking the domain and
+    path hierarchies. Consequences applied here:
+
+    - exact allow-beats-block: a key with ANY allow rule is excluded
+      even when a block rule also names it (mirrors the supervised
+      engine's explicit-allow-beats-block order at exact-key level);
+    - ANCESTOR CONFLICTS ARE REFUSED: a block key that is a strict
+      domain ancestor of an allowed key cannot be faithfully
+      expressed - enumeration means the allowed host's request also
+      matches the ancestor key, and there is no negative verdict to
+      carve the exception. Silently emitting the block would block an
+      explicitly allowed site; silently dropping it would weaken the
+      policy. Refuse loudly and name both keys: the control plane
+      must enumerate the blocked hosts individually (excluding the
+      allowed subtree) instead of blocking the ancestor.
+
+    Invalid rows raise (unknown verdict, empty keyword): an export
+    that silently drops a malformed BLOCK rule would silently weaken
+    filtering.
     """
     allowed: set[str] = set()
     blocked: set[str] = set()
     for rule in rules:
         if rule.verdict not in ("block", "allow"):
             raise ValueError(f"unknown verdict: {rule.verdict!r}")
-        keyword = normalize_keyword(rule.url)
-        if not keyword:
-            raise ValueError("empty keyword")
-        # Apple's default ParsingConfiguration strips the "www"
-        # subdomain from requested URLs (init docs, fetched
-        # 2026-11-17: "excludes scheme and the `www` subdomain"), so a
-        # www-prefixed dataset key would be dead weight under default
-        # parsing. Canonicalize to the stripped form Apple queries.
-        if keyword.startswith("www."):
-            keyword = keyword[len("www."):]
+        keyword = device_keyword(rule.url)
         if rule.verdict == "allow":
             allowed.add(keyword)
         else:
             blocked.add(keyword)
-    rows = sorted(blocked - allowed)
+    effective = blocked - allowed
+    for allow_key in sorted(allowed):
+        for ancestor in _strict_domain_ancestors(allow_key):
+            if ancestor in effective:
+                raise ValueError(
+                    "unexpressible exception on the URL Filter lane: "
+                    f"allow {allow_key!r} sits under block "
+                    f"{ancestor!r}; Apple's enumerated matching has no "
+                    "allow verdict, so enumerate the blocked hosts "
+                    "individually (excluding the allowed subtree) "
+                    "instead of blocking the ancestor")
+    return sorted(effective)
+
+
+def export_device_textpb(rules: list[URLRule]) -> str:
+    """Serialize the DEVICE (NEURLFilter) dataset: BLOCK ROWS ONLY.
+
+    Presence semantics: on device, a keyword PRESENT in this dataset is
+    BLOCKED - the system ignores the value (Apple's placeholder "1").
+    An allow row emitted here would therefore BLOCK the allowed site.
+    The key set comes from device_block_keywords (exact allow
+    precedence, www canonicalization, ancestor-conflict refusal). This
+    export additionally collapses duplicates and emits Apple's
+    placeholder value, not a verdict string: carrying
+    "block:<category>" here would pretend the value has on-device
+    meaning it does not have.
+    """
+    rows = device_block_keywords(rules)
     return DEVICE_EXPORT_MARKER + "\n" + "".join(
         'rows {\n'
         f'  keyword: "{_escape_text_string(keyword)}"\n'
