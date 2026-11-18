@@ -500,7 +500,7 @@ public struct FilterRuleStore {
         let data = try JSONEncoder().encode(Tombstone(reason: reason))
         var options: Data.WritingOptions = [.atomic]
         #if canImport(Darwin)
-        options.insert(.completeUntilFirstUserAuthentication)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
         #endif
         try data.write(to: tombstoneFile, options: options)
     }
@@ -543,7 +543,7 @@ public struct FilterRuleStore {
             EpochRecord(nonce: UUID().uuidString))
         var options: Data.WritingOptions = [.atomic]
         #if canImport(Darwin)
-        options.insert(.completeUntilFirstUserAuthentication)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
         #endif
         try data.write(to: epochFile, options: options)
     }
@@ -714,7 +714,7 @@ public struct FilterRuleStore {
         let data = try JSONEncoder().encode(floor)
         var options: Data.WritingOptions = [.atomic]
         #if canImport(Darwin)
-        options.insert(.completeUntilFirstUserAuthentication)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
         #endif
         try data.write(to: floorFile, options: options)
     }
@@ -864,7 +864,7 @@ public struct FilterRuleStore {
         // make the rules unreadable after lock and silently disable
         // this layer. Lock-time accessibility on real hardware is
         // UNVERIFIED (no device build) - documented in ios/README.md.
-        options.insert(.completeUntilFirstUserAuthentication)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
         #endif
         try JSONEncoder().encode(bootstrap).write(to: bootstrapFile,
                                                   options: options)
@@ -982,7 +982,7 @@ public struct FilterRuleStore {
             at: directory, withIntermediateDirectories: true)
         var options: Data.WritingOptions = [.atomic]
         #if canImport(Darwin)
-        options.insert(.completeUntilFirstUserAuthentication)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
         #endif
         try data.write(to: configurationFile, options: options)
     }
@@ -1083,7 +1083,7 @@ public struct FilterRuleStore {
         #if canImport(Darwin)
         // See saveBootstrap: locked-device filtering requires the
         // after-first-unlock protection class, not completeFileProtection.
-        options.insert(.completeUntilFirstUserAuthentication)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
         #endif
         // Same date strategy as canonicalBytes/load: mixed strategies
         // would make every saved snapshot undecodable.
