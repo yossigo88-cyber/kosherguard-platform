@@ -1640,12 +1640,18 @@ final class BuildConfigGuardTests: XCTestCase {
     func testXcodeTargetSourceMembershipClosure() throws {
         let root = try repoRoot()
         let sourcesDir = root.appendingPathComponent("ios/Sources")
-        var typeToFile: [String: String] = [:]
+        var typeToFile: [String: Set<String>] = [:]
         var fileText: [String: String] = [:]
+        // Sorted enumeration: directory order differs between
+        // filesystems (Linux ext4 vs macOS APFS), and with a
+        // name-keyed registry the outcome must not depend on it.
         let enumerator = FileManager.default.enumerator(
             at: sourcesDir, includingPropertiesForKeys: nil)!
-        for case let file as URL in enumerator
-        where file.pathExtension == "swift" {
+        let swiftFiles = enumerator.allObjects.compactMap {
+            ($0 as? URL)
+        }.filter { $0.pathExtension == "swift" }
+            .sorted { $0.path < $1.path }
+        for file in swiftFiles {
             let text = try String(contentsOf: file, encoding: .utf8)
             fileText[file.lastPathComponent] = text
             // Private declarations are file-scoped: invisible to
@@ -1654,7 +1660,14 @@ final class BuildConfigGuardTests: XCTestCase {
             for match in text.matches(of:
                 #/(?:(private)\s+)?(?:final class|class|struct|enum|protocol)\s+([A-Z][A-Za-z0-9_]*)/#) {
                 guard match.1 == nil else { continue }
-                typeToFile[String(match.2)] = file.lastPathComponent
+                // Same-named nested types exist across targets (e.g.
+                // FilterSyncController.State, CredentialController
+                // .State, AppShieldViewModel.State). Lexical analysis
+                // cannot tell them apart, so the registry keeps EVERY
+                // defining file per name; a reference is satisfied
+                // when any definer is a member of the same target.
+                typeToFile[String(match.2), default: []]
+                    .insert(file.lastPathComponent)
             }
         }
         let pbx = try String(contentsOf: root.appendingPathComponent(
@@ -1707,13 +1720,16 @@ final class BuildConfigGuardTests: XCTestCase {
                 let tokens = Set(code.components(
                     separatedBy: CharacterSet.alphanumerics.inverted))
                 for token in tokens {
-                    guard let defining = typeToFile[token],
-                          defining != file,
-                          !members.contains(defining)
+                    guard let definers = typeToFile[token]
                     else { continue }
+                    // Satisfied if ANY defining file is a target
+                    // member (collision-tolerant lexical closure).
+                    if definers.contains(where: {
+                        members.contains($0) }) { continue }
                     failures.append("\(target): \(file) references "
-                        + "\(token) (defined in \(defining), "
-                        + "not a member of the target)")
+                        + "\(token) (defined in "
+                        + "\(definers.sorted().joined(separator: ", "))"
+                        + ", not a member of the target)")
                 }
             }
         }

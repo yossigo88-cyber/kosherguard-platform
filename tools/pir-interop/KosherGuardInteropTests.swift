@@ -47,15 +47,16 @@ struct KosherGuardInteropTests {
         // loadUsecase resolves "<fileStem>-<shard>.{params.txtpb,bin}"
         // relative to the process working directory.
         // NOTE: on Linux (swift-corelibs-foundation)
-        // changeCurrentDirectoryPath THROWS; on Darwin it returns a
-        // plain Bool. The #require macro rejects a throwing call even
-        // with `try` inside it (run 44237436996), so the platforms are
-        // spelled out.
-        #if canImport(Darwin)
-        #require(FileManager.default.changeCurrentDirectoryPath(workdir))
-        #else
-        try FileManager.default.changeCurrentDirectoryPath(workdir)
-        #endif
+        // changeCurrentDirectoryPath is a NON-throwing Bool on both
+        // platforms (swift-6.1-RELEASE Foundation and
+        // swift-corelibs-foundation alike; the earlier
+        // throws-on-Linux diagnosis was wrong). A false result for a
+        // bad path must not slip through silently, so require the
+        // actual CWD afterwards: plain property access + ==, no
+        // throwing call inside the #require macro expansion (run
+        // 44237436996 rejected one even with `try` inside).
+        _ = FileManager.default.changeCurrentDirectoryPath(workdir)
+        #require(FileManager.default.currentDirectoryPath == workdir)
 
         // Same wiring as Sources/PIRService/main.swift.
         let usecaseStore = UsecaseStore()
