@@ -445,3 +445,24 @@ class TestDeviceExportMarkerBinding:
         assert out.splitlines()[0] == DEVICE_EXPORT_MARKER
         from app.pir_export import parse_textpb
         assert parse_textpb(out) == []
+
+
+class TestDeviceExportWWWCanonicalization:
+    """Apple's default ParsingConfiguration strips the www subdomain
+    from requested URLs, so the device export canonicalizes
+    www-prefixed rules to the stripped form Apple actually queries."""
+
+    def test_www_prefix_stripped_from_block_key(self):
+        from app.pir_export import export_device_textpb, parse_textpb
+        rows = parse_textpb(export_device_textpb(
+            [URLRule("WWW.Ads.EXAMPLE", "block", "ads")]))
+        assert rows == [("ads.example", "1")]
+
+    def test_www_allow_still_excludes_stripped_block(self):
+        """Allow precedence applies AFTER www-canonicalization:
+        allowing www.a.example must exclude a block of a.example."""
+        from app.pir_export import export_device_textpb, parse_textpb
+        rows = parse_textpb(export_device_textpb(
+            [URLRule("a.example", "block", "ads"),
+             URLRule("www.a.example", "allow", "")]))
+        assert rows == []

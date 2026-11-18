@@ -141,6 +141,13 @@ def export_device_textpb(rules: list[URLRule]) -> str:
         keyword = normalize_keyword(rule.url)
         if not keyword:
             raise ValueError("empty keyword")
+        # Apple's default ParsingConfiguration strips the "www"
+        # subdomain from requested URLs (init docs, fetched
+        # 2026-11-17: "excludes scheme and the `www` subdomain"), so a
+        # www-prefixed dataset key would be dead weight under default
+        # parsing. Canonicalize to the stripped form Apple queries.
+        if keyword.startswith("www."):
+            keyword = keyword[len("www."):]
         if rule.verdict == "allow":
             allowed.add(keyword)
         else:

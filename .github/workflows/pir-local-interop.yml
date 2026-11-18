@@ -33,7 +33,22 @@ name: PIR local interop
 on:
   push:
     branches: [stage-12-free-ios-build]
+    # Only run when PIR-relevant sources change; unrelated iOS/docs
+    # pushes must not rerun this workflow. Final verification at the
+    # branch tip uses workflow_dispatch when the tip push touched
+    # none of these paths (the report then cites the manual run at
+    # the tip SHA, not an inherited earlier tree).
+    paths:
+      - '.github/workflows/pir-local-interop.yml'
+      - 'tools/pir-interop/**'
+      - 'deploy/pir/**'
+      - 'url-filter-server/**'
   workflow_dispatch:
+
+# A newer push makes an in-flight run of this workflow obsolete.
+concurrency:
+  group: pir-interop-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -84,8 +99,7 @@ jobs:
         run: swift build -c release --product PIRService
 
       - name: Verify SwiftPM checkouts match the pinned Package.resolved
-        run: python3 kgp/tools/pir-interop/verify_pins.py \
-          apple-pir/Package.resolved apple-pir/.build/workspace-state.json
+        run: python3 kgp/tools/pir-interop/verify_pins.py apple-pir/Package.resolved apple-pir/.build/workspace-state.json
 
       - name: Check out the pinned swift-homomorphic-encryption and build PIRProcessDatabase
         timeout-minutes: 150
