@@ -163,10 +163,10 @@ struct URLFilterConfiguration {
                 status: "preferences unreadable",
                 lastError: String(describing: error))
         }
+        let disconnectError = await manager.lastDisconnectError
         return SystemReadback(
             isEnabled: manager.isEnabled,
             status: String(describing: manager.status),
-            lastError: (await manager.lastDisconnectError)
-                .map { String(describing: $0) })
+            lastError: disconnectError.map { String(describing: $0) })
     }
 }
