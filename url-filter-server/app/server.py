@@ -164,7 +164,9 @@ def build_runtime(dataset: Dataset,
                   device_token_key: bytes | None = None,
                   control_plane_url: str | None = None,
                   token_provider=None,
-                  refresh_interval: float = 60.0):
+                  refresh_interval: float = 60.0,
+                  publication_root: str | None = None,
+                  watch_interval: float = 60.0):
     """Service entrypoint wiring: build the app WITH its revocation
     feed and refresh loop running. Returns (app, stop_event); set the
     event to stop the loop (the ASGI server's own lifecycle owns
@@ -175,12 +177,40 @@ def build_runtime(dataset: Dataset,
     credential (minted via POST /api/devices/{id}/dataset-credential
     with a guardian session); after the last successful pull, staleness
     is bounded by the credential's lifetime (at most 86400s) because
-    expired tokens fail verification anyway."""
+    expired tokens fail verification anyway.
+
+    publication_root, when set, starts the automatic publish ->
+    rebuild -> serve chain (PublicationWatcher on the tenant's
+    publication root): every control-plane publish rebuilds and swaps
+    the served dataset with no human POST and no restart. A failed
+    poll keeps the last good dataset; watcher.status() exposes the
+    loaded generation, last build time and last error."""
     feed = None
     stop = None
     if control_plane_url and token_provider is not None:
         feed = RevocationFeed(control_plane_url, token_provider)
         stop = feed.start_refresh_loop(interval=refresh_interval)
+    ref = DatasetRef(dataset)
+    stops = [s for s in [stop] if s is not None]
+    if publication_root is not None:
+        from .publication_watch import PublicationWatcher
+        watcher = PublicationWatcher(publication_root, ref)
+        stops.append(watcher.start_refresh_loop(
+            interval=watch_interval))
     app = create_app(dataset, device_token_key=device_token_key,
-                     revocation_feed=feed)
-    return app, stop
+                     revocation_feed=feed, dataset_ref=ref)
+    if not stops:
+        return app, None
+    if len(stops) == 1:
+        return app, stops[0]
+    import threading
+    combined = threading.Event()
+
+    def propagate():
+        combined.wait()
+        for s in stops:
+            s.set()
+
+    threading.Thread(target=propagate, name="runtime-stop",
+                     daemon=True).start()
+    return app, combined

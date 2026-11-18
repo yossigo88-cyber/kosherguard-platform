@@ -1,0 +1,24 @@
+# Configuration only. NOT installed or started during code build.
+[Unit]
+Description=KosherGuard URL Filter dataset service (personal lane)
+After=network-online.target
+[Service]
+Type=simple
+User=kosherguard
+Group=kosherguard
+WorkingDirectory=/opt/kosherguard/url-filter-server
+EnvironmentFile=/etc/kosherguard/url-filter.env
+# url-filter.env: KG_PUBLICATION_ROOT (tenant publication root),
+# KG_DEVICE_TOKEN_KEY, KG_WATCH_INTERVAL, KG_LISTEN; optional
+# KG_PIR_EXPORT_PATH + KG_PIR_REGEN_CMD for the PIR generation update.
+ExecStart=/opt/kosherguard/venv/bin/python -m app
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+ReadWritePaths=/var/lib/kosherguard
+[Install]
+WantedBy=multi-user.target
