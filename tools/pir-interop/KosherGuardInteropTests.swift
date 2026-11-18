@@ -48,8 +48,14 @@ struct KosherGuardInteropTests {
         // relative to the process working directory.
         // NOTE: on Linux (swift-corelibs-foundation)
         // changeCurrentDirectoryPath THROWS; on Darwin it returns a
-        // plain Bool. `try` inside #require covers both.
-        #require(try FileManager.default.changeCurrentDirectoryPath(workdir))
+        // plain Bool. The #require macro rejects a throwing call even
+        // with `try` inside it (run 44237436996), so the platforms are
+        // spelled out.
+        #if canImport(Darwin)
+        #require(FileManager.default.changeCurrentDirectoryPath(workdir))
+        #else
+        try FileManager.default.changeCurrentDirectoryPath(workdir)
+        #endif
 
         // Same wiring as Sources/PIRService/main.swift.
         let usecaseStore = UsecaseStore()
