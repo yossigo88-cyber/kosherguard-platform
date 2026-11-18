@@ -18,14 +18,17 @@ Environment:
                         this path, atomically (tmp + rename).
   KG_PIR_REGEN_CMD      when set, run after the export is written
                         (e.g. prepare-dataset + SIGHUP the PIR
-                        service). Failures are recorded on the
-                        watcher's hook_error, never roll back the
-                        served dataset.
+                        service). Staged activation: the export and
+                        this command complete BEFORE the new dataset
+                        is served; a failure keeps the last good
+                        generation serving and the poll retries, so
+                        Bloom/prefilter and the PIR data never serve
+                        different committed generations.
 
 The automatic chain: control-plane publish (publication worker ->
 Publisher activates the generation) -> PublicationWatcher poll ->
-build_dataset -> DatasetRef swap -> served manifest/prefilter/shards
-change -> optional device PIR export + regeneration command. No human
+build_dataset -> device PIR export + regeneration (staged) ->
+DatasetRef swap -> served manifest/prefilter/shards change. No human
 POST and no restart anywhere in the chain.
 """
 

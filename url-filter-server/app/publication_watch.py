@@ -40,11 +40,25 @@ def _norm(host) -> str:
 def rules_from_generation(generation_dir) -> list[URLRule]:
     """Derive the dataset rule set from one published generation.
 
-    Mirrors the device filter-rules endpoint's semantics
-    (control-plane main.py): blocklist -> block, allowlist overlays
-    -> allow. Categories expand through the SAME generation's
-    categories.json (domains -> [categories]): category_block marks
-    each listed domain block, category_allow overlays allow.
+    The input contract is the control plane's canonical published
+    policy (publication_ops.export_policy_documents): top-level
+    default_policy / allowlist / blocklist plus NESTED
+    category_rules:{allow, block}, engine-validated before publish.
+    Anything off that contract - unknown keys, wrong types, the
+    API-shaped top-level category_block/category_allow, or
+    default_policy other than 'allow' - is refused loudly: a policy
+    misread as empty is a fail-open filter. default_policy 'block'
+    can never be expressed as a membership dataset (the dataset's
+    presence means block; there is no block-everything-else member),
+    so it is refused rather than silently degraded.
+
+    Categories expand through the SAME generation's categories.json
+    (domains -> [categories]): category_rules.block marks each listed
+    domain block, category_rules.allow overlays allow. Allows overlay
+    blocks, exactly like the device feed. Filtering _schedules are
+    engine-time metadata; a membership dataset cannot express time
+    windows, so a scheduled block applies for the whole publication
+    (over-blocks, never under-blocks).
     """
     generation_dir = Path(generation_dir)
     try:
@@ -52,8 +66,38 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
                             .read_bytes().decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WatchError(f"unreadable policy document: {exc}") from exc
-    if not isinstance(policy, dict) or "blocklist" not in policy:
-        raise WatchError("policy document has no blocklist")
+    if not isinstance(policy, dict):
+        raise WatchError("policy document is not an object")
+    allowed_keys = {"default_policy", "allowlist", "blocklist",
+                    "category_rules", "_schedules", "_meta"}
+    unknown = sorted(set(policy) - allowed_keys)
+    if unknown:
+        raise WatchError(f"policy document has unknown keys: {unknown}")
+    if policy.get("default_policy") != "allow":
+        raise WatchError(
+            "default_policy {!r} is not expressible as a URL Filter "
+            "membership dataset (presence = block only); refusing "
+            "rather than degrading it into an allow-default blocklist"
+            .format(policy.get("default_policy")))
+
+    def str_list(value, field):
+        if not isinstance(value, list) or not all(
+                isinstance(v, str) for v in value):
+            raise WatchError(f"policy document {field} must be a list "
+                             "of strings")
+        return value
+
+    blocklist = str_list(policy.get("blocklist", []), "blocklist")
+    allowlist = str_list(policy.get("allowlist", []), "allowlist")
+    category_rules = policy.get("category_rules", {})
+    if not isinstance(category_rules, dict) or \
+            set(category_rules) - {"allow", "block"}:
+        raise WatchError("policy document category_rules must be an "
+                         "object with only allow/block lists")
+    category_block = str_list(category_rules.get("block", []),
+                              "category_rules.block")
+    category_allow = str_list(category_rules.get("allow", []),
+                              "category_rules.allow")
     categories_path = generation_dir / "categories.json"
     domains: dict = {}
     if categories_path.exists():
@@ -64,23 +108,74 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise WatchError(f"unreadable categories document: {exc}") \
                 from exc
+        if not isinstance(domains, dict):
+            raise WatchError("categories document domains is not an "
+                             "object")
+    _refuse_per_device_divergence(generation_dir)
     rules: dict[str, URLRule] = {}
-    for host in policy.get("blocklist", []):
+    for host in blocklist:
         rules[_norm(host)] = URLRule(_norm(host), "block", "")
-    for category in policy.get("category_block", []):
+    for category in category_block:
         for host, cats in domains.items():
             if category in cats:
                 rules[_norm(host)] = URLRule(_norm(host), "block",
                                              str(category))
     # Allows overlay blocks, exactly like the device feed.
-    for host in policy.get("allowlist", []):
+    for host in allowlist:
         rules[_norm(host)] = URLRule(_norm(host), "allow", "")
-    for category in policy.get("category_allow", []):
+    for category in category_allow:
         for host, cats in domains.items():
             if category in cats:
                 rules[_norm(host)] = URLRule(_norm(host), "allow",
                                              str(category))
     return list(rules.values())
+
+
+def _refuse_per_device_divergence(generation_dir) -> None:
+    """The published generation can carry PER-DEVICE policy: the
+    device map binds devices to assigned policy documents and
+    exceptions.json carries per-device exception overlays. One
+    membership dataset (Bloom/prefilter + one PIR processed database)
+    expresses exactly one policy. Serving the tenant default while a
+    generation assigns different policies or exceptions per device
+    would enforce the WRONG policy on those devices - so any
+    divergence is refused loudly (last good keeps serving) instead of
+    merged. A generation where every device is assigned the default
+    policy is not divergent and serves normally."""
+    generation_dir = Path(generation_dir)
+    device_map_path = generation_dir / "device-map.json"
+    if device_map_path.exists():
+        try:
+            device_map = json.loads(device_map_path.read_bytes()
+                                    .decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WatchError(f"unreadable device map: {exc}") from exc
+        default_pid = device_map.get("default_policy_id")
+        devices = device_map.get("devices", {})
+        if not isinstance(devices, dict):
+            raise WatchError("device map devices is not an object")
+        divergent = [dev for dev, entry in devices.items()
+                     if isinstance(entry, dict)
+                     and entry.get("policy_id") != default_pid]
+        if divergent:
+            raise WatchError(
+                "generation assigns non-default policies to devices "
+                f"{sorted(divergent)}; a single membership dataset "
+                "cannot express per-device policy, refusing to merge "
+                "them into one global dataset")
+    exceptions_path = generation_dir / "exceptions.json"
+    if exceptions_path.exists():
+        try:
+            overlay = json.loads(exceptions_path.read_bytes()
+                                 .decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WatchError(f"unreadable exceptions overlay: {exc}")                 from exc
+        if overlay:
+            raise WatchError(
+                "generation carries per-device exception overlays for "
+                f"devices {sorted(overlay)}; a single membership "
+                "dataset cannot express per-device exceptions, "
+                "refusing to merge them into one global dataset")
 
 
 class PublicationWatcher:
@@ -92,16 +187,17 @@ class PublicationWatcher:
         self.tenant_root = tenant_root
         self.ref = ref
         self._build = build
-        # Optional post-swap hook (new Dataset) -> None, invoked after
-        # every successful swap. The deployment entrypoint uses it to
-        # write the device PIR export and trigger PIR regeneration.
+        # Optional staged-activation hook (new Dataset) -> None,
+        # invoked BEFORE every swap: it must finish preparing the
+        # generation's other artifacts (device PIR export +
+        # regeneration). A hook failure aborts the activation: last
+        # good keeps serving and the poll retries.
         self._on_swap = on_swap
         # Seed from the serving dataset: a restart with the same
         # current generation does not rebuild it.
         self._loaded_generation = ref.current.version
         self.last_built_at: float | None = None
         self.last_error: str | None = None
-        self.hook_error: str | None = None
         self.build_count = 0
         self._lock = threading.Lock()
 
@@ -156,20 +252,23 @@ class PublicationWatcher:
                 dataset = self._build(
                     rules, version=generation,
                     provenance=f"publication:{self.tenant_root}")
+                # Staged activation: the activation hook (device PIR
+                # export + regeneration command) runs BEFORE the
+                # serving swap. If it fails, the generation is NOT
+                # marked loaded - the last good dataset keeps serving
+                # (functional policy preserved) and the next poll
+                # retries the same generation. Bloom/prefilter and the
+                # PIR data therefore never serve different committed
+                # generations: the new PIR data exists before the new
+                # Bloom/prefilter becomes visible, and a failed
+                # activation changes nothing.
+                if self._on_swap is not None:
+                    self._on_swap(dataset)
                 self.ref.swap(dataset)
                 self._loaded_generation = generation
                 self.last_built_at = time.time()
                 self.build_count += 1
                 self.last_error = None
-                if self._on_swap is not None:
-                    # The swap already happened: a hook failure (PIR
-                    # regeneration) is recorded separately and never
-                    # rolls back the served dataset.
-                    try:
-                        self._on_swap(dataset)
-                        self.hook_error = None
-                    except Exception as exc:
-                        self.hook_error = str(exc)
                 return "updated"
             except Exception as exc:
                 self.last_error = str(exc)
@@ -198,5 +297,4 @@ class PublicationWatcher:
             return {"generation": self._loaded_generation,
                     "last_built_at": self.last_built_at,
                     "build_count": self.build_count,
-                    "last_error": self.last_error,
-                    "hook_error": self.hook_error}
+                    "last_error": self.last_error}

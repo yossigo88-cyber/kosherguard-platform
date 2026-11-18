@@ -1,0 +1,17 @@
+{
+  "allowlist": [
+    "allowed.example"
+  ],
+  "blocklist": [
+    "blocked.example"
+  ],
+  "category_rules": {
+    "allow": [
+      "news"
+    ],
+    "block": [
+      "gambling"
+    ]
+  },
+  "default_policy": "allow"
+}
