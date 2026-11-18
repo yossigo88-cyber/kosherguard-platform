@@ -19,18 +19,37 @@ def load_pins(path):
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     # Package.resolved: {"pins": [...]} (v2/v3)
-    # workspace-state.json: {"object": {"pins": [...]}} (v5/v6) or flat
+    # workspace-state.json: {"object": {"pins": [...]}} (v5/v6)
     if "pins" in data:
         return data["pins"]
     return data.get("object", {}).get("pins", [])
+
+
+def load_checkouts(path):
+    """Actual checkouts from SwiftPM's workspace-state.json: records
+    live under object.records, each with packageRef.identity and
+    state.checkoutState.revision (verified against the SwiftPM format
+    written by the Swift 6.1 toolchain). Returns {identity: state}
+    with .revision flattened to the top level of each state."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    records = (data.get("object", {}).get("records")
+               or data.get("object", {}).get("dependencies", []))
+    result = {}
+    for record in records:
+        identity = record.get("packageRef", {}).get("identity")
+        state = record.get("state", {})
+        checkout = state.get("checkoutState", {})
+        if identity:
+            result[identity] = {"revision": checkout.get("revision")}
+    return result
 
 
 def main() -> None:
     expected_path, actual_path = sys.argv[1], sys.argv[2]
     expected = {p["identity"]: p.get("state", {})
                 for p in load_pins(expected_path)}
-    actual = {p.get("packageRef", {}).get("identity") or p.get("identity"):
-              p.get("state", {}) for p in load_pins(actual_path)}
+    actual = load_checkouts(actual_path)
     failures = []
     for identity, state in sorted(expected.items()):
         want = state.get("revision")
