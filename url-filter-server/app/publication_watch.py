@@ -196,6 +196,11 @@ class PublicationWatcher:
         # Seed from the serving dataset: a restart with the same
         # current generation does not rebuild it.
         self._loaded_generation = ref.current.version
+        # Latest generation the publication root ADVERTISES, tracked on
+        # every poll even when loading it fails: the difference between
+        # published and loaded is the staleness a status consumer
+        # (app/dashboard) needs, not just an operator log line.
+        self._published_generation: int | None = None
         self.last_built_at: float | None = None
         self.last_error: str | None = None
         self.build_count = 0
@@ -242,6 +247,7 @@ class PublicationWatcher:
                         os.path.realpath(generation_dir)) \
                         != str(generation):
                     raise WatchError("manifest generation mismatch")
+                self._published_generation = generation
                 if generation == self._loaded_generation:
                     return "unchanged"
                 rules = rules_from_generation(generation_dir)
@@ -295,6 +301,10 @@ class PublicationWatcher:
     def status(self) -> dict:
         with self._lock:
             return {"generation": self._loaded_generation,
+                    "published_generation": self._published_generation,
+                    "behind": (self._published_generation is not None
+                               and self._published_generation
+                               != self._loaded_generation),
                     "last_built_at": self.last_built_at,
                     "build_count": self.build_count,
                     "last_error": self.last_error}

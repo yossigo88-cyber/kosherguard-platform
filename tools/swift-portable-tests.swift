@@ -4893,3 +4893,50 @@ final class ConnectedEnforcementTests: XCTestCase {
         XCTAssertEqual(engine.verdict(forHost: "other.example"), .allow)
     }
 }
+
+
+final class DatasetStatusTests: XCTestCase {
+    func testDecodesWatcherFields() throws {
+        let json = """
+        {"served_generation": 3, "watcher": {"generation": 3,
+         "published_generation": 4, "behind": true,
+         "last_built_at": 1763400000.5, "build_count": 7,
+         "last_error": "manifest generation mismatch"}}
+        """.data(using: .utf8)!
+        let status = try JSONDecoder().decode(DatasetStatus.self,
+                                              from: json)
+        XCTAssertEqual(status.servedGeneration, 3)
+        XCTAssertEqual(status.watcher?.publishedGeneration, 4)
+        XCTAssertEqual(status.watcher?.behind, true)
+        XCTAssertEqual(status.watcher?.lastError,
+                       "manifest generation mismatch")
+        XCTAssertEqual(status.watcher?.buildCount, 7)
+    }
+
+    func testDecodesWithoutWatcherAndWithNulls() throws {
+        let json = """
+        {"served_generation": 1, "watcher": null}
+        """.data(using: .utf8)!
+        let status = try JSONDecoder().decode(DatasetStatus.self,
+                                              from: json)
+        XCTAssertEqual(status.servedGeneration, 1)
+        XCTAssertNil(status.watcher)
+        let json2 = """
+        {"served_generation": 2, "watcher": {"generation": 2,
+         "published_generation": null, "behind": false,
+         "last_built_at": null, "build_count": 0, "last_error": null}}
+        """.data(using: .utf8)!
+        let status2 = try JSONDecoder().decode(DatasetStatus.self,
+                                               from: json2)
+        XCTAssertEqual(status2.watcher?.behind, false)
+        XCTAssertNil(status2.watcher?.lastError)
+    }
+
+    func testMalformedStatusFailsToDecode() {
+        let json = """
+        {"served_generation": "three", "watcher": null}
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            DatasetStatus.self, from: json))
+    }
+}

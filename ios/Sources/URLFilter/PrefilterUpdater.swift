@@ -222,3 +222,38 @@ struct PrefilterUpdater {
         currentVersion = candidate.manifest.version
     }
 }
+
+
+/// Freshness/error readback from GET /v1/dataset/status (same device
+/// credential as the dataset). Lets the app - and through it the
+/// dashboard - show when the served dataset is behind the last
+/// publish or the last activation failed, instead of the failure
+/// living only in an operator log.
+struct DatasetStatus: Codable {
+    struct Watcher: Codable {
+        let generation: Int
+        let publishedGeneration: Int?
+        /// true when the publication root advertises a generation the
+        /// service has not activated (failed or in flight).
+        let behind: Bool
+        /// Seconds since 1970 of the last successful activation.
+        let lastBuiltAt: Double?
+        let buildCount: Int
+        let lastError: String?
+        enum CodingKeys: String, CodingKey {
+            case generation, behind
+            case publishedGeneration = "published_generation"
+            case lastBuiltAt = "last_built_at"
+            case buildCount = "build_count"
+            case lastError = "last_error"
+        }
+    }
+    let servedGeneration: Int
+    /// nil when the server runs without a publication watcher (manual
+    /// operation only).
+    let watcher: Watcher?
+    enum CodingKeys: String, CodingKey {
+        case watcher
+        case servedGeneration = "served_generation"
+    }
+}

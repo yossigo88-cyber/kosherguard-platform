@@ -56,7 +56,8 @@ def create_app(dataset: Dataset,
                revocation_feed=None,
                dataset_ref: DatasetRef | None = None,
                reload_callback=None,
-               reload_token: str | None = None) -> FastAPI:
+               reload_token: str | None = None,
+               status_provider=None) -> FastAPI:
     if device_token_key is None:
         raw = os.environ.get("KG_DEVICE_TOKEN_KEY", "")
         device_token_key = raw.encode() if raw else None
@@ -127,6 +128,21 @@ def create_app(dataset: Dataset,
                         rebuilt.manifest.get("prefilter", {})
                         .get("sha256")}
 
+    @app.get("/v1/dataset/status",
+             dependencies=[Depends(require_device)])
+    def dataset_status():
+        """Authenticated freshness/error readback for the app (and,
+        via the app, the dashboard): which generation is served, which
+        the publication root advertises, whether the service is behind,
+        and the last activation error. Same device credential as the
+        dataset itself - freshness is part of the filtering contract,
+        not an operator-only signal."""
+        body = {"served_generation": ref.current.version,
+                "watcher": None}
+        if status_provider is not None:
+            body["watcher"] = status_provider()
+        return body
+
     @app.get("/v1/dataset/manifest",
              dependencies=[Depends(require_device)])
     def manifest():
@@ -191,6 +207,7 @@ def build_runtime(dataset: Dataset,
         feed = RevocationFeed(control_plane_url, token_provider)
         stop = feed.start_refresh_loop(interval=refresh_interval)
     ref = DatasetRef(dataset)
+    watcher = None
     stops = [s for s in [stop] if s is not None]
     if publication_root is not None:
         from .publication_watch import PublicationWatcher
@@ -198,7 +215,9 @@ def build_runtime(dataset: Dataset,
         stops.append(watcher.start_refresh_loop(
             interval=watch_interval))
     app = create_app(dataset, device_token_key=device_token_key,
-                     revocation_feed=feed, dataset_ref=ref)
+                     revocation_feed=feed, dataset_ref=ref,
+                     status_provider=(watcher.status
+                                      if watcher is not None else None))
     if not stops:
         return app, None
     if len(stops) == 1:

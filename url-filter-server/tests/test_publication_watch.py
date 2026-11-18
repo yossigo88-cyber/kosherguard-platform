@@ -288,8 +288,39 @@ class TestAutomaticPublicationChain:
         assert w.check_once() == "failed"
         assert "tenant root" in w.status()["last_error"]
 
+    def test_status_endpoint_reports_freshness_and_errors(self, rig):
+        root, ref, watcher, _ = rig
+        from app.server import create_app as mk
+        c = TestClient(mk(ref.current, dataset_ref=ref,
+                          status_provider=watcher.status))
+        body = c.get("/v1/dataset/status").json()
+        assert body["served_generation"] == 1
+        assert body["watcher"]["behind"] is False
+        # A failed publish leaves the service behind AND says why.
+        publish(root, 2, [], policy_doc="{not json")
+        assert watcher.check_once() == "failed"
+        body = c.get("/v1/dataset/status").json()
+        assert body["served_generation"] == 1
+        assert body["watcher"]["published_generation"] == 2
+        assert body["watcher"]["behind"] is True
+        assert body["watcher"]["last_error"]
+        # Recovery clears it.
+        publish(root, 3, ["fresh.example"])
+        assert watcher.check_once() == "updated"
+        body = c.get("/v1/dataset/status").json()
+        assert body["served_generation"] == 3
+        assert body["watcher"]["behind"] is False
+
+    def test_status_endpoint_requires_device_credential(self, rig):
+        root, ref, watcher, _ = rig
+        from app.server import create_app as mk
+        c = TestClient(mk(ref.current, dataset_ref=ref,
+                          device_token_key=b"k" * 32,
+                          status_provider=watcher.status))
+        assert c.get("/v1/dataset/status").status_code == 401
 
 class TestDeploymentEntrypoint:
+
     def test_refuses_without_publication_root(self):
         from app.__main__ import main
         old = os.environ.pop("KG_PUBLICATION_ROOT", None)
