@@ -68,3 +68,4 @@ Diagnosis: the code awaits `NEAppProxyTCPFlow.readData()` as if an async variant
 
 - `FilterSyncController.swift:542:17` - 'no calls to throwing functions occur within try'
 - `ApplePrefilter.swift:121:45` - "immutable value 'skew' was never used"
+- `ApplePrefilter.swift:121:56` - "immutable value 'damp' was never used"
