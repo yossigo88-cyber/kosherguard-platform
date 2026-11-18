@@ -102,7 +102,7 @@ def test_consumption_end_to_end(feed_server):
         token_provider=lambda: token)
     feed.refresh()
     app = create_app(ds, device_token_key=KEY,
-                     revoked_jtis=feed.shared_set)
+                     revocation_feed=feed)
     c = TestClient(app)
     hdr = {"Authorization": f"Bearer {token}"}
     assert c.get("/v1/dataset/manifest", headers=hdr).status_code == 200
@@ -256,3 +256,98 @@ def test_entrypoint_without_feed(feed_server):
     assert c.get("/v1/dataset/manifest",
                  headers={"Authorization": f"Bearer {token}"}
                  ).status_code == 200
+
+
+class _BlockingResponse:
+    def __init__(self, body, gate):
+        self._body = body
+        self._gate = gate
+    def read(self):
+        self._gate.wait(timeout=10)
+        return self._body
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+
+
+def test_verifier_never_sees_partial_refresh(monkeypatch):
+    """Regression for the clear+update race: during an in-flight
+    refresh the verifier must keep seeing the COMPLETE previous set,
+    never a transiently emptied one (a revoked token was briefly
+    accepted). The refresh swaps one immutable snapshot atomically."""
+    import threading
+    import urllib.request as ul
+
+    token = issue_token(KEY, "dev-1", "tenant-1", "dataset")
+    jti = verify_token(KEY, token, "dataset")["jti"]
+    feed = RevocationFeed("http://127.0.0.1:1", token_provider=lambda: token)
+
+    # Initial state: jti revoked.
+    monkeypatch.setattr(
+        ul, "urlopen",
+        lambda *a, **k: _BlockingResponse(
+            json.dumps({"revoked_jtis": [jti]}).encode(),
+            threading.Event()))
+    assert feed.refresh() == 1
+    assert jti in feed.shared_set
+
+    # Second refresh blocks mid-fetch with an EMPTY set arriving.
+    gate = threading.Event()
+    monkeypatch.setattr(
+        ul, "urlopen",
+        lambda *a, **k: _BlockingResponse(
+            b'{"revoked_jtis": []}', gate))
+    done = threading.Event()
+    threading.Thread(
+        target=lambda: (feed.refresh(), done.set()), daemon=True).start()
+    # While the refresh is blocked the old COMPLETE set still applies.
+    for _ in range(200):
+        assert jti in feed.shared_set
+    gate.set()
+    assert done.wait(timeout=10)
+    assert feed.shared_set == frozenset()
+    # Snapshots are immutable: callers cannot mutate verifier state.
+    with pytest.raises(AttributeError):
+        feed.shared_set.clear()
+
+
+def test_concurrent_refresh_and_verification_no_revoked_acceptance(
+        feed_server):
+    """Stress the fixed path: while refreshes alternate the feed
+    content, a revoked token must NEVER be accepted on any request
+    made after its revoking refresh landed."""
+    ds = build_dataset([URLRule("bet365.com", "block", "gambling")],
+                       version=1, provenance="test")
+    token = issue_token(KEY, "dev-1", "tenant-1", "dataset")
+    jti = verify_token(KEY, token, "dataset")["jti"]
+    feed = RevocationFeed(
+        f"http://127.0.0.1:{feed_server.server_address[1]}",
+        token_provider=lambda: token)
+    app = create_app(ds, device_token_key=KEY, revocation_feed=feed)
+    c = TestClient(app)
+    hdr = {"Authorization": f"Bearer {token}"}
+
+    stop = threading.Event()
+    acceptances_after_revocation = []
+
+    def refresher():
+        while not stop.is_set():
+            _FeedHandler.body = json.dumps(
+                {"revoked_jtis": [jti]}).encode()
+            feed.refresh()
+
+    t = threading.Thread(target=refresher, daemon=True)
+    t.start()
+    try:
+        # Let one revoking refresh land, then hammer: every single
+        # request must be refused, no transient window.
+        _wait_for(lambda: jti in feed.shared_set)
+        for _ in range(300):
+            if c.get("/v1/dataset/manifest", headers=hdr) \
+                    .status_code == 200:
+                acceptances_after_revocation.append(1)
+    finally:
+        stop.set()
+        t.join(timeout=5)
+    assert not acceptances_after_revocation
