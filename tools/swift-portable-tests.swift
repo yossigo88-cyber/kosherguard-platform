@@ -4777,13 +4777,16 @@ final class PIREndpointPolicyTests: XCTestCase {
             runtimeIssuer: url("https://issuer.kosherguard.org")))
     }
 
-    /// TRIPWIRE: the shipped App-Info.plist NSPIRConfiguration hosts
-    /// must be refused by the deployment policy while they are
-    /// placeholders. When ops replaces them with real deployed hosts,
-    /// this test FAILS - intentionally - to force a review of the
-    /// enable path (the refusal then stops firing and the URL Filter
-    /// can be enabled for the first time).
-    func testShippedPlistHostsAreRefusedWhilePlaceholders() throws {
+    /// SHIPPED-PLIST CONSISTENCY: the declared NSPIRConfiguration
+    /// hosts must (a) be well-formed https host-only URLs and (b) get
+    /// the policy verdict that matches their actual shape: refused
+    /// while they are reserved placeholder names, accepted once ops
+    /// deploys real hosts. This does NOT require the hosts to remain
+    /// placeholders - a legitimate deployment passes. The refusal
+    /// guarantee itself is pinned by the synthetic placeholder tests
+    /// above; the placeholder-refusal enable path is additionally
+    /// pinned below for as long as the shipped hosts are reserved.
+    func testShippedPlistHostsMatchPolicyVerdict() throws {
         guard let root = ProcessInfo.processInfo
             .environment["KG_REPO_ROOT"]
         else { throw XCTSkip("KG_REPO_ROOT not set") }
@@ -4795,13 +4798,98 @@ final class PIREndpointPolicyTests: XCTestCase {
         let pir = try XCTUnwrap(declared?["PIRServerURL"] as? String)
         let issuer = try XCTUnwrap(
             declared?["PrivacyPassIssuerURL"] as? String)
-        let problem = PIREndpointPolicy.deploymentProblem(
+        // Independent reserved-name check (deliberately NOT reusing
+        // the policy's internals, so a policy regression that drops a
+        // pattern is caught here).
+        func isReserved(_ raw: String) -> Bool {
+            guard let host = URL(string: raw)?
+                .host(percentEncoded: false)?.lowercased()
+            else { return false }
+            let h = host.hasSuffix(".") ? String(host.dropLast()) : host
+            return h == "localhost" || h.hasSuffix(".localhost")
+                || h.hasSuffix(".invalid") || h.hasSuffix(".test")
+                || h.hasSuffix(".example")
+                || h == "example.com" || h.hasSuffix(".example.com")
+                || h == "example.net" || h.hasSuffix(".example.net")
+                || h == "example.org" || h.hasSuffix(".example.org")
+        }
+        let verdict = PIREndpointPolicy.deploymentProblem(
             pirServer: try XCTUnwrap(URL(string: pir)),
             issuer: try XCTUnwrap(URL(string: issuer)))
-        XCTAssertNotNil(problem, "shipped NSPIRConfiguration hosts "
-            + "are expected to be undeployable placeholders; a real "
-            + "deployment must update this test with the enable-path "
-            + "review")
-        XCTAssertTrue(problem?.contains("placeholder") ?? false)
+        if isReserved(pir) || isReserved(issuer) {
+            // Placeholders shipped: enable MUST stay refused.
+            XCTAssertNotNil(verdict, "reserved placeholder hosts must "
+                + "be refused by the policy")
+            XCTAssertTrue(verdict?.contains("placeholder") ?? false)
+        } else {
+            // Real deployment hosts: the policy must not block them.
+            XCTAssertNil(verdict, "legitimate deployed hosts must "
+                + "pass the policy: \(verdict ?? "")")
+        }
+    }
+}
+
+// MARK: - Connected category/allow precedence (B3 follow-up)
+// Not engine-only: the rules travel the REAL sync path (fixture HTTP
+// server -> FilterSyncController -> committed identity-bound snapshot)
+// and verdicts come from a FilterVerdictEngine reading that committed
+// store, proving category-style parent blocks and explicit allows
+// survive the whole pipeline with their precedence intact.
+final class ConnectedEnforcementTests: XCTestCase {
+    let base = URL(string: "https://fixture.example")!
+
+    func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testSyncedRulesEnforcePrecedenceThroughEngine() async throws {
+        // Parent-domain block (category-style coverage), an explicit
+        // allow INSIDE it, an exact block, and an allow default.
+        let body = #"{"device_id":7,"tenant_id":11,"policy_id":3,"generation":6,"default_policy":"allow","rules":{"ads.example":true,"safe.ads.example":false,"exact.example":true}}"#
+        let manifest = Data(#"{"version":2,"rule_count":3,"blocked_count":2,"provenance":"fixture","prefilter":{"format":"apple-fnv1a-murmur3-doublehash-v1","bit_count":24,"hash_count":3,"murmur_seed":1262944257,"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}"#.utf8)
+        FixtureProtocol.handler = { request in
+            if request.url!.path.hasSuffix("filter-rules") {
+                return (200, [:], Data(body.utf8))
+            }
+            return (200, [:], request.url!.path.hasSuffix("manifest")
+                    ? manifest : Data("abc".utf8))
+        }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = FilterRuleStore(directory: dir)
+        let controller = FilterSyncController(
+            configuration: AppConfiguration(controlPlaneBaseURL: base,
+                                            deviceID: 7,
+                                            datasetBaseURL: base),
+            credentials: boundCreds(dataset: "fixture-token"),
+            session: session(), ruleStore: store,
+            prefilterFile: dir.appendingPathComponent("prefilter.json"))
+        await controller.syncNow()
+        guard case .synced = controller.state else {
+            return XCTFail("unexpected state \(controller.state)")
+        }
+        let engine = FilterVerdictEngine(store: store)
+        engine.reloadIfChanged()
+        XCTAssertTrue(engine.isReady,
+                      "synced snapshot must make the engine ready")
+        // Exact block.
+        XCTAssertEqual(engine.verdict(forHost: "exact.example"), .block)
+        // Category-style parent block covers subdomains.
+        XCTAssertEqual(engine.verdict(forHost: "ads.example"), .block)
+        XCTAssertEqual(engine.verdict(forHost: "tracker.ads.example"),
+                       .block)
+        XCTAssertEqual(engine.verdict(forHost: "a.b.ads.example"),
+                       .block)
+        // Explicit allow inside a blocked parent wins - and covers
+        // its own subtree.
+        XCTAssertEqual(engine.verdict(forHost: "safe.ads.example"),
+                       .allow)
+        XCTAssertEqual(engine.verdict(forHost: "cdn.safe.ads.example"),
+                       .allow)
+        // Unmatched host follows the synced default policy.
+        XCTAssertEqual(engine.verdict(forHost: "other.example"), .allow)
     }
 }

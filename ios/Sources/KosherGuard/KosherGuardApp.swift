@@ -328,6 +328,82 @@ final class FilterSyncViewModel {
             self?.appPolicyGeneration += 1
         }
     }
+
+    /// Explicit user control (the Protection section toggle): the
+    /// guardian turns the URL Filter on or off on THIS device. On
+    /// goes through the same gates as automatic configuration
+    /// (PIR pair present, endpoints deployable per PIREndpointPolicy,
+    /// plist match inside enable()); off is always allowed and never
+    /// revalidates endpoints (fail-closed path). Every outcome ends
+    /// in a SYSTEM readback so the shown state is the manager's own.
+    func setURLFilterEnabled(_ enabled: Bool) {
+        guard #available(iOS 26.0, *) else { return }
+        let store = FilterRuleStore.appGroupStore()
+        Task {
+            do {
+                if enabled {
+                    let confirmed = AppConfiguration.currentOnDevice()
+                    guard let pirServer = confirmed.pirServerURL,
+                          let issuer =
+                              confirmed.pirPrivacyPassIssuerURL
+                    else {
+                        store?.recordStatus("URL Filter not enabled: "
+                            + "PIR endpoints not configured")
+                        await MainActor.run {
+                            self.urlFilterState = .notInstalled
+                        }
+                        return
+                    }
+                    if let problem =
+                        PIREndpointPolicy.deploymentProblem(
+                            pirServer: pirServer, issuer: issuer) {
+                        try await URLFilterConfiguration.disableFilter()
+                        store?.recordStatus("URL Filter off: PIR "
+                            + "endpoints not deployed (" + problem
+                            + ")")
+                        await MainActor.run {
+                            self.urlFilterState = .notInstalled
+                        }
+                        return
+                    }
+                    try await URLFilterConfiguration.enable(
+                        from: confirmed)
+                } else {
+                    try await URLFilterConfiguration.disableFilter()
+                }
+            } catch {
+                store?.recordStatus("URL Filter "
+                    + (enabled ? "enable" : "disable")
+                    + " failed: \(error)")
+                await MainActor.run { self.urlFilterState = .failed }
+            }
+            await self.refreshURLFilterSystemStatus()
+        }
+    }
+
+    /// Re-read the SYSTEM's URL Filter state and reflect it in the
+    /// UI: urlFilterState follows the manager's own isEnabled/Status
+    /// when the readback succeeds (running finally means the system
+    /// says running), falling back to the last attempted outcome.
+    func refreshURLFilterSystemStatus() async {
+        guard #available(iOS 26.0, *) else { return }
+        let readback = await URLFilterConfiguration.readSystemStatus()
+        await MainActor.run {
+            self.systemReadback = readback.summary
+            switch (readback.isEnabled, readback.status) {
+            case (true, "running"):
+                self.urlFilterState = .running
+            case (true, _):
+                if self.urlFilterState != .failed {
+                    self.urlFilterState = .enabled
+                }
+            case (false, _):
+                if self.urlFilterState != .failed {
+                    self.urlFilterState = .notInstalled
+                }
+            }
+        }
+    }
     private var configObserver: NSObjectProtocol?
 
     init() {
@@ -424,6 +500,10 @@ final class FilterSyncViewModel {
                     }
                 }
             }
+            // Reflect the SYSTEM's own state after every automatic
+            // configure pass too, so the UI never rests on what this
+            // process merely attempted.
+            await refreshURLFilterSystemStatus()
             await MainActor.run {
                 self.rebuildController(configuration: confirmed,
                                        store: store)
@@ -643,6 +723,23 @@ struct FilterStatusView: View {
                     Text(status.protectionSummary)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    // The SYSTEM's own readback
+                    // (NEURLFilterManager isEnabled/Status/last
+                    // error), not what this process last attempted.
+                    LabeledContent("System state",
+                                   value: sync.systemReadback)
+                    // Explicit guardian control. On is gated (PIR
+                    // endpoints configured and deployable); off is
+                    // always available.
+                    Toggle("URL filtering on this device", isOn:
+                        Binding(
+                            get: { sync.urlFilterState == .enabled
+                                || sync.urlFilterState == .running },
+                            set: { sync.setURLFilterEnabled($0) }))
+                    Button("Re-read system state") {
+                        Task { await sync
+                            .refreshURLFilterSystemStatus() }
+                    }
                 }
                 Section("URL database") {
                     LabeledContent(

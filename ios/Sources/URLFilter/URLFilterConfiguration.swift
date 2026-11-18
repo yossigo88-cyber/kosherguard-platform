@@ -129,4 +129,44 @@ struct URLFilterConfiguration {
     static func isFilterEnabled() -> Bool {
         return NEURLFilterManager.shared.isEnabled
     }
+
+    /// A readback of the SYSTEM's own state, distinct from what this
+    /// process last attempted: loadFromPreferences re-reads the
+    /// persisted configuration, then isEnabled / status /
+    /// lastDisconnectError come from the manager, not from our
+    /// bookkeeping. status is the NEURLFilterManager.Status enum
+    /// (invalid/stopped/starting/running/stopping per Apple's
+    /// documentation, fetched 2026-11-17) rendered with
+    /// String(describing:) so a future SDK case cannot crash the
+    /// readback. UNVERIFIED on device - no iOS build exists.
+    struct SystemReadback: Equatable {
+        var isEnabled: Bool
+        var status: String
+        var lastError: String?
+
+        var summary: String {
+            var s = isEnabled
+                ? "enabled, status \(status)"
+                : "off, status \(status)"
+            if let lastError { s += " - last error: \(lastError)" }
+            return s
+        }
+    }
+
+    static func readSystemStatus() async -> SystemReadback {
+        let manager = NEURLFilterManager.shared
+        do {
+            try await manager.loadFromPreferences()
+        } catch {
+            return SystemReadback(
+                isEnabled: manager.isEnabled,
+                status: "preferences unreadable",
+                lastError: String(describing: error))
+        }
+        return SystemReadback(
+            isEnabled: manager.isEnabled,
+            status: String(describing: manager.status),
+            lastError: manager.lastDisconnectError
+                .map { String(describing: $0) })
+    }
 }
