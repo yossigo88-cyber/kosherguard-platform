@@ -1,7 +1,7 @@
 # Stage 12 - Free GitHub Actions Unsigned iOS Build: Investigation and Permission Review
 
 - Repository: https://github.com/yossigo88-cyber/kosherguard-platform (public)
-- Branch: `stage-12-free-ci-unsigned-build`
+- Branch: `stage-12-free-ios-build`
 - Base: Stage 11 tip `62c0ccc36ab89d89b70f6b229b13d7c95dae83b7` (`stage-11-apple-build-signing`)
 - Untouched: `main` `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`, `stage-10-ios-runtime-integration` `791f0ef647dabba449b1e5bee32fc75fec5ce2b5`
 - Date: 2026-11-17 (America/New_York)
@@ -76,16 +76,14 @@ Required vs not required, for the Stage 12 goal:
 
 Token verification (2026-11-17): the existing "GitHub KosherGuard token" is confirmed a FINE-GRAINED PAT (github_pat_ prefix, verified programmatically without printing the value). Its Contents: write is proven working by the successful Stage 11/12 pushes; its lack of workflow-file write is proven by the section-4 rejection. Agent-side log retrieval is proven working with this token as-is (302 + real log bytes on a public repo), so no Actions permission is needed.
 
-Zero-permission-change alternative: the user creates `.github/workflows/ios-unsigned-build.yml` through the GitHub web UI (web sessions may commit workflow files). The agent could then still not read run results without `Actions: read`, and any later workflow edit by the agent would still be rejected - so this only defers the same decision.
+Zero-permission-change alternative: the user creates `.github/workflows/ios-unsigned-build.yml` through the GitHub web UI (web sessions may commit workflow files). Run results and full logs remain readable to the agent with the existing token either way; any later workflow edit by the agent would still be rejected, so this only defers the same decision. Not needed: the user approved the single permission below.
 
 ## 6. Decision requested from the user (no change made)
 
 Proposed, exact: on the existing "GitHub KosherGuard token" (fine-grained, this repo already selected):
-1. Add **Workflows: write** - lets the agent push the workflow file and future workflow fixes.
-2. Add **Actions: read** - lets the agent download run logs via the API to report exact compilation errors (anonymous log download returns 403; verified).
-Alternative if the user grants only Workflows: write: the workflow still runs on every push and pass/fail is publicly visible, but the user must open the logs in the GitHub web UI - the agent cannot read them.
+1. Add **Workflows: write** - lets the agent push the workflow file and future workflow fixes. That is the ONLY permission change requested.
 
-If approved, the user updates the token in GitHub settings (or replaces it in the vault); the agent does not touch the token itself.
+USER DECISION (2026-11-17 19:03 EST, WhatsApp): "Approved. Add only Workflows: write to the existing fine-grained GitHub token. Keep all other permissions unchanged." The user updates the token in GitHub settings; the agent never touches the token value. The token value is retained when only permissions are edited, so no vault update is needed.
 
 ## 7. Prepared Stage 12 workflow (NOT yet active)
 
@@ -102,7 +100,7 @@ name: iOS unsigned build
 
 on:
   push:
-    branches: [stage-12-*]
+    branches: [stage-12-free-ios-build]
   workflow_dispatch:
 
 permissions:
@@ -113,6 +111,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Validate project structure (no Xcode needed)
         run: python3 tools/validate-ios-project.py
 
@@ -120,6 +120,8 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Select Xcode 26.6 (iOS 26.5 SDK)
         run: |
@@ -158,13 +160,14 @@ Note: no Apple Developer Program enrollment ($99) is needed for an unsigned comp
 
 ## 10. Changes in this branch
 
-Single commit, docs-only, no code or logic changes, no `.github/` path:
+Single commit over the Stage 11 tip:
 - `docs/reviews/STAGE_12_FREE_CI_BUILD_REVIEW.md` (this file, new)
+- `.github/workflows/ios-unsigned-build.yml` (new, prepared workflow; activation is the push of this file, pending the approved token update + review clearance)
 
 ## 11. Remaining steps after the user's permission decision
 
 1. User approves (or declines) the token change in section 6.
 2. Independent review of the workflow file and this branch (per Stage 11 precedent).
 3. Agent pushes the activation commit adding `.github/workflows/ios-unsigned-build.yml`.
-4. The push triggers the run; agent polls run status via Actions: read and captures the actual Xcode log.
+4. The push triggers the run; the agent polls run status and downloads the actual Xcode log with the existing token (authentication only, verified).
 5. Results (success or exact compilation errors) appended as a Stage 12 results report; final summary to the user with permanent links.

@@ -8,7 +8,7 @@ name: iOS unsigned build
 
 on:
   push:
-    branches: [stage-12-*]
+    branches: [stage-12-free-ios-build]
   workflow_dispatch:
 
 permissions:
@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Validate project structure (no Xcode needed)
         run: python3 tools/validate-ios-project.py
 
@@ -26,6 +28,8 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Select Xcode 26.6 (iOS 26.5 SDK)
         run: |
