@@ -3653,9 +3653,22 @@ final class AppShieldReachabilityTests: XCTestCase {
         XCTAssertFalse(view.contains("requestAuthorization() }\n\n    init"),
                        "consent must not be requested from init")
         // An unknown future authorization state must degrade to
-        // NOT authorized, never to shielding.
-        XCTAssertTrue(view.contains("@unknown default"),
-                      "unknown AuthorizationStatus must fail closed")
+        // NOT authorized, never to shielding. The switch uses a plain
+        // `default` (not @unknown default) because iOS 26.4 added the
+        // availability-annotated known case .approvedWithDataAccess,
+        // which @unknown default cannot cover; the default branch
+        // handles it explicitly and every other unknown state must
+        // still fail closed.
+        XCTAssertTrue(view.contains("== .approvedWithDataAccess"),
+                      "iOS 26.4 approvedWithDataAccess must be handled")
+        guard let defaultBranch = view.range(of: "default:") else {
+            XCTFail("authorizationStatus switch must have a default branch")
+            return
+        }
+        XCTAssertTrue(
+            view[defaultBranch.lowerBound...].contains(
+                "state = .notAuthorized"),
+            "unknown AuthorizationStatus must fail closed")
     }
 
     /// The controller must only clear shields explicitly (no implicit

@@ -21,7 +21,7 @@ struct MDMEnrollmentClient {
     /// installing one would be a security downgrade, so the client
     /// treats unsigned data as an error, not a fallback.
     func fetchEnrollmentProfile() async throws -> Data {
-        let (data, response) = try await session.data(from: enrollmentURL)
+        let (_, response) = try await session.data(from: enrollmentURL)
         guard let http = response as? HTTPURLResponse,
               http.statusCode == 200 else {
             throw EnrollmentError.fetchFailed

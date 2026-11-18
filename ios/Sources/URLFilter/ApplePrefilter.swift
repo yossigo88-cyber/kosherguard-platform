@@ -118,7 +118,9 @@ enum Punycode {
         if label.isEmpty { throw PunycodeError.invalidLabel }
         if label.allSatisfy({ $0.isASCII }) { return label }
         // RFC 3492 parameters.
-        let base = 36, tmin = 1, tmax = 26, skew = 38, damp = 700
+        // RFC 3492 constants; skew/damp are not used here (only
+        // in adapt(), which declares its own copies).
+        let base = 36, tmin = 1, tmax = 26
         let initialBias = 72, initialN = 128
         var output: [UInt8] = []
         for scalar in label.unicodeScalars where scalar.isASCII {

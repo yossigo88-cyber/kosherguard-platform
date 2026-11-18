@@ -122,12 +122,10 @@ final class AppShieldViewModel {
     /// Screen Time permission in Settings at any time, and the shield
     /// is silently ineffective without .approved.
     func refresh() {
-        switch AuthorizationCenter.shared.authorizationStatus {
-        case .notDetermined:
-            state = .needsConsent
-        case .denied:
-            state = .notAuthorized
-        case .approved:
+        // The approved path, shared by .approved and (iOS 26.4+)
+        // .approvedWithDataAccess, which grants everything .approved
+        // grants plus access to non-tokenized family activity data.
+        func applyApprovedAuthorization() {
             guard let store = selectionStore else {
                 state = .persistenceUnavailable
                 return
@@ -163,10 +161,28 @@ final class AppShieldViewModel {
                 state = .readyToChoose
                 note = ""
             }
-        @unknown default:
-            // Honest SDK unknown: an authorization state this build
-            // does not know is treated as NOT authorized.
+        }
+        switch AuthorizationCenter.shared.authorizationStatus {
+        case .notDetermined:
+            state = .needsConsent
+        case .denied:
             state = .notAuthorized
+        case .approved:
+            applyApprovedAuthorization()
+        default:
+            // iOS 26.4 added .approvedWithDataAccess. It is
+            // availability-annotated (iOS 26.4+), so it cannot be a case
+            // pattern on this iOS 17 deployment target; handle it here
+            // instead. It grants everything .approved grants, so it
+            // takes the approved path. Any other state this build does
+            // not know is treated conservatively as NOT authorized.
+            if #available(iOS 26.4, *),
+               AuthorizationCenter.shared.authorizationStatus
+                   == .approvedWithDataAccess {
+                applyApprovedAuthorization()
+            } else {
+                state = .notAuthorized
+            }
         }
     }
 

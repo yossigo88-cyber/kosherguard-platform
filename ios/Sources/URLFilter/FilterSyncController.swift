@@ -539,8 +539,8 @@ public final class FilterSyncController {
                     return
                 }
             } else if store.currentEpoch() != sessionEpoch {
-                try? stagingFile.flatMap {
-                    try? FileManager.default.removeItem(at: $0)
+                if let stagingFile {
+                    try? FileManager.default.removeItem(at: stagingFile)
                 }
                 transition(.invalidated("session superseded by a newer "
                     + "configuration or sign-out"))
