@@ -29,10 +29,34 @@ from fastapi.responses import JSONResponse, Response
 from .dataset import Dataset
 
 
+class DatasetRef:
+    """Atomically swappable dataset holder. Endpoints read .current
+    per request; a reload builds the replacement FULLY (outside this
+    lock) and swaps the reference only on success, so a failed reload
+    always leaves the last good dataset serving."""
+
+    def __init__(self, dataset: Dataset):
+        import threading
+        self._lock = threading.Lock()
+        self._dataset = dataset
+
+    @property
+    def current(self) -> Dataset:
+        with self._lock:
+            return self._dataset
+
+    def swap(self, dataset: Dataset) -> None:
+        with self._lock:
+            self._dataset = dataset
+
+
 def create_app(dataset: Dataset,
                device_token_key: bytes | None = None,
                revoked_jtis: set | None = None,
-               revocation_feed=None) -> FastAPI:
+               revocation_feed=None,
+               dataset_ref: DatasetRef | None = None,
+               reload_callback=None,
+               reload_token: str | None = None) -> FastAPI:
     if device_token_key is None:
         raw = os.environ.get("KG_DEVICE_TOKEN_KEY", "")
         device_token_key = raw.encode() if raw else None
@@ -61,31 +85,74 @@ def create_app(dataset: Dataset,
 
     app = FastAPI(title="KosherGuard URL Filter Server", docs_url=None,
                   redoc_url=None)
+    ref = dataset_ref if dataset_ref is not None else DatasetRef(dataset)
+
+    if reload_callback is not None:
+        # Admin reload: registered ONLY with an explicit admin token -
+        # an unauthenticated reload trigger would let anyone force
+        # dataset rebuilds. The callback returns a fully built Dataset
+        # or raises; a raise never disturbs the serving dataset.
+        if not reload_token:
+            raw = os.environ.get("KG_RELOAD_TOKEN", "")
+            reload_token = raw if raw else None
+        if reload_token is None:
+            raise ValueError("reload_callback requires a reload token "
+                             "(argument or KG_RELOAD_TOKEN)")
+
+        @app.post("/v1/admin/reload")
+        def reload_dataset(request: Request):
+            header = request.headers.get("authorization", "")
+            token = (header[7:] if header.lower().startswith("bearer ")
+                     else "")
+            import hmac as _hmac
+            if not _hmac.compare_digest(token, reload_token):
+                raise HTTPException(status_code=401,
+                                    detail="unauthorized")
+            try:
+                rebuilt = reload_callback()
+            except Exception:
+                # Deliberately generic: rebuild errors can carry
+                # policy/source detail that is not the caller's.
+                raise HTTPException(
+                    status_code=502,
+                    detail="dataset rebuild failed; previous dataset "
+                           "kept") from None
+            if not isinstance(rebuilt, Dataset):
+                raise HTTPException(status_code=502,
+                                    detail="rebuild returned no "
+                                           "dataset; previous kept")
+            ref.swap(rebuilt)
+            return {"version": rebuilt.manifest.get("version"),
+                    "prefilter_sha256":
+                        rebuilt.manifest.get("prefilter", {})
+                        .get("sha256")}
 
     @app.get("/v1/dataset/manifest",
              dependencies=[Depends(require_device)])
     def manifest():
-        return dataset.manifest
+        return ref.current.manifest
 
     @app.get("/v1/dataset/prefilter",
              dependencies=[Depends(require_device)])
     def prefilter():
-        data = dataset.prefilter.to_bytes()
+        current = ref.current
+        data = current.prefilter.to_bytes()
         return Response(
             content=data, media_type="application/octet-stream",
             headers={"X-SHA256": hashlib.sha256(data).hexdigest(),
-                     "X-Bloom-Bits": str(dataset.prefilter.bit_count),
-                     "X-Bloom-Hashes": str(dataset.prefilter.hash_count),
-                     "X-Bloom-Murmur-Seed": str(dataset.prefilter.murmur_seed),
+                     "X-Bloom-Bits": str(current.prefilter.bit_count),
+                     "X-Bloom-Hashes": str(current.prefilter.hash_count),
+                     "X-Bloom-Murmur-Seed": str(current.prefilter.murmur_seed),
                      "X-Bloom-Format": "apple-fnv1a-murmur3-doublehash-v1"})
 
     @app.get("/v1/dataset/shards/{index}",
              dependencies=[Depends(require_device)])
     def shard(index: int):
-        if index < 0 or index >= len(dataset.shards):
+        current = ref.current
+        if index < 0 or index >= len(current.shards):
             return JSONResponse(status_code=404,
                                 content={"error": "no such shard"})
-        data = dataset.shards[index]
+        data = current.shards[index]
         return Response(
             content=data, media_type="application/octet-stream",
             headers={"X-SHA256": hashlib.sha256(data).hexdigest()})
