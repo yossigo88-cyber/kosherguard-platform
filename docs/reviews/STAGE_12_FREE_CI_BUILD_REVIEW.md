@@ -80,10 +80,7 @@ Zero-permission-change alternative: the user creates `.github/workflows/ios-unsi
 
 ## 6. Decision requested from the user (no change made)
 
-Proposed, exact: on the existing "GitHub KosherGuard token" (fine-grained, this repo already selected):
-1. Add **Workflows: write** - lets the agent push the workflow file and future workflow fixes. That is the ONLY permission change requested.
-
-USER DECISION (2026-11-17 19:03 EST, WhatsApp): "Approved. Add only Workflows: write to the existing fine-grained GitHub token. Keep all other permissions unchanged." The user updates the token in GitHub settings; the agent never touches the token value. The token value is retained when only permissions are edited, so no vault update is needed.
+The approved scope is exactly one addition: **Workflows: write** on the existing fine-grained token for this repository. Everything else stays unchanged - no Actions permission, no organization permissions, no Secrets access, no Contents change, no new repositories, no other branches touched, no purchases, no deploys. The token update is performed by the repository owner in GitHub settings; the agent never handles the token value, and editing permissions does not change the token value. The workflow is confined to the `stage-12-free-ios-build` branch; activation is pending that token update.
 
 ## 7. Prepared Stage 12 workflow (NOT yet active)
 
