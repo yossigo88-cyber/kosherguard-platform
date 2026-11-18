@@ -161,13 +161,37 @@ final class DNSProxyProvider: NEDNSProxyProvider {
                            count: Int) async throws -> Data {
         var collected = Data()
         while collected.count < count {
-            let chunk = try await flow.readData()
+            let chunk = try await readTCPChunk(flow)
             guard let chunk, !chunk.isEmpty else {
                 throw NSError(domain: "com.kosherguard.dnsproxy", code: 3)
             }
             collected.append(chunk)
         }
         return collected
+    }
+
+    /// The iOS SDK exposes NEAppProxyTCPFlow.readData only in its
+    /// completion-handler form (there is no async variant), so bridge
+    /// it to async/await with a checked continuation. The system calls
+    /// the completion handler exactly once per read request, and the
+    /// if/else below resumes the continuation exactly once on that
+    /// single callback: throwing on error, otherwise returning the
+    /// data (nil at end-of-stream). Errors and EOF propagate to
+    /// readExact/readTCPLoop, which close the flow (fail closed),
+    /// unchanged from the previous behavior.
+    private func readTCPChunk(
+        _ flow: NEAppProxyTCPFlow
+    ) async throws -> Data? {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Data?, Error>) in
+            flow.readData { data, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: data)
+                }
+            }
+        }
     }
 
     /// One query through the authenticated DoH path. Any failure is a
