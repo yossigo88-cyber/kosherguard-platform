@@ -90,3 +90,52 @@ def parse_textpb(text: str) -> list[tuple[str, str]]:
             r'value: "((?:[^"\\]|\\.)*)"\s*\}', text):
         rows.append((match.group(1), match.group(2)))
     return rows
+
+
+# Apple's NEURLFilter data format (NEURLFilterDataFormat.md in the
+# pinned apple/pir-service-example, bbb2153): "If an entry is found
+# matching the URL key, it already indicates a match. So the value for
+# the record is simply set to the integer 1 serving as place holder."
+DEVICE_VALUE_PLACEHOLDER = "1"
+
+
+def export_device_textpb(rules: list[URLRule]) -> str:
+    """Serialize the DEVICE (NEURLFilter) dataset: BLOCK ROWS ONLY.
+
+    Presence semantics: on device, a keyword PRESENT in this dataset is
+    BLOCKED - the system ignores the value (Apple's placeholder "1").
+    An allow row emitted here would therefore BLOCK the allowed site,
+    so this export:
+
+    - never emits allow rules;
+    - applies allow-over-block precedence per normalized keyword,
+      mirroring the on-device engine's explicit-allow-beats-block
+      order (FilterVerdictEngine): a keyword with ANY allow rule is
+      excluded even when a (category) block rule also names it;
+    - collapses duplicate block keywords to one row;
+    - emits Apple's placeholder value, not a verdict string: carrying
+      "block:<category>" here would pretend the value has on-device
+      meaning it does not have.
+
+    Invalid rows still raise (unknown verdict, empty keyword): an
+    export that silently drops a malformed BLOCK rule would silently
+    weaken filtering.
+    """
+    allowed: set[str] = set()
+    blocked: set[str] = set()
+    for rule in rules:
+        if rule.verdict not in ("block", "allow"):
+            raise ValueError(f"unknown verdict: {rule.verdict!r}")
+        keyword = normalize_keyword(rule.url)
+        if not keyword:
+            raise ValueError("empty keyword")
+        if rule.verdict == "allow":
+            allowed.add(keyword)
+        else:
+            blocked.add(keyword)
+    rows = sorted(blocked - allowed)
+    return "".join(
+        'rows {\n'
+        f'  keyword: "{_escape_text_string(keyword)}"\n'
+        f'  value: "{DEVICE_VALUE_PLACEHOLDER}"\n'
+        '}\n' for keyword in rows)

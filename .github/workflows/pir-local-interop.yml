@@ -1,0 +1,211 @@
+# PIR local interop: a REAL Apple PIR round trip on a free standard
+# GitHub-hosted Ubuntu runner (public repo: $0 compute; the job log is
+# the only output - no artifacts, no caches, no secrets, no deploy).
+#
+# What a green run proves:
+#   * url-filter-server's pir_export textpb is accepted by Apple's own
+#     PIRProcessDatabase (apple/swift-homomorphic-encryption, revision
+#     pinned by apple/pir-service-example's Package.resolved and
+#     verified against the actual SwiftPM checkouts by
+#     tools/pir-interop/verify_pins.py).
+#   * Apple's PIRService application loads the processed KosherGuard
+#     DEVICE dataset and Apple's own test client (PIRServiceTesting
+#     .PIRClient, the client Apple's test suite uses) completes the
+#     full private query protocol over real loopback HTTP: Privacy
+#     Pass issuance, config fetch, evaluation-key upload, encrypted
+#     query, decrypted response - positive (present means BLOCK, the
+#     value is Apple's ignored placeholder per the pinned
+#     NEURLFilterDataFormat.md), absent (allow-only and
+#     allow-beats-block hosts are NOT in the device dataset) and
+#     dataset-update cases.
+#   * The compiled PIRService binary boots on the same dataset, serves
+#     /config for the KosherGuard usecase, rejects unauthenticated
+#     /report and /queries with 401, and serves the reprocessed dataset
+#     after SIGHUP.
+# What it does NOT prove: on-device NEURLFilter behavior, the OHTTP
+# gateway/relay (blocked on Apple approval), production readiness of
+# Apple's example service (its README says it should not run in
+# production), or performance at real dataset sizes.
+# Build configuration is release, mirroring Apple's own CI for this
+# repository (swift test --configuration release on Linux).
+name: PIR local interop
+
+on:
+  push:
+    branches: [stage-12-free-ios-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PIR_SERVICE_COMMIT: bbb215355b87be40e081756d072f29cd8f9f000b
+
+jobs:
+  pir-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout KosherGuard (this branch)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: kgp
+          persist-credentials: false
+
+      - name: Validate the real exporter (url-filter-server tests)
+        run: |
+          python3 -m pip install --quiet pytest fastapi httpx
+          cd kgp/url-filter-server && python3 -m pytest tests/test_url_filter.py -q
+
+      - name: Install Swift 6.1
+        # swift-actions/setup-swift v2.4.0 (tag v2 -> this commit,
+        # verified 2026-11-17). NOTE: swiftlang/setup-swift does NOT
+        # exist; the real action repository is swift-actions/setup-swift.
+        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a
+        with:
+          swift-version: "6.1"
+
+      - name: Record toolchain
+        run: swift --version
+
+      - name: Checkout Apple's pinned PIR service example
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: apple/pir-service-example
+          ref: bbb215355b87be40e081756d072f29cd8f9f000b
+          path: apple-pir
+          persist-credentials: false
+      - name: Record Apple service revision
+        run: git -C apple-pir rev-parse HEAD
+
+      - name: Build Apple's PIRService (release, mirrors Apple's CI)
+        timeout-minutes: 150
+        working-directory: apple-pir
+        run: swift build -c release --product PIRService
+
+      - name: Verify SwiftPM checkouts match the pinned Package.resolved
+        run: python3 kgp/tools/pir-interop/verify_pins.py \
+          apple-pir/Package.resolved apple-pir/.build/workspace-state.json
+
+      - name: Check out the pinned swift-homomorphic-encryption and build PIRProcessDatabase
+        timeout-minutes: 150
+        run: |
+          HE_REV=$(python3 -c "
+          import json
+          pins = json.load(open('apple-pir/Package.resolved'))['pins']
+          print([p['state']['revision'] for p in pins
+                 if p['identity'] == 'swift-homomorphic-encryption'][0])
+          ")
+          echo "pinned swift-homomorphic-encryption revision: $HE_REV"
+          git clone https://github.com/apple/swift-homomorphic-encryption he
+          git -C he checkout "$HE_REV"
+          test "$(git -C he rev-parse HEAD)" = "$HE_REV"
+          cd he && swift build -c release --product PIRProcessDatabase
+
+      - name: Install the KosherGuard interop test into Apple's test target
+        run: cp kgp/tools/pir-interop/KosherGuardInteropTests.swift \
+          apple-pir/Tests/PIRServiceTests/
+
+      - name: Export the fixture dataset with the real exporter and process it with Apple's tool
+        run: |
+          mkdir -p work
+          python3 kgp/tools/pir-interop/export_fixture_dataset.py --out "$GITHUB_WORKSPACE/work/input.txtpb"
+          cat > work/url-config.json <<EOF
+          {
+            "inputDatabase": "$GITHUB_WORKSPACE/work/input.txtpb",
+            "outputDatabase": "$GITHUB_WORKSPACE/work/url-SHARD_ID.bin",
+            "outputPirParameters": "$GITHUB_WORKSPACE/work/url-SHARD_ID.params.txtpb",
+            "rlweParameters": "n_4096_logq_27_28_28_logt_5",
+            "sharding": {"shardCount": 1},
+            "trialsPerShard": 5
+          }
+          EOF
+          cd work && "$GITHUB_WORKSPACE/he/.build/release/PIRProcessDatabase" url-config.json
+          ls -la url-0.bin url-0.params.txtpb
+
+      - name: Write the service configuration (fixture token only)
+        run: |
+          cat > work/service-config.json <<'EOF'
+          {
+            "tokens": ["AAAA"],
+            "usecases": [
+              {
+                "fileStem": "url",
+                "shardCount": 1,
+                "name": "com.kosherguard.app.url.filtering"
+              }
+            ]
+          }
+          EOF
+          cat work/service-config.json
+
+      - name: Round trip on the KosherGuard dataset (Apple client, real loopback HTTP)
+        timeout-minutes: 60
+        working-directory: apple-pir
+        env:
+          KG_PIR_WORKDIR: ${{ github.workspace }}/work
+          KG_PIR_EXPECT_MODE: base
+        run: |
+          set -o pipefail
+          swift test -c release --filter KosherGuardInteropTests 2>&1 | tail -40
+
+      - name: "Binary lifecycle: boot, auth boundaries, SIGHUP dataset reload"
+        run: |
+          cd work
+          "$GITHUB_WORKSPACE/apple-pir/.build/release/PIRService" \
+            --hostname 127.0.0.1 --port 8080 service-config.json \
+            > service.log 2>&1 &
+          PIR_PID=$!
+          cleanup() { kill "$PIR_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          ok=0
+          for i in $(seq 1 90); do
+            if curl -sf -o config-v1.bin http://127.0.0.1:8080/config; then ok=1; break; fi
+            sleep 2
+          done
+          test "$ok" = 1
+          echo "binary /config reachable; usecase bytes present:"
+          grep -c "com.kosherguard.app.url.filtering" config-v1.bin
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:8080/report -H 'Content-Type: application/json' \
+            -d '["blocked-example.com"]')
+          echo "unauthenticated /report -> $code"; test "$code" = 401
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:8080/queries)
+          echo "unauthenticated /queries -> $code"; test "$code" = 401
+          # Dataset update: re-export with the real exporter, reprocess
+          # with Apple's tool, then reload the live binary via SIGHUP.
+          python3 "$GITHUB_WORKSPACE/kgp/tools/pir-interop/export_fixture_dataset.py" \
+            --update --out "$GITHUB_WORKSPACE/work/input.txtpb"
+          "$GITHUB_WORKSPACE/he/.build/release/PIRProcessDatabase" url-config.json
+          kill -HUP "$PIR_PID"
+          ok=0
+          for i in $(seq 1 30); do
+            if grep -q "Reloading configuration completed" service.log; then ok=1; break; fi
+            sleep 2
+          done
+          test "$ok" = 1
+          grep "Reloading configuration" service.log
+          curl -sf -o config-v2.bin http://127.0.0.1:8080/config
+          if cmp -s config-v1.bin config-v2.bin; then
+            echo "ERROR: /config unchanged after dataset update + SIGHUP"; exit 1
+          fi
+          echo "/config changed after dataset update + SIGHUP (new config served)"
+
+      - name: Round trip after the dataset update (fresh service load)
+        timeout-minutes: 60
+        working-directory: apple-pir
+        env:
+          KG_PIR_WORKDIR: ${{ github.workspace }}/work
+          KG_PIR_EXPECT_MODE: update
+        run: |
+          set -o pipefail
+          swift test -c release --filter KosherGuardInteropTests 2>&1 | tail -40
+
+      - name: Provenance summary
+        if: always()
+        run: |
+          echo "pir-service-example: $(git -C apple-pir rev-parse HEAD)"
+          echo "swift-homomorphic-encryption: $(git -C he rev-parse HEAD)"
+          echo "kosherguard-platform: $(git -C kgp rev-parse HEAD)"
+          swift --version

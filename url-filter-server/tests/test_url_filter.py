@@ -200,6 +200,60 @@ class TestPIRExport:
         assert dict(rows)["bet365.com"] == "block:gambling"
 
 
+class TestPIRDeviceExport:
+    """The DEVICE (NEURLFilter) export. Security-critical semantics
+    (NEURLFilterDataFormat.md in the pinned apple/pir-service-example):
+    a keyword PRESENT in the device dataset is BLOCKED on device; the
+    value is Apple's ignored placeholder. An allow row in this export
+    would block the allowed site - these tests pin that invariant."""
+
+    def test_block_rows_only_with_placeholder_value(self):
+        from app.pir_export import export_device_textpb, parse_textpb
+        rules = [URLRule("Bet365.COM", "block", "gambling"),
+                 URLRule("allowed.example", "allow", "")]
+        rows = parse_textpb(export_device_textpb(rules))
+        assert rows == [("bet365.com", "1")]
+
+    def test_allow_beats_block_exact_host(self):
+        """SECURITY: a host with BOTH an explicit allow and a
+        (category) block must not appear in the device dataset at all
+        - presence means block, so emitting it would block the
+        explicitly allowed site. Mirrors the on-device engine's
+        explicit-allow-beats-block order."""
+        from app.pir_export import export_device_textpb, parse_textpb
+        rules = [URLRule("precedence.example", "block", "ads"),
+                 URLRule("precedence.example", "allow", "")]
+        assert parse_textpb(export_device_textpb(rules)) == []
+
+    def test_allow_precedence_applies_after_normalization(self):
+        """The allow matches the block regardless of case/trailing
+        dot - a normalization gap would re-block the allowed host."""
+        from app.pir_export import export_device_textpb, parse_textpb
+        rules = [URLRule("Ads.EXAMPLE.", "block", "ads"),
+                 URLRule("ads.example", "allow", "")]
+        assert parse_textpb(export_device_textpb(rules)) == []
+
+    def test_duplicate_blocks_collapse_and_sort(self):
+        from app.pir_export import export_device_textpb, parse_textpb
+        rules = [URLRule("b.example", "block", "ads"),
+                 URLRule("a.example", "block", "adult"),
+                 URLRule("B.EXAMPLE", "block", "ads")]
+        rows = parse_textpb(export_device_textpb(rules))
+        assert rows == [("a.example", "1"), ("b.example", "1")]
+
+    def test_unknown_verdict_rejected(self):
+        """A malformed row must fail the export, never be silently
+        dropped (a dropped BLOCK silently weakens filtering)."""
+        from app.pir_export import export_device_textpb
+        with pytest.raises(ValueError):
+            export_device_textpb([URLRule("x.example", "maybe")])
+
+    def test_empty_keyword_rejected(self):
+        from app.pir_export import export_device_textpb
+        with pytest.raises(ValueError):
+            export_device_textpb([URLRule(" . ", "block")])
+
+
 class TestDeviceAuth:
     """Per-device scoped credentials (approved design: no long-lived
     bearer tokens in URLs; Authorization header; short expiry)."""
