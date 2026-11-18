@@ -117,8 +117,7 @@ jobs:
           cd he && swift build -c release --product PIRProcessDatabase
 
       - name: Install the KosherGuard interop test into Apple's test target
-        run: cp kgp/tools/pir-interop/KosherGuardInteropTests.swift \
-          apple-pir/Tests/PIRServiceTests/
+        run: cp kgp/tools/pir-interop/KosherGuardInteropTests.swift apple-pir/Tests/PIRServiceTests/
 
       - name: Export the fixture dataset with the real exporter and process it with Apple's tool
         run: |
