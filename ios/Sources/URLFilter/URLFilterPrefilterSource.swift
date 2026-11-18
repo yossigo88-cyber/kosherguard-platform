@@ -46,23 +46,43 @@ struct URLFilterPrefilterSource {
         self.endpointFingerprint = endpointFingerprint
     }
 
+    /// A prefilter artifact older than this is refused at use time.
+    /// Same policy choice as the explicit-rule layer
+    /// (FilterVerdictEngine.maxSnapshotAge): background refresh is
+    /// OS-DISCRETIONARY - the system is never obliged to wake the
+    /// app - so freshness can never be a precondition enforced by a
+    /// timer. When no refresh runs, enforcement fails closed at this
+    /// horizon instead of filtering on unboundedly stale data.
+    static let maxArtifactAge: TimeInterval = 7 * 24 * 3600
+    /// Tolerance for device clock adjustments: a download timestamp
+    /// slightly in the future is still accepted, but a far-future
+    /// timestamp would pin the artifact's age near zero forever and
+    /// is refused like any other unprovable freshness claim.
+    static let futureTimestampTolerance: TimeInterval = 300
+
     /// Load and fully validate the artifact, or nil (fail closed).
     /// `existingTag` is the system's current prefilter tag: when it
     /// matches the artifact's tag the system needs no update and the
     /// caller returns nil-for-no-change instead.
+    /// AGE is validated here, per use: `now` against the artifact's
+    /// download timestamp. An expired artifact is .invalid, so the
+    /// control provider fails closed (system keeps no prefilter with
+    /// shouldFailClosed = true) rather than enforce stale policy.
     /// The tri-state the control provider needs: a valid artifact,
     /// an explicitly-unchanged tag (Apple's nil-for-no-change), or an
     /// INVALID state (missing, corrupt, foreign identity, wrong
-    /// format, hash mismatch). Callers must never collapse .invalid
-    /// into "no change": that would silently retain a previous
-    /// identity's prefilter as current policy.
+    /// format, hash mismatch, expired or unprovable age). Callers
+    /// must never collapse .invalid into "no change": that would
+    /// silently retain a previous identity's prefilter as current
+    /// policy.
     enum LoadResult: Equatable {
         case artifact(Artifact)
         case unchanged
         case invalid
     }
 
-    func loadResult(existingTag: String? = nil) -> LoadResult {
+    func loadResult(existingTag: String? = nil,
+                    now: Date = Date()) -> LoadResult {
         guard let raw = try? Data(contentsOf: artifactFile),
               let snapshot = try? JSONDecoder().decode(
                   PrefilterUpdater.Snapshot.self, from: raw),
@@ -71,6 +91,12 @@ struct URLFilterPrefilterSource {
               snapshot.manifest.version > 0,
               let params = try? snapshot.manifest.appleParameters(),
               snapshot.prefilter.count == params.byteCount
+        else { return .invalid }
+        // Freshness at use time: within the expiry horizon, and not
+        // dated implausibly far in the future.
+        let age = now.timeIntervalSince(snapshot.fetchedAt)
+        guard age <= Self.maxArtifactAge,
+              age >= -Self.futureTimestampTolerance
         else { return .invalid }
         let digest = SHA256.hash(data: snapshot.prefilter)
             .map { String(format: "%02x", $0) }.joined()
@@ -87,9 +113,10 @@ struct URLFilterPrefilterSource {
     /// Convenience for callers that only need pass/fail-closed:
     /// nil for BOTH unchanged and invalid. The control provider uses
     /// loadResult so it can fail closed on .invalid instead.
-    func load(existingTag: String? = nil) -> Artifact? {
+    func load(existingTag: String? = nil,
+              now: Date = Date()) -> Artifact? {
         if case .artifact(let artifact) = loadResult(
-            existingTag: existingTag) {
+            existingTag: existingTag, now: now) {
             return artifact
         }
         return nil

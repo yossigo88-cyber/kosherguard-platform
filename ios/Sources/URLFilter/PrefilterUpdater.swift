@@ -75,6 +75,50 @@ struct PrefilterUpdater {
         /// suppress the first download from the current one
         /// (restore rejects it, the sync does a full download).
         let endpointFingerprint: String
+        /// When this snapshot was downloaded. Bounds the artifact's
+        /// lifetime AT USE TIME: URLFilterPrefilterSource refuses an
+        /// artifact older than maxArtifactAge even when no refresh
+        /// ever runs (the OS is never obliged to wake the app), so
+        /// stale policy can never be enforced without bound.
+        /// Required on decode: a legacy artifact without it cannot
+        /// prove its age and is treated as corrupt (full re-download,
+        /// never silently trusted).
+        let fetchedAt: Date
+
+        enum CodingKeys: String, CodingKey {
+            case manifest, prefilter, endpointFingerprint, fetchedAt
+        }
+
+        init(manifest: Manifest, prefilter: Data,
+             endpointFingerprint: String, fetchedAt: Date) {
+            self.manifest = manifest
+            self.prefilter = prefilter
+            self.endpointFingerprint = endpointFingerprint
+            self.fetchedAt = fetchedAt
+        }
+
+        /// Explicit seconds-since-1970 encoding: the artifact crosses
+        /// encoders (written by JSONEncoder, hand-written by tests,
+        /// read on any platform), so the date must not depend on a
+        /// coder's default date strategy.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            manifest = try c.decode(Manifest.self, forKey: .manifest)
+            prefilter = try c.decode(Data.self, forKey: .prefilter)
+            endpointFingerprint = try c.decode(String.self,
+                                               forKey: .endpointFingerprint)
+            fetchedAt = Date(timeIntervalSince1970:
+                try c.decode(Double.self, forKey: .fetchedAt))
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(manifest, forKey: .manifest)
+            try c.encode(prefilter, forKey: .prefilter)
+            try c.encode(endpointFingerprint, forKey: .endpointFingerprint)
+            try c.encode(fetchedAt.timeIntervalSince1970,
+                         forKey: .fetchedAt)
+        }
     }
 
     let serverBaseURL: URL
@@ -148,7 +192,8 @@ struct PrefilterUpdater {
         guard bits.count == manifest.prefilter.bytes,
               digest == manifest.prefilter.sha256 else { throw UpdateError.integrityMismatch }
         let snapshot = Snapshot(manifest: manifest, prefilter: bits,
-                                endpointFingerprint: endpointFingerprint)
+                                endpointFingerprint: endpointFingerprint,
+                                fetchedAt: now)
         // One atomic document: no manifest/version can outlive its bytes.
         if let persistTo {
             try JSONEncoder().encode(snapshot).write(to: persistTo,

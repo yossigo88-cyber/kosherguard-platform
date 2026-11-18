@@ -531,12 +531,33 @@ final class FilterSyncViewModel {
                                    store: store)
         }
     }
+
+    /// Background-refresh entry point (BGTaskScheduler): runs the
+    /// SAME tested sync path as the manual button and reports whether
+    /// a sync completed, which drives the task's completion status
+    /// and the failure backoff cadence. A controller in a
+    /// non-syncable state (not configured, signed out) reports false:
+    /// the refresh did nothing useful and the cadence backs off
+    /// instead of polling hourly forever. Freshness is an
+    /// optimization only - use-time expiry fails closed when the OS
+    /// never grants a refresh.
+    func syncForBackground() async -> Bool {
+        guard let controller else { return false }
+        let configuration = AppConfiguration.currentOnDevice()
+        let store = FilterRuleStore.appGroupStore()
+        await controller.syncNow()
+        refreshAppPolicyMirror(configuration: configuration,
+                               store: store)
+        if case .synced = controller.state { return true }
+        return false
+    }
 }
 
 @main
 struct KosherGuardApp: App {
     @State private var credentials: CredentialController
     @State private var sync: FilterSyncViewModel
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let credentials = CredentialController()
@@ -549,6 +570,19 @@ struct KosherGuardApp: App {
         }
         _credentials = State(wrappedValue: credentials)
         _sync = State(wrappedValue: sync)
+        #if canImport(BackgroundTasks)
+        // Background policy refresh (BGTaskScheduler). Registration
+        // MUST happen before launch finishes. OS-DISCRETIONARY: the
+        // task may run late or never; freshness here is an
+        // optimization, and enforcement fails closed at the use-time
+        // expiry horizons when no refresh runs (see
+        // BackgroundRefreshPolicy / BackgroundRefreshScheduler).
+        BackgroundRefreshScheduler.shared.register { [weak sync] in
+            guard let sync else { return false }
+            return await sync.syncForBackground()
+        }
+        BackgroundRefreshScheduler.shared.scheduleNext()
+        #endif
     }
 
     var body: some Scene {
@@ -556,6 +590,16 @@ struct KosherGuardApp: App {
             FilterStatusView()
                 .environment(credentials)
                 .environment(sync)
+                #if canImport(BackgroundTasks)
+                // Leaving the foreground is the natural moment to
+                // request the next background refresh (same-identifier
+                // submit replaces, never stacks).
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .background {
+                        BackgroundRefreshScheduler.shared.scheduleNext()
+                    }
+                }
+                #endif
         }
     }
 }

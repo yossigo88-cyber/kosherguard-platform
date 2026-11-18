@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${KG_SWIFT_TEST_WORK:-$(mktemp -d)}"
 mkdir -p "$WORK/Sources/Core" "$WORK/Tests/CoreTests"
-cp "$ROOT/ios/Sources/URLFilter/"{AuthSessionClient,CredentialIssuanceClient,AppConfiguration,PrefilterUpdater,FilterRuleStore,FilterRulesClient,FilterSyncController,FilterVerdictEngine,SignInCoordinator,ApplePrefilter,DohTokenProvider,DNSProxyRelay,URLFilterPrefilterSource,AppBlockingPolicy,PersonalConfiguration,ClientConfigClient,PersonalRegistrationClient,PersonalSetupCoordinator}.swift "$WORK/Sources/Core/"
+cp "$ROOT/ios/Sources/URLFilter/"{AuthSessionClient,CredentialIssuanceClient,AppConfiguration,PrefilterUpdater,FilterRuleStore,FilterRulesClient,FilterSyncController,FilterVerdictEngine,SignInCoordinator,ApplePrefilter,DohTokenProvider,DNSProxyRelay,URLFilterPrefilterSource,AppBlockingPolicy,PersonalConfiguration,ClientConfigClient,PersonalRegistrationClient,PersonalSetupCoordinator,BackgroundRefreshPolicy}.swift "$WORK/Sources/Core/"
 cp "$ROOT/tools/swift-portable-tests.swift" "$WORK/Tests/CoreTests/CoreTests.swift"
 cat > "$WORK/Package.swift" <<'SWIFT'
 // swift-tools-version: 5.9

@@ -1561,6 +1561,68 @@ final class MaintenancePolicyTests: XCTestCase {
     }
 }
 
+/// Background policy-refresh scheduling: plist/code parity and the
+/// refresh cadence. The OS-discretion safety story (fail-closed
+/// use-time expiry when no refresh ever runs) is proven by
+/// FilterVerdictEngineTests.testExpiredSnapshotFailsClosedPerFlow
+/// and URLFilterPrefilterSourceTests.testExpiredArtifactIsInvalidAtUseTime.
+final class BackgroundRefreshPolicyTests: XCTestCase {
+    func repoRoot() throws -> URL {
+        guard let root = ProcessInfo.processInfo
+            .environment["KG_REPO_ROOT"]
+        else { throw XCTSkip("KG_REPO_ROOT not set") }
+        return URL(fileURLWithPath: root)
+    }
+
+    /// The registered task identifier MUST be declared in the app's
+    /// Info.plist (BGTaskSchedulerPermittedIdentifiers) with the
+    /// fetch background mode, or registration traps at runtime on
+    /// device. Code and plist can drift silently; this is the parity
+    /// check between them.
+    func testPlistDeclaresBackgroundRefreshTask() throws {
+        let root = try repoRoot()
+        let data = try Data(contentsOf: root.appendingPathComponent(
+            "ios/Configuration/App-Info.plist"))
+        let plist = try PropertyListSerialization.propertyList(
+            from: data, format: nil) as? [String: Any]
+        let identifiers = plist?["BGTaskSchedulerPermittedIdentifiers"]
+            as? [String] ?? []
+        XCTAssertTrue(
+            identifiers.contains(BackgroundRefreshPolicy.taskIdentifier),
+            "App-Info.plist must permit "
+                + BackgroundRefreshPolicy.taskIdentifier)
+        let modes = plist?["UIBackgroundModes"] as? [String] ?? []
+        XCTAssertTrue(modes.contains("fetch"),
+                      "App-Info.plist must declare the fetch mode")
+    }
+
+    /// The identifier is pinned: a silent rename would break both the
+    /// plist parity and the on-device registration.
+    func testTaskIdentifierPinned() {
+        XCTAssertEqual(BackgroundRefreshPolicy.taskIdentifier,
+                       "com.kosherguard.app.policy-refresh")
+    }
+
+    /// Cadence: the routine interval after success, bounded backoff
+    /// after failures (the tested MaintenancePolicy values).
+    func testEarliestBeginDateFollowsMaintenancePolicy() {
+        let now = Date()
+        XCTAssertEqual(
+            BackgroundRefreshPolicy.earliestBeginDate(
+                now: now, consecutiveFailures: 0),
+            now.addingTimeInterval(MaintenancePolicy.routineInterval))
+        XCTAssertEqual(
+            BackgroundRefreshPolicy.earliestBeginDate(
+                now: now, consecutiveFailures: 1),
+            now.addingTimeInterval(MaintenancePolicy.minBackoff))
+        XCTAssertEqual(
+            BackgroundRefreshPolicy.earliestBeginDate(
+                now: now, consecutiveFailures: 12),
+            now.addingTimeInterval(MaintenancePolicy.routineInterval),
+            "backoff is capped at the routine interval")
+    }
+}
+
 /// Static build-configuration guards: the portable suite compiles a
 /// copied-source harness, NOT the Xcode target graph - these tests
 /// statically verify the hand-authored project stays consistent.
@@ -3327,7 +3389,8 @@ final class URLFilterPrefilterSourceTests: XCTestCase {
                        format: String = "apple-fnv1a-murmur3-doublehash-v1",
                        bits: [UInt8] = [0xAB, 0xCD, 0xEF],
                        corruptSHA: Bool = false,
-                       tamperBits: Bool = false) throws -> URL {
+                       tamperBits: Bool = false,
+                       fetchedAt: Date? = Date()) throws -> URL {
         let hash = SHA256.hash(data: Data(bits)).map {
             String(format: "%02x", $0)
         }.joined()
@@ -3343,12 +3406,17 @@ final class URLFilterPrefilterSourceTests: XCTestCase {
                     ? String(repeating: "0", count: 64) : hash,
             ],
         ]
-        let snapshot: [String: Any] = [
+        var snapshot: [String: Any] = [
             "manifest": manifest,
             "prefilter": Data(tamperBits ? [0x00, 0x00, 0x00] : bits)
                 .base64EncodedString(),
             "endpointFingerprint": fingerprint ?? self.fingerprint,
         ]
+        // The on-disk format stores seconds since 1970 explicitly.
+        // Pass nil to simulate a legacy artifact with no age record.
+        if let fetchedAt {
+            snapshot["fetchedAt"] = fetchedAt.timeIntervalSince1970
+        }
         let file = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         try JSONSerialization.data(withJSONObject: snapshot)
@@ -3370,6 +3438,70 @@ final class URLFilterPrefilterSourceTests: XCTestCase {
         XCTAssertEqual(a.tag, SHA256.hash(data: a.data).map {
             String(format: "%02x", $0)
         }.joined(), "tag is the SHA-256 of the bit array")
+    }
+
+    /// USE-TIME EXPIRY, the "OS never wakes the app" guarantee for
+    /// the prefilter layer: a fully valid artifact (right identity,
+    /// right hash, right format) that is older than maxArtifactAge is
+    /// INVALID at load time, so the control provider fails closed
+    /// instead of enforcing unboundedly stale policy. No timer,
+    /// background task or disk event is needed for this to take
+    /// effect.
+    func testExpiredArtifactIsInvalidAtUseTime() throws {
+        let old = Date().addingTimeInterval(
+            -URLFilterPrefilterSource.maxArtifactAge - 3600)
+        let file = try writeSnapshot(fetchedAt: old)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let source = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: fingerprint)
+        XCTAssertEqual(source.loadResult(), .invalid)
+        XCTAssertNil(source.load())
+    }
+
+    /// Just inside the horizon the same artifact still loads: the
+    /// expiry check is the age boundary, not a blunt refusal.
+    func testArtifactJustInsideHorizonLoads() throws {
+        let recent = Date().addingTimeInterval(
+            -URLFilterPrefilterSource.maxArtifactAge + 3600)
+        let file = try writeSnapshot(fetchedAt: recent)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let source = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: fingerprint)
+        guard case .artifact = source.loadResult() else {
+            return XCTFail("in-window artifact refused")
+        }
+    }
+
+    /// A legacy artifact with NO age record cannot prove its
+    /// freshness: refused (decode fails), never silently trusted.
+    func testLegacyArtifactWithoutFetchedAtIsInvalid() throws {
+        let file = try writeSnapshot(fetchedAt: nil)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let source = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: fingerprint)
+        XCTAssertEqual(source.loadResult(), .invalid)
+    }
+
+    /// A far-future download timestamp would pin the artifact's age
+    /// near zero forever (never expiring): refused like any other
+    /// unprovable freshness claim. Small clock adjustments inside
+    /// futureTimestampTolerance still load.
+    func testFarFutureFetchedAtIsInvalid() throws {
+        let future = Date().addingTimeInterval(3600)
+        let file = try writeSnapshot(fetchedAt: future)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let source = URLFilterPrefilterSource(
+            artifactFile: file, endpointFingerprint: fingerprint)
+        XCTAssertEqual(source.loadResult(), .invalid)
+        let slightSkew = Date().addingTimeInterval(
+            URLFilterPrefilterSource.futureTimestampTolerance / 2)
+        let skewed = try writeSnapshot(fetchedAt: slightSkew)
+        defer { try? FileManager.default.removeItem(at: skewed) }
+        let skewedSource = URLFilterPrefilterSource(
+            artifactFile: skewed, endpointFingerprint: fingerprint)
+        guard case .artifact = skewedSource.loadResult() else {
+            return XCTFail("clock-skewed artifact within tolerance refused")
+        }
     }
 
     func testLoadResultDistinguishesInvalidFromUnchanged() throws {

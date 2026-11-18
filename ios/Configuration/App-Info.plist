@@ -28,6 +28,21 @@
 	</dict>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<!-- Background policy refresh (Stage 12, B2): declares the
+	     BGTaskScheduler identifier registered by
+	     BackgroundRefreshScheduler (constant BackgroundRefreshPolicy
+	     .taskIdentifier; a portable test asserts plist/code parity).
+	     OS-DISCRETIONARY: iOS decides if/when the refresh task runs.
+	     Filtering correctness never depends on it - both policy layers
+	     expire at use time and fail closed when no refresh runs. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.kosherguard.app.policy-refresh</string>
+	</array>
 	<!-- NSPIRConfiguration: REQUIRED top-level declaration of the URL
 	     Filter's PIR endpoints (grounded in Apple's PIR-service
 	     onboarding documentation, apple/pir-service-example
