@@ -308,3 +308,31 @@ class TestClientConfig:
         with pytest.raises(ConfigError):
             _settings(tmp_path,
                       KG_PIR_SERVER_URL="https://pir.example.org")
+
+    @pytest.mark.parametrize("key", ["KG_PIR_SERVER_URL",
+                                     "KG_PIR_ISSUER_URL"])
+    @pytest.mark.parametrize("value", [
+        # Apple's PIR configuration matches by HOST: a path would be
+        # silently meaningless, so it is a startup error.
+        "https://pir.example.org/some/path",
+        "https://pir.example.org/pir",
+        "http://pir.example.org",
+        "https://user:pw@pir.example.org",
+        "https://pir.example.org/?q=1",
+        "https://pir.example.org/#frag",
+    ])
+    def test_pir_url_must_be_host_only_https(self, tmp_path, key,
+                                             value):
+        both = {"KG_PIR_SERVER_URL": "https://pir.example.org",
+                "KG_PIR_ISSUER_URL": "https://issuer.example.org"}
+        both[key] = value
+        with pytest.raises(ConfigError):
+            _settings(tmp_path, **both)
+
+    def test_pir_host_only_pair_accepted(self, tmp_path):
+        settings = _settings(
+            tmp_path, KG_PIR_SERVER_URL="https://pir.example.org",
+            KG_PIR_ISSUER_URL="https://issuer.example.org:8443")
+        assert settings.pir_server_url == "https://pir.example.org"
+        assert settings.pir_issuer_url == \
+            "https://issuer.example.org:8443" 

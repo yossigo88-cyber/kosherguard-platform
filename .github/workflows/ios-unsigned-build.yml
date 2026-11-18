@@ -23,6 +23,10 @@ jobs:
           persist-credentials: false
       - name: Validate project structure (no Xcode needed)
         run: python3 tools/validate-ios-project.py
+      - name: Validator parser regression tests
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest tools/test_validate_ios_project.py -q
 
   xcode-compile:
     runs-on: macos-26

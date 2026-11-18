@@ -121,21 +121,41 @@ public actor PersonalSetupCoordinator {
                     String(describing: error))
             }
 
-            let registered: PersonalRegistrationClient.Registration
-            do {
-                registered = try await registration.register(
-                    name: pending.deviceName,
-                    registrationKey: pending.registrationKey,
-                    sessionCookie: cookie)
-            } catch let error
-                as PersonalRegistrationClient.RegistrationError {
-                switch error {
-                case .unauthorized: throw SetupError.invalidCredentials
-                case .nameConflict: throw SetupError.nameConflict
-                default:
-                    throw SetupError.failed(String(describing: error))
+            // Bounded name-conflict recovery: a colliding
+            // auto-generated name is regenerated (same key, new
+            // suffix) and retried at most twice. A persistent
+            // conflict surfaces as nameConflict rather than
+            // dead-ending the user on an uneditable name.
+            var attempt = pending
+            var registered: PersonalRegistrationClient.Registration?
+            for retry in 0...2 {
+                do {
+                    registered = try await registration.register(
+                        name: attempt.deviceName,
+                        registrationKey: attempt.registrationKey,
+                        sessionCookie: cookie)
+                    break
+                } catch let error
+                    as PersonalRegistrationClient.RegistrationError {
+                    switch error {
+                    case .unauthorized:
+                        throw SetupError.invalidCredentials
+                    case .nameConflict where retry < 2:
+                        do {
+                            attempt = try store.regeneratePendingName()
+                        } catch {
+                            throw SetupError.persistenceFailed(
+                                String(describing: error))
+                        }
+                    case .nameConflict:
+                        throw SetupError.nameConflict
+                    default:
+                        throw SetupError.failed(
+                            String(describing: error))
+                    }
                 }
             }
+            guard let registered else { throw SetupError.nameConflict }
             // A re-registered device that is offboarded/inactive is
             // NOT silently reactivated: the guardian re-enables it in
             // the dashboard. Surface the state instead.
@@ -162,6 +182,13 @@ public actor PersonalSetupCoordinator {
             outcome = .success(configuration)
         } catch let error as SetupError {
             outcome = .failure(error)
+        } catch {
+            // Network failures (URLError), cancellation, and every
+            // other non-typed error land here so the best-effort
+            // sign-out below still runs on EVERY exit path. The
+            // session must never leak because an error type was not
+            // anticipated.
+            outcome = .failure(.failed(String(describing: error)))
         }
         if let signOut {
             try? await signOut.signOut(sessionCookie: cookie)

@@ -95,9 +95,23 @@ public struct ClientConfigClient {
         let dataset = validated(body.dataset_base_url,
                                 "dataset_base_url")
         let doh = validated(body.doh_server_url, "doh_server_url")
-        var pir = validated(body.pir_server_url, "pir_server_url")
-        var issuer = validated(body.pir_privacy_pass_issuer_url,
-                               "pir_privacy_pass_issuer_url")
+        // PIR URLs are host-only (NSPIRConfiguration matches by
+        // host); a path is dropped with a named issue, never used.
+        func validatedPIR(_ value: String?, _ key: String) -> URL? {
+            guard let value else { return nil }
+            guard let url =
+                    PersonalConfiguration.validatedHostOnlyHTTPSURL(
+                        value)
+            else {
+                issues.append("\(key) is not a host-only https URL; "
+                    + "ignored")
+                return nil
+            }
+            return url
+        }
+        var pir = validatedPIR(body.pir_server_url, "pir_server_url")
+        var issuer = validatedPIR(body.pir_privacy_pass_issuer_url,
+                                  "pir_privacy_pass_issuer_url")
         // The PIR pair is jointly optional (same rule as the managed
         // configuration and the server settings): exactly one present
         // is a configuration error, surfaced, with both dropped.

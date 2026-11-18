@@ -4368,3 +4368,182 @@ final class PersonalSetupCoordinatorTests: XCTestCase {
         XCTAssertEqual(signOut.cookies, ["session-3"])
     }
 }
+
+// MARK: - Personal lane corrections (review batch 1)
+
+final class PersonalLaneCorrectionTests: XCTestCase {
+    func tempStore() -> (PersonalConfigurationStore, URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        return (PersonalConfigurationStore(directory: dir), dir)
+    }
+    let services = ClientConfigClient.ServiceConfig(
+        datasetBaseURL: URL(string: "https://data.example.test"),
+        dohServerURL: nil, pirServerURL: nil,
+        pirPrivacyPassIssuerURL: nil, issues: [])
+
+    // A generic URLError (network failure) is NOT one of the typed
+    // client errors: it must still route to .failed AND still run the
+    // best-effort sign-out. Regression: the session used to leak.
+    func testGenericNetworkErrorStillSignsOut() async throws {
+        struct FailingConfig: ClientConfigFetching {
+            func fetchConfig(sessionCookie: String) async throws
+                -> ClientConfigClient.ServiceConfig {
+                throw URLError(.notConnectedToInternet)
+            }
+        }
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let signOut = FakeSignOut()
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "https://cp.example.test",
+                email: "g@example.test", password: "pw", totpCode: nil,
+                auth: FakeSignIn(.ok("session-x", delayNanos: 0)),
+                config: FailingConfig(),
+                registration: FakeRegistration(.ok(
+                    PersonalRegistrationClient.Registration(
+                        deviceID: 1, name: "n", state: "active",
+                        created: true))),
+                signOut: signOut)
+            XCTFail("accepted a network failure")
+        } catch PersonalSetupCoordinator.SetupError.failed {}
+        XCTAssertEqual(signOut.cookies, ["session-x"])
+    }
+
+    // Cancellation-shaped errors take the same cleanup path.
+    func testCancellationStillSignsOut() async throws {
+        struct CancellingConfig: ClientConfigFetching {
+            func fetchConfig(sessionCookie: String) async throws
+                -> ClientConfigClient.ServiceConfig {
+                throw CancellationError()
+            }
+        }
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let signOut = FakeSignOut()
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "https://cp.example.test",
+                email: "g@example.test", password: "pw", totpCode: nil,
+                auth: FakeSignIn(.ok("session-c", delayNanos: 0)),
+                config: CancellingConfig(),
+                registration: FakeRegistration(.ok(
+                    PersonalRegistrationClient.Registration(
+                        deviceID: 1, name: "n", state: "active",
+                        created: true))),
+                signOut: signOut)
+            XCTFail("accepted cancellation")
+        } catch PersonalSetupCoordinator.SetupError.failed {}
+        XCTAssertEqual(signOut.cookies, ["session-c"])
+    }
+
+    // Name-conflict recovery: the SAME registration key is retried
+    // with a regenerated display name, so recovery never creates a
+    // second device row and never dead-ends.
+    final class ConflictThenOk: PersonalDeviceRegistering {
+        private let lock = NSLock()
+        private var _calls = 0
+        var calls: Int { lock.lock(); defer { lock.unlock() }
+            return _calls }
+        private(set) var names: [String] = []
+        func register(name: String, registrationKey: String,
+                      sessionCookie: String) async throws
+            -> PersonalRegistrationClient.Registration {
+            lock.lock(); _calls += 1; names.append(name); lock.unlock()
+            if _calls == 1 {
+                throw PersonalRegistrationClient.RegistrationError
+                    .nameConflict
+            }
+            return PersonalRegistrationClient.Registration(
+                deviceID: 7, name: name, state: "active", created: true)
+        }
+    }
+
+    func testNameConflictRegeneratesNameKeepsKey() async throws {
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let registration = ConflictThenOk()
+        let coordinator = PersonalSetupCoordinator(store: store)
+        let config = try await coordinator.setUp(
+            serverURL: "https://cp.example.test",
+            email: "g@example.test", password: "pw", totpCode: nil,
+            auth: FakeSignIn(.ok("s", delayNanos: 0)),
+            config: FakeConfigFetch(.ok(services)),
+            registration: registration, signOut: nil)
+        XCTAssertEqual(registration.calls, 2)
+        XCTAssertEqual(registration.names.count, 2)
+        XCTAssertNotEqual(registration.names[0], registration.names[1])
+        // Idempotency intact: one key throughout, one device row.
+        XCTAssertEqual(config.deviceID, 7)
+        XCTAssertEqual(store.load()?.deviceName, registration.names[1])
+    }
+
+    final class AlwaysConflict: PersonalDeviceRegistering {
+        private let lock = NSLock()
+        private var _calls = 0
+        var calls: Int { lock.lock(); defer { lock.unlock() }
+            return _calls }
+        func register(name: String, registrationKey: String,
+                      sessionCookie: String) async throws
+            -> PersonalRegistrationClient.Registration {
+            lock.lock(); _calls += 1; lock.unlock()
+            throw PersonalRegistrationClient.RegistrationError
+                .nameConflict
+        }
+    }
+
+    func testPersistentNameConflictIsBounded() async throws {
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let registration = AlwaysConflict()
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "https://cp.example.test",
+                email: "g@example.test", password: "pw", totpCode: nil,
+                auth: FakeSignIn(.ok("s", delayNanos: 0)),
+                config: FakeConfigFetch(.ok(services)),
+                registration: registration, signOut: nil)
+            XCTFail("persistent conflict accepted")
+        } catch PersonalSetupCoordinator.SetupError.nameConflict {}
+        // Initial + two retries, then an honest failure.
+        XCTAssertEqual(registration.calls, 3)
+        XCTAssertNil(store.load())
+    }
+
+    // PIR URLs are host-only (NSPIRConfiguration matches by host).
+    func testPIRHostOnlyValidation() {
+        XCTAssertNotNil(PersonalConfiguration.validatedHostOnlyHTTPSURL(
+            "https://pir.example.test"))
+        XCTAssertNotNil(PersonalConfiguration.validatedHostOnlyHTTPSURL(
+            "https://pir.example.test:8443"))
+        XCTAssertNil(PersonalConfiguration.validatedHostOnlyHTTPSURL(
+            "https://pir.example.test/pir"))
+        XCTAssertNil(PersonalConfiguration.validatedHostOnlyHTTPSURL(
+            "https://pir.example.test/?q=1"))
+        XCTAssertNil(PersonalConfiguration.validatedHostOnlyHTTPSURL(
+            "https://user:pw@pir.example.test"))
+        XCTAssertNil(PersonalConfiguration.validatedHostOnlyHTTPSURL(
+            "http://pir.example.test"))
+    }
+
+    func testDiscoveryDropsPathPIRWithIssue() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureProtocol.self]
+        FixtureProtocol.handler = { _ in
+            (200, [:], Data(#"{"dataset_base_url":null,"doh_server_url":null,"pir_server_url":"https://pir.example.test/pir","pir_privacy_pass_issuer_url":"https://issuer.example.test"}"#.utf8))
+        }
+        let client = ClientConfigClient(
+            baseURL: URL(string: "https://fixture.example")!,
+            session: URLSession(configuration: config))
+        let fetched = try await client.fetch(sessionCookie: "fixture")
+        // The path-shaped PIR URL is dropped; the lone issuer then
+        // also drops under the pair rule - never a mismatched pair.
+        XCTAssertNil(fetched.pirServerURL)
+        XCTAssertNil(fetched.pirPrivacyPassIssuerURL)
+        XCTAssertFalse(fetched.issues.isEmpty)
+    }
+}

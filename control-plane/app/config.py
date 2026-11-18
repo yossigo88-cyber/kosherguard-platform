@@ -35,6 +35,23 @@ def _env_https_url(raw: str | None, name: str) -> str | None:
     return value
 
 
+def _env_pir_url(raw: str | None, name: str) -> str | None:
+    """PIR server / Privacy Pass issuer URL. Stricter than a generic
+    service URL: Apple's NSPIRConfiguration treats these as HOSTS
+    (the static Info.plist declaration is matched by host), so a path
+    would be silently meaningless. Only https://host[:port] is valid.
+    """
+    value = _env_https_url(raw, name)
+    if value is None:
+        return None
+    path = urlsplit(value).path
+    if path not in ("", "/"):
+        raise ConfigError(
+            f"{name} must be a host-only https:// URL: Apple's PIR "
+            "configuration matches by host, a path is never used")
+    return value
+
+
 def _env_flag(raw: str | None, name: str) -> bool:
     if raw is None:
         return False
@@ -97,9 +114,9 @@ class Settings:
             env.get("KG_DATASET_BASE_URL"), "KG_DATASET_BASE_URL")
         self.doh_server_url = _env_https_url(
             env.get("KG_DOH_SERVER_URL"), "KG_DOH_SERVER_URL")
-        self.pir_server_url = _env_https_url(
+        self.pir_server_url = _env_pir_url(
             env.get("KG_PIR_SERVER_URL"), "KG_PIR_SERVER_URL")
-        self.pir_issuer_url = _env_https_url(
+        self.pir_issuer_url = _env_pir_url(
             env.get("KG_PIR_ISSUER_URL"), "KG_PIR_ISSUER_URL")
         if (self.pir_server_url is None) != (self.pir_issuer_url is None):
             raise ConfigError(

@@ -79,6 +79,19 @@ public struct PersonalConfiguration: Codable, Equatable {
         else { return nil }
         return url
     }
+
+    /// PIR server / Privacy Pass issuer URLs are stricter: Apple's
+    /// NSPIRConfiguration matches the static Info.plist declaration
+    /// BY HOST, so a path would be silently meaningless and can
+    /// diverge from the declared endpoint. Only https://host[:port]
+    /// validates.
+    public static func validatedHostOnlyHTTPSURL(_ raw: String)
+        -> URL? {
+        guard let url = validatedHTTPSURL(raw),
+              url.path.isEmpty || url.path == "/"
+        else { return nil }
+        return url
+    }
 }
 
 public extension AppConfiguration {
@@ -194,6 +207,35 @@ public extension PersonalConfigurationStore {
         try FileManager.default.createDirectory(
             at: pendingFile.deletingLastPathComponent(),
             withIntermediateDirectories: true)
+        var options: Data.WritingOptions = [.atomic]
+        #if canImport(Darwin)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
+        #endif
+        try JSONEncoder().encode(pending).write(to: pendingFile,
+                                                options: options)
+        return pending
+    }
+
+    /// A name conflict means another device in the family already
+    /// holds the auto-generated display name. Recovery keeps the SAME
+    /// registration key (idempotency ownership is keyed by it, never
+    /// by name) and only picks a fresh unique-looking suffix, so a
+    /// retry cannot create a second device row and never dead-ends on
+    /// an uneditable name.
+    func regeneratePendingName() throws -> PendingRegistration {
+        guard let data = FileManager.default.contents(
+            atPath: pendingFile.path),
+           var pending = try? JSONDecoder().decode(
+               PendingRegistration.self, from: data)
+        else {
+            // Nothing pending: create a fresh identity wholesale.
+            return try loadOrCreatePendingRegistration()
+        }
+        let suffix = String(UUID().uuidString.replacingOccurrences(
+            of: "-", with: "").lowercased().prefix(6))
+        pending = PendingRegistration(
+            registrationKey: pending.registrationKey,
+            deviceName: "Personal device (\(suffix))")
         var options: Data.WritingOptions = [.atomic]
         #if canImport(Darwin)
         options.insert(.completeFileProtectionUntilFirstUserAuthentication)
