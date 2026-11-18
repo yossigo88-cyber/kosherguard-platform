@@ -45,7 +45,7 @@ Six one-token replacements in `ios/Sources/URLFilter/FilterRuleStore.swift`:
 
 - Run: GitHub Actions run 44208950518, head `c789cd3`, same free `macos-26` runner, Xcode 26.6 / iPhoneOS 26.5 SDK. Run URL: https://github.com/yossigo88-cyber/kosherguard-platform/actions/runs/44208950518
 - static-validation: SUCCESS. xcode-compile: FAILURE, exit code 65, ~46s.
-- Local pre-push checks: `tools/validate-ios-project.py` all checks passed; Python suites `mdm/tests` 136 passed, `filtering-engine/tests` 337 passed (run after the push - toolchain constraints, recorded honestly; both unrelated to the Swift change). `url-filter-server` tests could not collect (missing fastapi in sandbox); `control-plane` needs pgserver. The changed Swift file is Darwin-guarded and cannot be exercised on Linux.
+- Checks and tests, stated exactly: the ONLY relevant automated check before the push was `tools/validate-ios-project.py` (all checks passed, run pre-push). NO Swift tests were run: the repo's only Swift package (ios/Package.swift) declares no test targets, and the changed file is `#if canImport(Darwin)`-guarded, so no Linux toolchain could exercise it. Python suites were run AFTER the push for general completeness only and are unrelated to this change: `mdm/tests` 136 passed, `filtering-engine/tests` 337 passed; `url-filter-server` tests could not collect (missing fastapi in this sandbox), `control-plane` needs pgserver.
 
 ### The six FilterRuleStore errors are GONE
 
