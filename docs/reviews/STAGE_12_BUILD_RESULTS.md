@@ -4,7 +4,7 @@
 - Branch: `stage-12-free-ios-build` at `5c737e9c3e891de089affb62193f46f2713a9f37`
 - Run: GitHub Actions run 44207115197 ("iOS unsigned build"), 2026-11-18T00:21:14Z, free standard `macos-26` runner, $0 compute for public repos, no artifacts uploaded
 - Untouched: `main` `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`, `stage-10` `791f0ef`, `stage-11` `62c0ccc`, superseded `stage-12-free-ci-unsigned-build` `b30a6bb`
-- Status: BUILD RUN COMPLETED - REAL RESULT. The unsigned compile FAILED with 6 genuine Swift compiler errors in one file. Nothing was signed, deployed or purchased. No compilation success is claimed.
+- Status: TWO REAL RUNS COMPLETED. Run 1 failed with 6 compile errors (fixed, user-approved). Run 2 (verification) CONFIRMS those 6 are gone and surfaced 1 new compile error in a different file. Nothing was signed, deployed or purchased. No compilation success is claimed.
 
 ## 1. What ran
 
@@ -38,3 +38,33 @@ The code uses the old-style Swift name `.completeUntilFirstUserAuthentication` f
 
 Six one-token replacements in `ios/Sources/URLFilter/FilterRuleStore.swift`:
 `options.insert(.completeUntilFirstUserAuthentication)` -> `options.insert(.completeFileProtectionUntilFirstUserAuthentication)` at the same six lines. No logic change; the file-protection semantic is identical. A neighboring comment on line 862 that names the protection level is untouched (comment only). Rebuild required after the fix to confirm zero remaining errors; more errors may surface once this file compiles, since compilation stopped here.
+
+---
+
+## Run 2 - verification rebuild (2026-11-18T00:34:38Z)
+
+- Run: GitHub Actions run 44208950518, head `c789cd3`, same free `macos-26` runner, Xcode 26.6 / iPhoneOS 26.5 SDK. Run URL: https://github.com/yossigo88-cyber/kosherguard-platform/actions/runs/44208950518
+- static-validation: SUCCESS. xcode-compile: FAILURE, exit code 65, ~46s.
+- Local pre-push checks: `tools/validate-ios-project.py` all checks passed; Python suites `mdm/tests` 136 passed, `filtering-engine/tests` 337 passed (run after the push - toolchain constraints, recorded honestly; both unrelated to the Swift change). `url-filter-server` tests could not collect (missing fastapi in sandbox); `control-plane` needs pgserver. The changed Swift file is Darwin-guarded and cannot be exercised on Linux.
+
+### The six FilterRuleStore errors are GONE
+
+`FilterRuleStore.swift` compiles clean; the URLFilter, FilterControl and Filter targets advanced past it. Failure moved to the DNSProxy extension compile batch.
+
+### Remaining error (1 unique, verbatim)
+
+`ios/Sources/DNSProxyExtension/DNSProxyProvider.swift:164:49`:
+
+```
+error: missing argument for parameter 'completionHandler' in call
+            let chunk = try await flow.readData()
+                                                ^
+NetworkExtension.NEAppProxyTCPFlow.readData:3:13: note: 'readData(completionHandler:)' declared here
+```
+
+Diagnosis: the code awaits `NEAppProxyTCPFlow.readData()` as if an async variant exists; the iOS SDK only declares the completion-handler form, so the call must be wrapped (e.g. `withCheckedThrowingContinuation`). This is a real source-level API-usage error, one site, not a one-token rename. NO fix applied - pending the user's decision, per instruction.
+
+### Warnings (non-fatal, pre-existing)
+
+- `FilterSyncController.swift:542:17` - 'no calls to throwing functions occur within try'
+- `ApplePrefilter.swift:121:45` - "immutable value 'skew' was never used"
