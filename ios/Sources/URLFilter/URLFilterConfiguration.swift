@@ -104,35 +104,17 @@ struct URLFilterConfiguration {
     }
 
     static func disableFilter() async throws {
-        // NSPIRConfiguration (grounded in Apple's PIR-service
-        // onboarding documentation, read 2026-11-17): the app
-        // Info.plist statically declares the PIR endpoints; from
-        // iOS/macOS 27.3 the system REJECTS any mismatch between
-        // these runtime values and the plist. Validate the match
-        // here so a misconfigured deployment fails at enable time
-        // with a clear error instead of a system rejection later.
-        if let declared = Bundle.main.object(
-            forInfoDictionaryKey: "NSPIRConfiguration")
-            as? [String: Any] {
-            if let declaredPIR = declared["PIRServerURL"] as? String,
-               let declaredURL = URL(string: declaredPIR),
-               declaredURL.host(percentEncoded: false)
-                    != pirServer.host(percentEncoded: false) {
-                throw ConfigurationError.notConfigured(
-                    "pirServerURL does not match the Info.plist "
-                    + "NSPIRConfiguration.PIRServerURL")
-            }
-            if let declaredIssuer =
-                    declared["PrivacyPassIssuerURL"] as? String,
-               let declaredURL = URL(string: declaredIssuer),
-               declaredURL.host(percentEncoded: false)
-                    != issuer.host(percentEncoded: false) {
-                throw ConfigurationError.notConfigured(
-                    "pirPrivacyPassIssuerURL does not match the "
-                    + "Info.plist NSPIRConfiguration."
-                    + "PrivacyPassIssuerURL")
-            }
-        }
+        // No pirServer/issuer values exist in this scope BY DESIGN:
+        // they are per-call inputs of enable(from:), bound from the
+        // CURRENT managed configuration, used to fail closed when
+        // unconfigured, to cross-check the Info.plist
+        // NSPIRConfiguration declaration, and to build the
+        // setConfiguration call. Disabling never reconfigures the
+        // PIR endpoints, so the enable-time plist-mismatch validation
+        // does not apply here - and must not: disableFilter() is the
+        // fail-closed path the caller takes precisely when the PIR
+        // keys are missing or invalid, so it has to stay able to
+        // turn the filter off in exactly that state.
         let manager = NEURLFilterManager.shared
         try await manager.loadFromPreferences()
         manager.isEnabled = false
