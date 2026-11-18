@@ -42,10 +42,148 @@ def load_plist(path):
         return plistlib.load(fh)
 
 
+
+
+# ---- OpenStep (ASCII) property-list parser -----------------------------
+# project.pbxproj is NOT XML: it is NeXTSTEP syntax. plistlib cannot
+# read it, and the textual checks below cannot see malformed structure
+# (a missing comma once produced a file this script passed and
+# xcodebuild rejected as "damaged"). Parse it for real, the way
+# xcodebuild does, before any content check runs. Grammar:
+#   value  = dict | array | string
+#   dict   = "{" (string "=" value ";")* "}"
+#   array  = "(" (value ",")* value? ")"
+#   string = quoted | bareword, with /* */ and // comments skipped
+
+class PbxParseError(ValueError):
+    pass
+
+
+def _tokenize_pbx(text):
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in " \t\r\n":
+            i += 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                raise PbxParseError(f"unterminated comment at offset {i}")
+            i = j + 2
+        elif c in "{}()=;,":
+            yield c
+            i += 1
+        elif c == '"':
+            j = i + 1
+            buf = []
+            while j < n and text[j] != '"':
+                if text[j] == "\\" and j + 1 < n:
+                    j += 1
+                buf.append(text[j])
+                j += 1
+            if j >= n:
+                raise PbxParseError(f"unterminated string at offset {i}")
+            yield ("str", "".join(buf))
+            i = j + 1
+        else:
+            j = i
+            while j < n and text[j] not in ' \t\r\n{}()=;,"':
+                j += 1
+            yield ("str", text[i:j])
+            i = j
+
+
+def parse_pbxproj(text):
+    """Parse the whole file; raise PbxParseError on any malformed
+    structure. Returns the root object as plain dicts/lists/strings."""
+    tokens = list(_tokenize_pbx(text))
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else None
+
+    def expect(tok):
+        nonlocal pos
+        if peek() != tok:
+            raise PbxParseError(
+                f"expected {tok!r} at token {pos}, got {peek()!r}")
+        pos += 1
+
+    def parse_value():
+        nonlocal pos
+        tok = peek()
+        if tok == "{":
+            pos += 1
+            d = {}
+            while peek() != "}":
+                key = peek()
+                if not (isinstance(key, tuple) and key[0] == "str"):
+                    raise PbxParseError(
+                        f"expected dict key at token {pos}, "
+                        f"got {key!r}")
+                pos += 1
+                expect("=")
+                d[key[1]] = parse_value()
+                expect(";")
+            pos += 1
+            return d
+        if tok == "(":
+            pos += 1
+            arr = []
+            while peek() != ")":
+                arr.append(parse_value())
+                if peek() == ",":
+                    pos += 1
+                elif peek() != ")":
+                    # THE regression this parser exists for: a missing
+                    # comma between array items must be a hard error.
+                    raise PbxParseError(
+                        f"missing ',' between array items at token "
+                        f"{pos}, got {peek()!r}")
+            pos += 1
+            return arr
+        if isinstance(tok, tuple) and tok[0] == "str":
+            pos += 1
+            return tok[1]
+        raise PbxParseError(
+            f"expected value at token {pos}, got {tok!r}")
+
+    root = parse_value()
+    if peek() is not None:
+        raise PbxParseError(f"trailing content after root at {peek()!r}")
+    if not isinstance(root, dict):
+        raise PbxParseError("pbxproj root is not a dictionary")
+    return root
+
+
 def main():
     strict_placeholders = "--strict-placeholders" in sys.argv
 
     text = PBX.read_text()
+
+    # ---- 0. Real syntax parse (regression gate) ----------------------
+    # Parse before ANY content check: a structurally malformed file
+    # must fail here exactly as xcodebuild would reject it, never
+    # reach the textual checks below and pass.
+    try:
+        pbx = parse_pbxproj(text)
+    except PbxParseError as exc:
+        err(f"project.pbxproj is not parseable OpenStep plist: {exc}")
+        pbx = None
+    if pbx is not None:
+        objects = pbx.get("objects")
+        if not isinstance(objects, dict) or not objects:
+            err("project.pbxproj has no objects dictionary")
+        else:
+            # The root object must exist and name a project.
+            root_id = pbx.get("rootObject")
+            root_obj = objects.get(root_id)
+            if not isinstance(root_obj, dict) or \
+                    root_obj.get("isa") != "PBXProject":
+                err("project.pbxproj rootObject is not a PBXProject")
 
     # ---- 1. PBXFileReference paths exist -------------------------------
     filerefs = {oid: (name, path) for oid, name, path in re.findall(
