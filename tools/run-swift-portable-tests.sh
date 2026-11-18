@@ -14,7 +14,7 @@ cp "$ROOT/tools/swift-portable-tests.swift" "$WORK/Tests/CoreTests/CoreTests.swi
 cat > "$WORK/Package.swift" <<'SWIFT'
 // swift-tools-version: 5.9
 import PackageDescription
-let package = Package(name: "PortableReview", dependencies: [
+let package = Package(name: "PortableReview", platforms: [.macOS(.v12)], dependencies: [
     .package(url: "https://github.com/apple/swift-crypto.git", exact: "3.12.3")
 ], targets: [
     .target(name: "Core", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
