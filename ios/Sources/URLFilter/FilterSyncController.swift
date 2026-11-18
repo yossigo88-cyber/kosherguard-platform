@@ -48,7 +48,8 @@ public final class FilterSyncController {
         case signedOut
         case ready
         case syncing
-        case synced(prefilterVersion: Int?, rulesGeneration: Int?)
+        case synced(prefilterVersion: Int?, rulesGeneration: Int?,
+                    datasetStatus: DatasetStatus?)
         /// Sync ran but at least one result had no persistence
         /// destination (app-group container or prefilter file
         /// unavailable). NEVER reported as synced: nothing was
@@ -550,8 +551,15 @@ public final class FilterSyncController {
                 return
             }
         }
+        // Best-effort server freshness readback for the app's
+        // display: which generation is served vs published, and any
+        // activation error. A failure here never changes the sync
+        // outcome (try?).
+        let datasetStatus = try? await updater.fetchStatus(
+            credential: datasetToken)
         transition(.synced(prefilterVersion: prefilterVersion,
-                           rulesGeneration: rulesGeneration))
+                           rulesGeneration: rulesGeneration,
+                           datasetStatus: datasetStatus))
     }
 
     /// Persist the fetched rules with full identity binding. Throws on

@@ -449,7 +449,7 @@ final class FilterSyncControllerTests: XCTestCase {
             session: session(), ruleStore: store,
             prefilterFile: dir.appendingPathComponent("prefilter.json"))
         await controller.syncNow()
-        guard case .synced(let prefilter, let rules) = controller.state else {
+        guard case .synced(let prefilter, let rules, _) = controller.state else {
             return XCTFail("unexpected state \(controller.state)")
         }
         XCTAssertEqual(prefilter, 2)

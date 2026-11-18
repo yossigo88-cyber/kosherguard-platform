@@ -206,6 +206,37 @@ struct PrefilterUpdater {
         return manifest
     }
 
+    /// Authenticated readback of GET /v1/dataset/status: which
+    /// generation is served, whether the publication root advertises
+    /// a newer one (behind) and the last activation error. Same
+    /// credential and server guards as the dataset fetch. Best-effort:
+    /// a failure here must never disturb filtering state, so callers
+    /// use try?.
+    public func fetchStatus(credential: String) async throws -> DatasetStatus {
+        guard serverBaseURL.scheme?.lowercased() == "https",
+              serverBaseURL.host != nil, serverBaseURL.user == nil,
+              serverBaseURL.password == nil, !credential.isEmpty else {
+            throw UpdateError.invalidServer
+        }
+        var req = URLRequest(
+            url: serverBaseURL.appendingPathComponent(
+                "v1/dataset/status"))
+        req.setValue("Bearer \(credential)",
+                     forHTTPHeaderField: "Authorization")
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw UpdateError.fetchFailed
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw UpdateError.unauthorized
+        }
+        guard http.statusCode == 200 else {
+            throw UpdateError.fetchFailed
+        }
+        return try JSONDecoder().decode(DatasetStatus.self, from: data)
+    }
+
     mutating func restore(from url: URL) throws {
         let candidate = try JSONDecoder().decode(Snapshot.self,
             from: Data(contentsOf: url))
@@ -229,17 +260,17 @@ struct PrefilterUpdater {
 /// dashboard - show when the served dataset is behind the last
 /// publish or the last activation failed, instead of the failure
 /// living only in an operator log.
-struct DatasetStatus: Codable {
-    struct Watcher: Codable {
-        let generation: Int
-        let publishedGeneration: Int?
+public struct DatasetStatus: Codable, Equatable {
+    public struct Watcher: Codable, Equatable {
+        public let generation: Int
+        public let publishedGeneration: Int?
         /// true when the publication root advertises a generation the
         /// service has not activated (failed or in flight).
-        let behind: Bool
+        public let behind: Bool
         /// Seconds since 1970 of the last successful activation.
-        let lastBuiltAt: Double?
-        let buildCount: Int
-        let lastError: String?
+        public let lastBuiltAt: Double?
+        public let buildCount: Int
+        public let lastError: String?
         enum CodingKeys: String, CodingKey {
             case generation, behind
             case publishedGeneration = "published_generation"
@@ -248,10 +279,10 @@ struct DatasetStatus: Codable {
             case lastError = "last_error"
         }
     }
-    let servedGeneration: Int
+    public let servedGeneration: Int
     /// nil when the server runs without a publication watcher (manual
     /// operation only).
-    let watcher: Watcher?
+    public let watcher: Watcher?
     enum CodingKeys: String, CodingKey {
         case watcher
         case servedGeneration = "served_generation"

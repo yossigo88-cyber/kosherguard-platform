@@ -23,12 +23,25 @@ let package = Package(name: "PortableReview", dependencies: [
 SWIFT
 cd "$WORK"
 set -o pipefail
-KG_REPO_ROOT="$ROOT" swift test --jobs 4 2>&1 | tee "$WORK/test-output.log"
-# Silent-pass guard: swift test exits 0 when a filter/bundle problem
-# leaves zero XCTest tests; require a real XCTest summary with at
-# least one executed test (the swift-testing runner's "0 tests" line
-# is expected - the suite is XCTest).
+# The suite has repo-reading tests gated on KG_REPO_ROOT (helpers
+# repoRoot()/loadVectors()); without it they SKIP and the run looks
+# green. Set it explicitly and treat any skip as fatal.
+export KG_REPO_ROOT="$ROOT"
+test -f "$KG_REPO_ROOT/tools/swift-portable-tests.swift" || {
+    echo "ERROR: KG_REPO_ROOT $KG_REPO_ROOT missing required assets" >&2
+    exit 1
+}
+swift test --jobs 4 2>&1 | tee "$WORK/test-output.log"
+# Silent-pass guards: swift test exits 0 when a filter/bundle problem
+# leaves zero XCTest tests, and a skipped test is a silent gap. Require
+# a real XCTest summary with at least one executed test (the
+# swift-testing runner's "0 tests" line is expected - the suite is
+# XCTest) and no skips.
 grep -qE "Executed [1-9][0-9]* tests" "$WORK/test-output.log" || {
     echo "ERROR: no XCTest tests executed (silent pass risk)" >&2
     exit 1
 }
+if grep -qE "with [1-9][0-9]* tests skipped" "$WORK/test-output.log"; then
+    echo "ERROR: tests were skipped (missing KG_REPO_ROOT or assets?)" >&2
+    exit 1
+fi

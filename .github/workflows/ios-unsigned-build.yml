@@ -28,6 +28,20 @@ jobs:
           python3 -m pip install --quiet pytest
           python3 -m pytest tools/test_validate_ios_project.py -q
 
+  portable-tests:
+    # The Linux-portable Swift suite (real SPM build against pinned
+    # swift-crypto, real XCTest) running in CI so the pass claim has
+    # raw runner evidence, not writer-only local runs. The script
+    # itself fails on zero executed tests or ANY skipped test
+    # (KG_REPO_ROOT-gated repo-reading tests must never skip).
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Portable Swift suite (guarded)
+        run: bash tools/run-swift-portable-tests.sh
+
   xcode-compile:
     runs-on: macos-26
     steps:

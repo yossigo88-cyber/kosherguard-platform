@@ -294,6 +294,9 @@ final class CredentialController {
 @Observable
 final class FilterSyncViewModel {
     private(set) var stateDescription: String = "Not synced yet"
+    /// Server-side dataset freshness readback for the "URL database"
+    /// section (nil when no status has been fetched yet).
+    private(set) var datasetStatusLine: String?
     private(set) var canSync = false
     /// URL Filter enablement as last attempted by this process:
     /// honest to what the app DID, not to system state it cannot
@@ -610,10 +613,24 @@ final class FilterSyncViewModel {
             stateDescription = "Ready to sync."
         case .syncing:
             stateDescription = "Syncing filter data"
-        case .synced(let prefilter, let rules):
+        case .synced(let prefilter, let rules, let datasetStatus):
             let prefilterText = prefilter.map { "prefilter v\($0)" } ?? "prefilter current"
             let rulesText = rules.map { "rules generation \($0)" } ?? "no explicit rules"
             stateDescription = "Synced: \(prefilterText), \(rulesText)."
+            if let datasetStatus {
+                if let watcher = datasetStatus.watcher, watcher.behind {
+                    datasetStatusLine = "Server dataset generation "
+                        + "\(datasetStatus.servedGeneration) is behind "
+                        + "the latest published generation "
+                        + "\(watcher.publishedGeneration.map(String.init) ?? "?")"
+                        + (watcher.lastError.map { ": \($0)" } ?? ".")
+                } else {
+                    datasetStatusLine = "Server dataset generation "
+                        + "\(datasetStatus.servedGeneration) is current."
+                }
+            } else {
+                datasetStatusLine = nil
+            }
         case .persistenceUnavailable(let detail):
             stateDescription = "Sync could not save: \(detail)"
         case .invalidated(let reason):
@@ -752,6 +769,11 @@ struct FilterStatusView: View {
                         "Prefilter version",
                         value: status.prefilterVersion.map(String.init)
                             ?? "none")
+                    if let line = sync.datasetStatusLine {
+                        Text(line)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Section("Management") {
                     LabeledContent("Enrollment",
