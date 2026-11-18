@@ -1,0 +1,48 @@
+# Stage 12: unsigned iOS compile of the app + extensions on a free
+# standard GitHub-hosted macOS runner (public repo: $0 compute, no
+# artifact/cache storage used - output goes to the job log only).
+# CODE_SIGNING_ALLOWED=NO means no Apple Developer account, certificate
+# or provisioning is needed for a compile check. This proves compilation
+# only - not signing, entitlements, installation or filtering behavior.
+name: iOS unsigned build
+
+on:
+  push:
+    branches: [stage-12-*]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate project structure (no Xcode needed)
+        run: python3 tools/validate-ios-project.py
+
+  xcode-compile:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Select Xcode 26.6 (iOS 26.5 SDK)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version
+
+      - name: List project (diagnostics)
+        run: xcodebuild -list -project ios/KosherGuard.xcodeproj
+
+      - name: Unsigned compile of app + all extensions
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/KosherGuard.xcodeproj \
+            -scheme KosherGuard \
+            -destination 'generic/platform=iOS' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee /dev/stderr
