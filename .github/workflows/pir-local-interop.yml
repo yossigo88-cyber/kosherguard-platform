@@ -171,6 +171,10 @@ jobs:
           # typo'd or uncompiled test would look green. Require the
           # interop test's own completion marker in the output.
           grep -q "PIR-LOOPBACK-RESULT: PASS" roundtrip.log
+          # The tail window above can cut off the per-keyword results;
+          # surface every interop evidence line in the job log so the
+          # run itself carries the complete query evidence.
+          grep "PIR-" roundtrip.log
 
       - name: "Binary lifecycle: boot, auth boundaries, SIGHUP dataset reload"
         run: |
@@ -226,6 +230,7 @@ jobs:
           swift test -c release --filter KosherGuardInteropTests 2>&1 | tee roundtrip.log | tail -40
           # Same silent-pass guard as the base round trip.
           grep -q "PIR-LOOPBACK-RESULT: PASS" roundtrip.log
+          grep "PIR-" roundtrip.log
 
       - name: Provenance summary
         if: always()

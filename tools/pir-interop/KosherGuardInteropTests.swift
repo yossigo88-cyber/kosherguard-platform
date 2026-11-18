@@ -46,17 +46,17 @@ struct KosherGuardInteropTests {
         let updateMode = ProcessInfo.processInfo.environment["KG_PIR_EXPECT_MODE"] == "update"
         // loadUsecase resolves "<fileStem>-<shard>.{params.txtpb,bin}"
         // relative to the process working directory.
-        // NOTE: on Linux (swift-corelibs-foundation)
         // changeCurrentDirectoryPath is a NON-throwing Bool on both
-        // platforms (swift-6.1-RELEASE Foundation and
-        // swift-corelibs-foundation alike; the earlier
-        // throws-on-Linux diagnosis was wrong). A false result for a
-        // bad path must not slip through silently, so require the
-        // actual CWD afterwards: plain property access + ==, no
-        // throwing call inside the #require macro expansion (run
-        // 44237436996 rejected one even with `try` inside).
+        // platforms (verified: swift-foundation at swift-6.1-RELEASE,
+        // SwiftFileManager.swift; empirically: this statement
+        // compiled on the Linux runner in run 44240484269). A false
+        // result for a bad path must not slip through silently, so
+        // require the actual CWD afterwards. NOTE: #require itself
+        // always needs `try` - its expansion ends in the throwing
+        // __required() (swift-testing ResultAdditions.swift); the
+        // earlier failures were bare #require, not the chdir call.
         _ = FileManager.default.changeCurrentDirectoryPath(workdir)
-        #require(FileManager.default.currentDirectoryPath == workdir)
+        try #require(FileManager.default.currentDirectoryPath == workdir)
 
         // Same wiring as Sources/PIRService/main.swift.
         let usecaseStore = UsecaseStore()
