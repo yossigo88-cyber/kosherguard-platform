@@ -86,6 +86,15 @@ class DeviceBody(BaseModel):
     name: str
 
 
+class PersonalRegistrationBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    # Client-generated idempotency key (the iOS app uses "kg-" + 32
+    # lowercase hex chars). Makes a retried or post-reinstall
+    # registration return the SAME device row instead of a duplicate.
+    registration_key: str = Field(min_length=8, max_length=64,
+                                  pattern=r"^[A-Za-z0-9-]+$")
+
+
 class AssignmentBody(BaseModel):
     policy_id: int
 
@@ -861,6 +870,67 @@ def create_app(settings: Settings, engine=None, native_mdm_runtime=None) -> Fast
         session.commit()
         return {"id": device.id, "name": device.name,
                 "state": device.state}
+
+    # -- Personal-lane self-registration (unsupervised iPhones) ---------
+    # A personal iPhone has no MDM to create its device record, so the
+    # app registers itself after the guardian signs in. Idempotent on
+    # (tenant, registration_key): a retried or post-reinstall setup
+    # returns the SAME row, so rules, assignments and the shield gate
+    # keep applying to it. The registration key is treated as a
+    # device-secret: it is never returned by any endpoint, never logged
+    # and never audited; presenting it only ever returns the presenter's
+    # own tenant's row. An offboarded (inactive) device is returned
+    # as-is and NOT silently reactivated - reactivation stays a
+    # dashboard action.
+    @app.post("/api/devices/personal-registration",
+              dependencies=[Depends(require_csrf_header)])
+    def personal_registration(body: PersonalRegistrationBody,
+                              user: User = Depends(current_user),
+                              session: Session = Depends(db_session)):
+        denied = require_guardian(user)
+        if denied is not None:
+            return denied
+        # Serialize on the tenant row so a concurrent registration,
+        # rename or offboarding for the same family cannot race the
+        # check-then-insert.
+        lock_tenant(session, user.tenant_id)
+        existing = session.scalar(select(Device).where(
+            Device.tenant_id == user.tenant_id,
+            Device.registration_key == body.registration_key))
+        if existing is not None:
+            return {"id": existing.id, "name": existing.name,
+                    "state": existing.state, "created": False}
+        clash = session.scalar(select(Device).where(
+            Device.tenant_id == user.tenant_id, Device.name == body.name))
+        if clash is not None:
+            return error(409, f"device named {body.name!r} already exists")
+        device = Device(tenant_id=user.tenant_id, name=body.name,
+                        registration_key=body.registration_key)
+        session.add(device)
+        session.flush()
+        ScopedSession(session, user.tenant_id).audit(
+            "device.personal_register",
+            f"registered personal device {body.name!r}",
+            actor_user_id=user.id)
+        session.commit()
+        return {"id": device.id, "name": device.name,
+                "state": device.state, "created": True}
+
+    # -- Native-client service discovery ---------------------------------
+    # The personal lane has no MDM channel to learn where the supporting
+    # services live; the app asks the control plane it just signed in
+    # to. Every value comes straight from server configuration and is
+    # null when that service is not deployed - the app surfaces the
+    # corresponding feature as unavailable instead of inventing an
+    # endpoint. Any signed-in family member may read this; the URLs are
+    # not secrets (the device must call them) and no tenant data is
+    # exposed.
+    @app.get("/api/client-config")
+    def client_config(user: User = Depends(current_user)):
+        return {"dataset_base_url": settings.dataset_base_url,
+                "doh_server_url": settings.doh_server_url,
+                "pir_server_url": settings.pir_server_url,
+                "pir_privacy_pass_issuer_url": settings.pir_issuer_url}
 
     @app.post("/api/devices/{device_id}/assignment",
               dependencies=[Depends(require_csrf_header)])

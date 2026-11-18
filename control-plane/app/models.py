@@ -140,13 +140,28 @@ class PolicyVersion(Base):
 
 class Device(Base):
     __tablename__ = "devices"
-    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name"),
+        # Idempotent personal-lane self-registration: the app-generated
+        # registration key makes a retried/reinstalled registration
+        # return the SAME device row instead of a duplicate. Unique per
+        # tenant where present (MDM-enrolled devices have none).
+        Index("ix_devices_tenant_registration_key", "tenant_id",
+              "registration_key", unique=True,
+              postgresql_where=text("registration_key IS NOT NULL")),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
         ForeignKey("tenants.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False,
                                        default="active")
+    # Opaque client-generated key (kg-<32 hex>). Secret-ish: knowing a
+    # victim's key lets an attacker in the SAME tenant re-adopt the row,
+    # so it is never logged or returned by list endpoints; it only ever
+    # returns its owner's own row to the session that presents it.
+    registration_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False)
 

@@ -33,18 +33,35 @@ struct FilterStatus: Equatable {
     }
 }
 
+extension AppConfiguration {
+    /// The effective configuration on THIS device: the MDM-managed
+    /// configuration when it is complete (supervised/managed lane),
+    /// otherwise the personal-lane record the in-app setup persisted
+    /// (unsupervised lane), otherwise the managed read with its
+    /// per-key issues. Apple-only: the personal store resolves the
+    /// app-group container, which does not exist in the portable
+    /// build.
+    static func currentOnDevice(
+        defaults: UserDefaults = .standard) -> AppConfiguration {
+        AppConfiguration.current(
+            managed: managed(defaults: defaults),
+            personal: PersonalConfigurationStore.shared()?.load())
+    }
+}
+
 /// Call site for the scoped-credential request path: sign in natively
 /// (AuthSessionClient), mint a scoped credential
 /// (CredentialIssuanceClient), store both in the Keychain
 /// (KeychainCredentialStore), clear them on sign-out or a 401 (a dead
 /// session must not linger as a stored credential). Server URL and
-/// device ID come from MDM-managed App Configuration
-/// (AppConfiguration) - the real configuration mechanism, not a
-/// baked-in URL. UNCOMPILED/UNSIGNED/UNTESTED: never run.
+/// device ID come from the effective configuration
+/// (AppConfiguration.currentOnDevice: MDM-managed configuration, or
+/// the personal-lane setup record on an unsupervised device) - never
+/// a baked-in URL. UNCOMPILED/UNSIGNED/UNTESTED: never run.
 @Observable
 final class CredentialController {
     enum State: String {
-        case notConfigured = "Not configured by MDM"
+        case notConfigured = "Not set up"
         case signedOut = "Not signed in"
         case signingIn = "Signing in"
         case issuing = "Requesting device credential"
@@ -76,9 +93,10 @@ final class CredentialController {
         vault: KeychainCredentialStore(
             accessGroup: KeychainCredentialStore.sharedAccessGroup),
         // The CURRENT source of truth: every lifecycle task re-reads
-        // the managed configuration at execution time, so rapid
-        // A -> B pushes coalesce to the latest source.
-        configurationSource: { AppConfiguration.managed() })
+        // the effective configuration (managed OR personal-lane) at
+        // execution time, so rapid A -> B changes coalesce to the
+        // latest source.
+        configurationSource: { AppConfiguration.currentOnDevice() })
     private var coordinator: SignInCoordinator { Self.lifecycle }
 
     /// The endpoint fingerprint of a configuration: the identity the
@@ -96,7 +114,7 @@ final class CredentialController {
     }
 
     init(store: KeychainCredentialStore = KeychainCredentialStore(accessGroup: KeychainCredentialStore.sharedAccessGroup),
-         configuration: AppConfiguration = .managed()) {
+         configuration: AppConfiguration = .currentOnDevice()) {
         self.store = store
         configureClients(configuration)
         // MDM can push a new managed configuration at any time:
@@ -107,11 +125,12 @@ final class CredentialController {
             forName: UserDefaults.didChangeNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.reconfigure(AppConfiguration.managed())
+            self?.reconfigure(AppConfiguration.currentOnDevice())
         }
     }
 
-    private var latestConfiguration: AppConfiguration = .managed()
+    private var latestConfiguration: AppConfiguration =
+        .currentOnDevice()
 
     private func configureClients(_ configuration: AppConfiguration) {
         latestConfiguration = configuration
@@ -290,6 +309,15 @@ final class FilterSyncViewModel {
     private(set) var appPolicyGeneration = 0
     private var controller: FilterSyncController?
 
+    /// Re-run configuration discovery (managed re-read, lifecycle
+    /// adoption, URL Filter enable/disable, controller rebuild) after
+    /// an event the UserDefaults observer cannot see - the personal
+    /// lane persists its configuration as a FILE, not a defaults
+    /// entry, so setup completion calls this explicitly.
+    func reconfigureNow() {
+        configure()
+    }
+
     /// Sign-out/identity-teardown hook (wired from
     /// CredentialController): the mirrored app policy - including
     /// the remote shield gate - is deleted with the identity, and
@@ -346,9 +374,9 @@ final class FilterSyncViewModel {
                         + "failed: \(error)")
                 }
             }
-            let confirmed = AppConfiguration.managed()
+            let confirmed = AppConfiguration.currentOnDevice()
             // URL FILTER (iOS 26+): enable/disable follows the
-            // CURRENT managed configuration, re-read after the
+            // CURRENT effective configuration, re-read after the
             // lifecycle settles - never a captured copy. Missing PIR
             // keys simply leave the URL Filter off; the NEFilter
             // explicit-rule path is unaffected. A removed/invalid
@@ -491,7 +519,7 @@ final class FilterSyncViewModel {
 
     func syncNow() {
         guard let controller else { return }
-        let configuration = AppConfiguration.managed()
+        let configuration = AppConfiguration.currentOnDevice()
         let store = FilterRuleStore.appGroupStore()
         Task {
             await controller.syncNow()
@@ -588,8 +616,189 @@ struct FilterStatusView: View {
     }
 }
 
-/// The reachable user action for the credential flow. Disabled with
-/// an explanation when MDM has not supplied a server configuration.
+/// Personal-lane setup orchestration for an unsupervised device:
+/// server address + guardian sign-in -> service discovery ->
+/// idempotent device registration -> persisted configuration
+/// (PersonalSetupCoordinator), then the regular tested credential
+/// flow (signInAndIssue) mints the device credential under the
+/// lifecycle authority model. No MDM involved; no endpoint invented:
+/// every service URL comes from the server's own discovery response.
+@Observable
+final class PersonalSetupViewModel {
+    enum Phase {
+        case idle
+        case working
+        case failed
+        case done
+    }
+    var serverURL = ""
+    var email = ""
+    var password = ""
+    var totpCode = ""
+    private(set) var phase: Phase = .idle
+    private(set) var lastError: String?
+
+    func setUp(credentials: CredentialController,
+               sync: FilterSyncViewModel) async {
+        guard let store = PersonalConfigurationStore.shared() else {
+            phase = .failed
+            lastError = "The shared app-group container is unavailable "
+                + "(entitlement or provisioning not active), so setup "
+                + "cannot persist this device's configuration."
+            return
+        }
+        guard let base =
+                PersonalConfiguration.validatedHTTPSURL(serverURL)
+        else {
+            phase = .failed
+            lastError = "Enter the server address as a plain "
+                + "https:// URL."
+            return
+        }
+        phase = .working
+        lastError = nil
+        struct AuthAdapter: SessionSigningIn {
+            let client: AuthSessionClient
+            func signIn(email: String, password: String,
+                        totpCode: String?) async throws -> String {
+                try await client.signIn(.init(
+                    email: email, password: password,
+                    totpCode: totpCode))
+            }
+        }
+        struct SignOutAdapter: SessionSigningOut {
+            let client: AuthSessionClient
+            func signOut(sessionCookie: String) async throws {
+                try await client.signOut(sessionCookie: sessionCookie)
+            }
+        }
+        struct ConfigAdapter: ClientConfigFetching {
+            let client: ClientConfigClient
+            func fetchConfig(sessionCookie: String) async throws
+                -> ClientConfigClient.ServiceConfig {
+                try await client.fetch(sessionCookie: sessionCookie)
+            }
+        }
+        struct RegistrationAdapter: PersonalDeviceRegistering {
+            let client: PersonalRegistrationClient
+            func register(name: String, registrationKey: String,
+                          sessionCookie: String) async throws
+                -> PersonalRegistrationClient.Registration {
+                try await client.register(
+                    name: name, registrationKey: registrationKey,
+                    sessionCookie: sessionCookie)
+            }
+        }
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: serverURL, email: email, password: password,
+                totpCode: totpCode.isEmpty ? nil : totpCode,
+                auth: AuthAdapter(
+                    client: AuthSessionClient(baseURL: base)),
+                config: ConfigAdapter(
+                    client: ClientConfigClient(baseURL: base)),
+                registration: RegistrationAdapter(
+                    client: PersonalRegistrationClient(baseURL: base)),
+                signOut: SignOutAdapter(
+                    client: AuthSessionClient(baseURL: base)))
+        } catch let error as PersonalSetupCoordinator.SetupError {
+            phase = .failed
+            switch error {
+            case .invalidServerURL:
+                lastError = "Enter the server address as a plain "
+                    + "https:// URL."
+            case .invalidCredentials:
+                lastError = "Sign-in was rejected. Check the email, "
+                    + "password and authenticator code."
+            case .rateLimited:
+                lastError = "Too many attempts; wait and try again."
+            case .nameConflict:
+                lastError = "That device name is already registered; "
+                    + "try again."
+            case .deviceNotActive(let state):
+                lastError = "This device is registered but \(state); "
+                    + "a guardian must reactivate it in the dashboard."
+            case .storeUnavailable, .persistenceFailed:
+                lastError = "Could not store the setup on this device."
+            case .alreadyInProgress:
+                lastError = "Setup is already running."
+            case .failed(let detail):
+                lastError = "Setup failed: \(detail)"
+            }
+            return
+        } catch {
+            phase = .failed
+            lastError = "Setup failed: \(error.localizedDescription)"
+            return
+        }
+        // Adopt the new identity through the ONE lifecycle owner
+        // (authority rotation and identity clear are atomic with the
+        // mirror write), refresh the clients against it, then run the
+        // regular tested credential flow so the session and dataset
+        // credential land as ONE atomic keychain bundle.
+        do {
+            try await CredentialController.lifecycle
+                .applyCurrentConfiguration()
+        } catch {
+            phase = .failed
+            lastError = "Could not activate the new configuration: "
+                + "\(error.localizedDescription)"
+            return
+        }
+        credentials.reconfigure(AppConfiguration.currentOnDevice())
+        sync.reconfigureNow()
+        await credentials.signInAndIssue(
+            email: email, password: password,
+            totpCode: totpCode.isEmpty ? nil : totpCode)
+        phase = .done
+    }
+}
+
+/// The reachable personal-lane setup UI, shown in place of the
+/// sign-in form when the device has neither a managed configuration
+/// nor a personal setup record.
+struct PersonalSetupView: View {
+    @Environment(CredentialController.self) private var credentials
+    @Environment(FilterSyncViewModel.self) private var sync
+    @State private var model = PersonalSetupViewModel()
+
+    var body: some View {
+        Text("This device is not set up. Enter your KosherGuard "
+             + "server address and sign in to register it.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        TextField("Server address (https://...)", text: $model.serverURL)
+            .textContentType(.URL)
+            .keyboardType(.URL)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+        TextField("Email", text: $model.email)
+            .textContentType(.emailAddress)
+            .keyboardType(.emailAddress)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+        SecureField("Password", text: $model.password)
+        TextField("Authenticator code (if enabled)", text: $model.totpCode)
+            .keyboardType(.numberPad)
+        Button("Set up and sign in") {
+            Task { await model.setUp(credentials: credentials, sync: sync) }
+        }
+        .disabled(model.serverURL.isEmpty || model.email.isEmpty
+                  || model.password.isEmpty || model.phase == .working)
+        if model.phase == .working {
+            Text("Setting up...").font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        if let error = model.lastError {
+            Text(error).font(.footnote).foregroundStyle(.red)
+        }
+    }
+}
+
+/// The reachable user action for the credential flow. When the device
+/// has no configuration at all, the personal-lane setup is offered
+/// instead (an unsupervised iPhone has no MDM to supply one).
 struct CredentialSignInView: View {
     @Environment(CredentialController.self) private var credentials
     @State private var email = ""
@@ -598,9 +807,7 @@ struct CredentialSignInView: View {
 
     var body: some View {
         if case .notConfigured = credentials.state {
-            Text("This device has no MDM-supplied server configuration.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            PersonalSetupView()
         } else {
             TextField("Email", text: $email)
                 .textContentType(.emailAddress)

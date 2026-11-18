@@ -111,8 +111,8 @@ public final class FilterSyncController {
                 // app's atomic adoption may create a new mirror;
                 // this instance touches NOTHING and stays inert.
                 if store.isTombstoned() {
-                    self.state = .notConfigured("awaiting managed "
-                        + "configuration re-adoption")
+                    self.state = .notConfigured("awaiting configuration "
+                        + "re-adoption")
                     return
                 }
                 if let mirrored = store.mirroredConfiguration(),
@@ -122,7 +122,7 @@ public final class FilterSyncController {
                     // the shared store. Touch NOTHING - a stale writer
                     // must never clear or resurrect the identity.
                     self.state = .notConfigured("configuration "
-                        + "superseded by a newer managed configuration")
+                        + "superseded by a newer configuration")
                     return
                 }
                 if store.mirroredConfiguration() == nil {
@@ -175,7 +175,10 @@ public final class FilterSyncController {
         if config.datasetBaseURL == nil { missing.append("datasetBaseURL") }
         if config.deviceID == nil { missing.append("deviceID") }
         guard missing.isEmpty else {
-            return "MDM managed configuration missing: "
+            // Source-neutral: the keys come from the MDM-managed
+            // configuration on the managed lane, or from the
+            // in-app personal setup on the personal lane.
+            return "device configuration missing: "
                 + missing.joined(separator: ", ")
         }
         return nil

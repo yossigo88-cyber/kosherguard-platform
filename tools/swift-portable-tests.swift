@@ -3884,3 +3884,487 @@ final class AppShieldReachabilityTests: XCTestCase {
                        "no silent fallback to a private container")
     }
 }
+
+// MARK: - Personal lane (Stage 12 batch 1)
+
+final class PersonalConfigurationTests: XCTestCase {
+    func testHTTPSURLValidation() {
+        XCTAssertNotNil(PersonalConfiguration.validatedHTTPSURL(
+            "https://cp.example.test"))
+        XCTAssertNotNil(PersonalConfiguration.validatedHTTPSURL(
+            "https://cp.example.test:8443/base"))
+        // Credentials are never sent to a plaintext or
+        // credential-embedding origin; queries/fragments are not a
+        // base URL.
+        XCTAssertNil(PersonalConfiguration.validatedHTTPSURL(
+            "http://cp.example.test"))
+        XCTAssertNil(PersonalConfiguration.validatedHTTPSURL(
+            "https://user:pw@cp.example.test"))
+        XCTAssertNil(PersonalConfiguration.validatedHTTPSURL(
+            "https://cp.example.test/?a=b"))
+        XCTAssertNil(PersonalConfiguration.validatedHTTPSURL(
+            "https://cp.example.test/#frag"))
+        XCTAssertNil(PersonalConfiguration.validatedHTTPSURL(""))
+        XCTAssertNil(PersonalConfiguration.validatedHTTPSURL("https://"))
+    }
+
+    func testStoreRoundtripAndCorruption() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = PersonalConfigurationStore(directory: dir)
+        XCTAssertNil(store.load())
+        let config = PersonalConfiguration(
+            controlPlaneBaseURL: URL(string: "https://cp.example.test")!,
+            datasetBaseURL: URL(string: "https://data.example.test"),
+            dohServerURL: nil, pirServerURL: nil,
+            pirPrivacyPassIssuerURL: nil, deviceID: 7,
+            registrationKey: "kg-" + String(repeating: "a", count: 32),
+            deviceName: "Personal device (aaaaaa)")
+        try store.save(config)
+        XCTAssertEqual(store.load(), config)
+        // A corrupt file reads as ABSENT (setup re-runs), never as a
+        // partial configuration.
+        try Data("not json".utf8).write(to: store.file)
+        XCTAssertNil(store.load())
+        try store.save(config)
+        try store.clear()
+        XCTAssertNil(store.load())
+    }
+
+    func testResolverPrecedence() {
+        let personal = PersonalConfiguration(
+            controlPlaneBaseURL: URL(string: "https://cp.personal.test")!,
+            datasetBaseURL: URL(string: "https://data.personal.test"),
+            dohServerURL: nil, pirServerURL: nil,
+            pirPrivacyPassIssuerURL: nil, deviceID: 9,
+            registrationKey: "kg-x", deviceName: "p")
+        // Complete managed configuration always wins.
+        let managedComplete = AppConfiguration(
+            controlPlaneBaseURL: URL(string: "https://cp.managed.test"),
+            deviceID: 3,
+            datasetBaseURL: URL(string: "https://data.managed.test"))
+        let resolved = AppConfiguration.current(
+            managed: managedComplete, personal: personal)
+        XCTAssertEqual(resolved.deviceID, 3)
+        // Incomplete managed + personal: personal applies.
+        let managedPartial = AppConfiguration(
+            controlPlaneBaseURL: URL(string: "https://cp.managed.test"),
+            deviceID: nil, issues: ["deviceID missing"])
+        let resolved2 = AppConfiguration.current(
+            managed: managedPartial, personal: personal)
+        XCTAssertEqual(resolved2.deviceID, 9)
+        XCTAssertEqual(resolved2.controlPlaneBaseURL,
+                       URL(string: "https://cp.personal.test"))
+        XCTAssertTrue(resolved2.issues.isEmpty)
+        // Neither: the managed read is returned as-is so its per-key
+        // issues explain what is missing.
+        let resolved3 = AppConfiguration.current(
+            managed: managedPartial, personal: nil)
+        XCTAssertEqual(resolved3.issues, ["deviceID missing"])
+        XCTAssertNil(resolved3.deviceID)
+    }
+
+    func testPendingRegistrationIdentity() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = PersonalConfigurationStore(directory: dir)
+        let first = try store.loadOrCreatePendingRegistration()
+        XCTAssertTrue(first.registrationKey.hasPrefix("kg-"))
+        XCTAssertEqual(first.registrationKey.count, 35)
+        XCTAssertFalse(first.deviceName.isEmpty)
+        XCTAssertTrue(first.deviceName.contains(
+            String(first.registrationKey.suffix(6))))
+        // A retry reuses the SAME identity (idempotency).
+        XCTAssertEqual(try store.loadOrCreatePendingRegistration(), first)
+        // A corrupt/invalid pending file regenerates rather than
+        // crash-looping setup.
+        let pendingFile = dir.appendingPathComponent(
+            "pending-registration.json")
+        try Data(#"{"registration_key":"bogus","device_name":""}"#.utf8)
+            .write(to: pendingFile)
+        let second = try store.loadOrCreatePendingRegistration()
+        XCTAssertNotEqual(second.registrationKey, first.registrationKey)
+        try store.clearPendingRegistration()
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: pendingFile.path))
+    }
+}
+
+final class ClientConfigClientTests: XCTestCase {
+    let base = URL(string: "https://fixture.example")!
+    func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testAllNullsMeansNotDeployed() async throws {
+        FixtureProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/client-config")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"),
+                           "kg_session=fixture")
+            return (200, [:], Data(#"{"dataset_base_url":null,"doh_server_url":null,"pir_server_url":null,"pir_privacy_pass_issuer_url":null}"#.utf8))
+        }
+        let client = ClientConfigClient(baseURL: base,
+                                        session: session())
+        let config = try await client.fetch(sessionCookie: "fixture")
+        XCTAssertNil(config.datasetBaseURL)
+        XCTAssertNil(config.dohServerURL)
+        XCTAssertNil(config.pirServerURL)
+        XCTAssertNil(config.pirPrivacyPassIssuerURL)
+        XCTAssertTrue(config.issues.isEmpty)
+    }
+
+    func testValuesValidatedAndLonePIRDropped() async throws {
+        FixtureProtocol.handler = { _ in
+            (200, [:], Data(#"{"dataset_base_url":"https://data.example.test","doh_server_url":"http://insecure.example.test","pir_server_url":"https://pir.example.test","pir_privacy_pass_issuer_url":null}"#.utf8))
+        }
+        let client = ClientConfigClient(baseURL: base,
+                                        session: session())
+        let config = try await client.fetch(sessionCookie: "fixture")
+        XCTAssertEqual(config.datasetBaseURL,
+                       URL(string: "https://data.example.test"))
+        // A non-https value is dropped and NAMED, never used.
+        XCTAssertNil(config.dohServerURL)
+        // Exactly one PIR value is a configuration error: BOTH are
+        // dropped so the app never runs a mismatched PIR pair.
+        XCTAssertNil(config.pirServerURL)
+        XCTAssertNil(config.pirPrivacyPassIssuerURL)
+        XCTAssertEqual(config.issues.count, 2)
+    }
+
+    func testUnauthorizedAndUnexpectedStatus() async throws {
+        FixtureProtocol.handler = { _ in (401, [:], Data()) }
+        let client = ClientConfigClient(baseURL: base,
+                                        session: session())
+        do {
+            _ = try await client.fetch(sessionCookie: "fixture")
+            XCTFail("accepted 401")
+        } catch ClientConfigClient.ClientConfigError.unauthorized {}
+        FixtureProtocol.handler = { _ in (500, [:], Data()) }
+        do {
+            _ = try await client.fetch(sessionCookie: "fixture")
+            XCTFail("accepted 500")
+        } catch ClientConfigClient.ClientConfigError
+                .unexpectedStatus(let code) {
+            XCTAssertEqual(code, 500)
+        }
+        FixtureProtocol.handler = { _ in (200, [:], Data("junk".utf8)) }
+        do {
+            _ = try await client.fetch(sessionCookie: "fixture")
+            XCTFail("accepted malformed body")
+        } catch ClientConfigClient.ClientConfigError.malformedResponse {}
+    }
+}
+
+final class PersonalRegistrationClientTests: XCTestCase {
+    let base = URL(string: "https://fixture.example")!
+    func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FixtureProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testRegisterAndAdopt() async throws {
+        FixtureProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path,
+                           "/api/devices/personal-registration")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"),
+                           "kg_session=fixture")
+            XCTAssertEqual(request.value(
+                forHTTPHeaderField: "X-KosherGuard-Request"), "1")
+            return (200, [:], Data(#"{"id":7,"name":"Personal device (aaaaaa)","state":"active","created":true}"#.utf8))
+        }
+        let client = PersonalRegistrationClient(baseURL: base,
+                                                session: session())
+        let reg = try await client.register(
+            name: "Personal device (aaaaaa)",
+            registrationKey: "kg-" + String(repeating: "a", count: 32),
+            sessionCookie: "fixture")
+        XCTAssertEqual(reg.deviceID, 7)
+        XCTAssertTrue(reg.created)
+        // A repeated key ADOPTS the existing row (created=false),
+        // which is the whole point of the idempotency contract.
+        FixtureProtocol.handler = { _ in
+            (200, [:], Data(#"{"id":7,"name":"Personal device (aaaaaa)","state":"active","created":false}"#.utf8))
+        }
+        let again = try await client.register(
+            name: "Personal device (aaaaaa)",
+            registrationKey: "kg-" + String(repeating: "a", count: 32),
+            sessionCookie: "fixture")
+        XCTAssertEqual(again.deviceID, 7)
+        XCTAssertFalse(again.created)
+    }
+
+    func testRejectionMatrix() async throws {
+        let client = PersonalRegistrationClient(baseURL: base,
+                                                session: session())
+        FixtureProtocol.handler = { _ in (401, [:], Data()) }
+        do {
+            _ = try await client.register(
+                name: "n", registrationKey: "k", sessionCookie: "s")
+            XCTFail("accepted 401")
+        } catch PersonalRegistrationClient.RegistrationError
+                .unauthorized {}
+        FixtureProtocol.handler = { _ in (409, [:], Data()) }
+        do {
+            _ = try await client.register(
+                name: "n", registrationKey: "k", sessionCookie: "s")
+            XCTFail("accepted 409")
+        } catch PersonalRegistrationClient.RegistrationError
+                .nameConflict {}
+        // A zero device id is not a usable registration.
+        FixtureProtocol.handler = { _ in
+            (200, [:], Data(#"{"id":0,"name":"n","state":"active","created":true}"#.utf8))
+        }
+        do {
+            _ = try await client.register(
+                name: "n", registrationKey: "k", sessionCookie: "s")
+            XCTFail("accepted id 0")
+        } catch PersonalRegistrationClient.RegistrationError
+                .invalidPayload {}
+        FixtureProtocol.handler = { _ in (200, [:], Data("junk".utf8)) }
+        do {
+            _ = try await client.register(
+                name: "n", registrationKey: "k", sessionCookie: "s")
+            XCTFail("accepted malformed body")
+        } catch PersonalRegistrationClient.RegistrationError
+                .malformedResponse {}
+    }
+}
+
+// Fakes for the setup orchestration seams.
+final class FakeSignIn: SessionSigningIn, @unchecked Sendable {
+    enum Mode { case ok(String, delayNanos: UInt64), invalid, rateLimited }
+    let mode: Mode
+    private let lock = NSLock()
+    private var _calls = 0
+    private var _started = false
+    var calls: Int { lock.lock(); defer { lock.unlock() }; return _calls }
+    var started: Bool { lock.lock(); defer { lock.unlock() }; return _started }
+    init(_ mode: Mode) { self.mode = mode }
+    func signIn(email: String, password: String,
+                totpCode: String?) async throws -> String {
+        lock.lock(); _calls += 1; _started = true; lock.unlock()
+        switch mode {
+        case .ok(let cookie, let delay):
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            return cookie
+        case .invalid:
+            throw AuthSessionClient.AuthError.invalidCredentials
+        case .rateLimited:
+            throw AuthSessionClient.AuthError.rateLimited
+        }
+    }
+}
+final class FakeSignOut: SessionSigningOut {
+    private(set) var cookies: [String] = []
+    func signOut(sessionCookie: String) async throws {
+        cookies.append(sessionCookie)
+    }
+}
+final class FakeConfigFetch: ClientConfigFetching {
+    enum Mode {
+        case ok(ClientConfigClient.ServiceConfig)
+        case unauthorized
+    }
+    let mode: Mode
+    private(set) var calls = 0
+    init(_ mode: Mode) { self.mode = mode }
+    func fetchConfig(sessionCookie: String) async throws
+        -> ClientConfigClient.ServiceConfig {
+        calls += 1
+        switch mode {
+        case .ok(let config): return config
+        case .unauthorized:
+            throw ClientConfigClient.ClientConfigError.unauthorized
+        }
+    }
+}
+final class FakeRegistration: PersonalDeviceRegistering {
+    enum Mode {
+        case ok(PersonalRegistrationClient.Registration)
+        case unauthorized, nameConflict
+    }
+    let mode: Mode
+    private(set) var calls = 0
+    init(_ mode: Mode) { self.mode = mode }
+    func register(name: String, registrationKey: String,
+                  sessionCookie: String) async throws
+        -> PersonalRegistrationClient.Registration {
+        calls += 1
+        switch mode {
+        case .ok(let reg): return reg
+        case .unauthorized:
+            throw PersonalRegistrationClient.RegistrationError
+                .unauthorized
+        case .nameConflict:
+            throw PersonalRegistrationClient.RegistrationError
+                .nameConflict
+        }
+    }
+}
+
+final class PersonalSetupCoordinatorTests: XCTestCase {
+    func tempStore() -> (PersonalConfigurationStore, URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        return (PersonalConfigurationStore(directory: dir), dir)
+    }
+    let services = ClientConfigClient.ServiceConfig(
+        datasetBaseURL: URL(string: "https://data.example.test"),
+        dohServerURL: URL(string: "https://dns.example.test"),
+        pirServerURL: nil, pirPrivacyPassIssuerURL: nil, issues: [])
+    let registration = PersonalRegistrationClient.Registration(
+        deviceID: 7, name: "Personal device (aaaaaa)",
+        state: "active", created: true)
+
+    func testHappyPathPersistsAndSignsOut() async throws {
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let signOut = FakeSignOut()
+        let coordinator = PersonalSetupCoordinator(store: store)
+        let config = try await coordinator.setUp(
+            serverURL: "https://cp.example.test",
+            email: "g@example.test", password: "pw", totpCode: "123456",
+            auth: FakeSignIn(.ok("session-1", delayNanos: 0)),
+            config: FakeConfigFetch(.ok(services)),
+            registration: FakeRegistration(.ok(registration)),
+            signOut: signOut)
+        XCTAssertEqual(config.deviceID, 7)
+        XCTAssertEqual(config.controlPlaneBaseURL,
+                       URL(string: "https://cp.example.test"))
+        XCTAssertEqual(config.datasetBaseURL,
+                       URL(string: "https://data.example.test"))
+        XCTAssertTrue(config.registrationKey.hasPrefix("kg-"))
+        // Persisted, and the pending identity was consumed.
+        XCTAssertEqual(store.load(), config)
+        XCTAssertFalse(FileManager.default.fileExists(atPath:
+            dir.appendingPathComponent("pending-registration.json").path))
+        // The temporary setup session never lingers server-side.
+        XCTAssertEqual(signOut.cookies, ["session-1"])
+    }
+
+    func testInvalidServerURLDoesNoNetwork() async throws {
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let auth = FakeSignIn(.ok("s", delayNanos: 0))
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "http://cp.example.test",
+                email: "g@example.test", password: "pw", totpCode: nil,
+                auth: auth, config: FakeConfigFetch(.ok(services)),
+                registration: FakeRegistration(.ok(registration)),
+                signOut: nil)
+            XCTFail("accepted http URL")
+        } catch PersonalSetupCoordinator.SetupError.invalidServerURL {}
+        XCTAssertEqual(auth.calls, 0)
+    }
+
+    func testBadCredentialsRegisterNothingAndSignOut() async throws {
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let signOut = FakeSignOut()
+        let registration = FakeRegistration(.ok(self.registration))
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "https://cp.example.test",
+                email: "g@example.test", password: "wrong",
+                totpCode: nil,
+                auth: FakeSignIn(.ok("session-2", delayNanos: 0)),
+                config: FakeConfigFetch(.unauthorized),
+                registration: registration,
+                signOut: signOut)
+            XCTFail("accepted rejected discovery")
+        } catch PersonalSetupCoordinator.SetupError
+                .invalidCredentials {}
+        XCTAssertEqual(registration.calls, 0)
+        XCTAssertNil(store.load())
+        // Even a mid-flow failure signs the session out.
+        XCTAssertEqual(signOut.cookies, ["session-2"])
+    }
+
+    func testInactiveDeviceIsSurfacedNotWorkedAround() async throws {
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let inactive = PersonalRegistrationClient.Registration(
+            deviceID: 7, name: "Personal device (aaaaaa)",
+            state: "inactive", created: false)
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "https://cp.example.test",
+                email: "g@example.test", password: "pw", totpCode: nil,
+                auth: FakeSignIn(.ok("s", delayNanos: 0)),
+                config: FakeConfigFetch(.ok(services)),
+                registration: FakeRegistration(.ok(inactive)),
+                signOut: nil)
+            XCTFail("adopted an inactive device")
+        } catch PersonalSetupCoordinator.SetupError
+                .deviceNotActive(let state) {
+            XCTAssertEqual(state, "inactive")
+        }
+        XCTAssertNil(store.load())
+    }
+
+    func testConcurrentSetupRefused() async throws {
+        let (store, dir) = tempStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let coordinator = PersonalSetupCoordinator(store: store)
+        let slowAuth = FakeSignIn(.ok("s", delayNanos: 150_000_000))
+        async let first = coordinator.setUp(
+            serverURL: "https://cp.example.test",
+            email: "g@example.test", password: "pw", totpCode: nil,
+            auth: slowAuth,
+            config: FakeConfigFetch(.ok(services)),
+            registration: FakeRegistration(.ok(registration)),
+            signOut: nil)
+        // Wait until the FIRST attempt actually holds the actor and is
+        // inside its slow sign-in; only then is the second attempt a
+        // genuine concurrency probe rather than a scheduling race.
+        let deadline = Date().addingTimeInterval(5)
+        while !slowAuth.started, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertTrue(slowAuth.started, "first setup never started")
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "https://cp.example.test",
+                email: "g@example.test", password: "pw", totpCode: nil,
+                auth: FakeSignIn(.ok("s", delayNanos: 0)),
+                config: FakeConfigFetch(.ok(services)),
+                registration: FakeRegistration(.ok(registration)),
+                signOut: nil)
+            XCTFail("second setup ran concurrently")
+        } catch PersonalSetupCoordinator.SetupError
+                .alreadyInProgress {}
+        _ = try await first
+    }
+
+    func testPersistenceFailureIsDistinctAndSignsOut() async throws {
+        // A directory that cannot be created forces the store to
+        // fail; the error is the distinct persistence case and the
+        // session is still signed out.
+        let store = PersonalConfigurationStore(directory: URL(
+            fileURLWithPath: "/proc/kg-\(UUID().uuidString)"))
+        let signOut = FakeSignOut()
+        let coordinator = PersonalSetupCoordinator(store: store)
+        do {
+            _ = try await coordinator.setUp(
+                serverURL: "https://cp.example.test",
+                email: "g@example.test", password: "pw", totpCode: nil,
+                auth: FakeSignIn(.ok("session-3", delayNanos: 0)),
+                config: FakeConfigFetch(.ok(services)),
+                registration: FakeRegistration(.ok(registration)),
+                signOut: signOut)
+            XCTFail("accepted an unwritable store")
+        } catch PersonalSetupCoordinator.SetupError
+                .persistenceFailed {}
+        XCTAssertEqual(signOut.cookies, ["session-3"])
+    }
+}

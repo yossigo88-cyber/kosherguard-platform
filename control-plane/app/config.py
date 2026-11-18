@@ -9,10 +9,30 @@ dashboard server).
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 
 
 class ConfigError(RuntimeError):
     pass
+
+
+def _env_https_url(raw: str | None, name: str) -> str | None:
+    """Optional HTTPS service URL. An invalid value is a startup error,
+    never a silent fallback: a native client would send credentials to
+    whatever this says, so a typo'd scheme or embedded userinfo must not
+    boot. Query strings and fragments are rejected (endpoints are built
+    by path-appending only)."""
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip()
+    parts = urlsplit(value)
+    if (parts.scheme.lower() != "https" or not parts.hostname
+            or parts.username is not None or parts.password is not None
+            or parts.query or parts.fragment):
+        raise ConfigError(
+            f"{name} must be a plain https:// URL with a host and no "
+            "credentials, query or fragment")
+    return value
 
 
 def _env_flag(raw: str | None, name: str) -> bool:
@@ -66,3 +86,22 @@ class Settings:
         self.environment = env.get("KG_ENVIRONMENT", "development").strip() or "development"
         # Optional: path to the category-pipeline's built categories.json.
         self.categories_file = env.get("KG_CATEGORIES_FILE", "").strip() or None
+        # Native-client service discovery (GET /api/client-config). Every
+        # entry is OPTIONAL and null means "not deployed": the app treats
+        # a missing dataset server as "category prefilter unavailable",
+        # a missing PIR pair as "URL Filter cannot be enabled", and a
+        # missing DoH endpoint as "no app-mediated DNS" - honest states,
+        # never invented endpoints. The PIR pair is jointly optional:
+        # exactly one present is a startup error.
+        self.dataset_base_url = _env_https_url(
+            env.get("KG_DATASET_BASE_URL"), "KG_DATASET_BASE_URL")
+        self.doh_server_url = _env_https_url(
+            env.get("KG_DOH_SERVER_URL"), "KG_DOH_SERVER_URL")
+        self.pir_server_url = _env_https_url(
+            env.get("KG_PIR_SERVER_URL"), "KG_PIR_SERVER_URL")
+        self.pir_issuer_url = _env_https_url(
+            env.get("KG_PIR_ISSUER_URL"), "KG_PIR_ISSUER_URL")
+        if (self.pir_server_url is None) != (self.pir_issuer_url is None):
+            raise ConfigError(
+                "KG_PIR_SERVER_URL and KG_PIR_ISSUER_URL must both be "
+                "set or both be absent")
