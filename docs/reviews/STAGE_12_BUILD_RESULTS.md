@@ -4,7 +4,7 @@
 - Branch: `stage-12-free-ios-build` at `5c737e9c3e891de089affb62193f46f2713a9f37`
 - Run: GitHub Actions run 44207115197 ("iOS unsigned build"), 2026-11-18T00:21:14Z, free standard `macos-26` runner, $0 compute for public repos, no artifacts uploaded
 - Untouched: `main` `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`, `stage-10` `791f0ef`, `stage-11` `62c0ccc`, superseded `stage-12-free-ci-unsigned-build` `b30a6bb`
-- Status: THREE REAL RUNS COMPLETED. Run 1 failed with 6 compile errors (fixed, user-approved). Run 2 CONFIRMED those 6 are gone and surfaced 1 new compile error in a different file. Run 3 CONFIRMS that error is fixed (its target now links) and surfaced 2 pre-existing errors further along in the app target. Nothing was signed, deployed or purchased. No compilation success of the app is claimed.
+- Status: FOUR REAL RUNS COMPLETED. Run 1 failed with 6 compile errors (fixed, user-approved). Run 2 CONFIRMED those 6 are gone and surfaced 1 new compile error in a different file. Run 3 CONFIRMED that error is fixed (all four extensions link) and surfaced 2 pre-existing errors further along in the app target. Run 4 CONFIRMS those 2 are fixed: **BUILD SUCCEEDED** - the app target and all four extensions compile and link, unsigned. Nothing was signed, deployed or purchased. A successful unsigned compile is NOT evidence of working filtering on a device.
 
 ## 1. What ran
 
@@ -114,3 +114,47 @@ NO fix applied - choosing the correct source of the expected PIR endpoints insid
 ### How far the build got
 
 The four extension targets compiled and linked; the app target failed at the `URLFilterConfiguration.swift` compile batch and never linked. More errors may exist behind these two. Nothing signed, deployed or purchased; no Apple account or device changes.
+
+---
+
+## Run 4 - URLFilterConfiguration disableFilter() fix verification rebuild (2026-11-18T01:16:23Z) - BUILD SUCCEEDED
+
+- Run: GitHub Actions run 44214515026, head `a4026c23ae6be14dcfda2a002f20c24dcea36ff3`, same free `macos-26` runner, Xcode 26.6 / iPhoneOS 26.5 SDK. Run URL: https://github.com/yossigo88-cyber/kosherguard-platform/actions/runs/44214515026
+- static-validation: SUCCESS (~5s). xcode-compile: SUCCESS (~71s) - **BUILD SUCCEEDED** - the first successful Stage 12 build.
+- The fix under test: `ios/Sources/URLFilter/URLFilterConfiguration.swift` only, +11/-29. The copied `NSPIRConfiguration`/Info.plist mismatch-validation block was REMOVED from `static func disableFilter()`; `enable()` is byte-identical.
+
+### The lifecycle decision (why removal, not rebinding)
+
+`pirServer` and `issuer` are per-call inputs of `enable(from:)`: bound there from the CURRENT managed configuration, used to fail closed when unconfigured, to cross-check the Info.plist declaration, and to build the `setConfiguration` call. `disableFilter()` takes no configuration, never calls `setConfiguration`, and uses neither value - so the enable-time check has no meaning there. Keeping any version of it in the disable path would also WEAKEN security: the caller (`KosherGuardApp.swift`, configuration lifecycle) calls `disableFilter()` as the fail-closed path precisely when the PIR keys are missing or invalid, so disabling must stay able to succeed in exactly that state. The copied block was dead code that could never compile; removing it changes no enable-time validation, the fail-closed default (`shouldFailClosed = true`), or any other behavior. Nothing was hardcoded.
+
+### Pre-push gates - actually run, in this order, BEFORE the push
+
+1. `python3 tools/validate-ios-project.py` - all checks passed, exit 0 (14 informational placeholders, expected until a real team ID exists).
+2. `bash tools/run-swift-portable-tests.sh` - **136 tests, 0 failures, exit 0**, on the official `swift-6.0.3-RELEASE-ubuntu22.04` toolchain (download.swift.org, 784207421 bytes, per `docs/setup/IOS_BUILD.md`), real SPM + pinned swift-crypto 3.12.3 + real XCTest. Honest limit, unchanged: the harness compiles only the portable sources; `URLFilterConfiguration.swift` imports NetworkExtension and is NOT compiled by it. The macOS run below is the compile verification for this change.
+
+### Verified in the raw log (2580 lines)
+
+- ZERO `error:` lines anywhere in the xcode-compile log; both run-3 errors (`pirServer`, `issuer`) are gone.
+- Real link steps for all four extensions: `Ld .../KosherGuardURLFilter.appex/...`, `Ld .../KosherGuardFilterControl.appex/...`, `Ld .../KosherGuardFilter.appex/...`, `Ld .../KosherGuardDNSProxy.appex/...`.
+- **The app target now links**: `Ld .../Debug-iphoneos/KosherGuard.app/KosherGuard normal (in target 'KosherGuard')`, followed by `Touch .../KosherGuard.app` and `** BUILD SUCCEEDED **`.
+
+### Warnings (non-fatal, unresolved)
+
+Five unique Swift warnings, all pre-existing code (none from this fix):
+
+- `FilterSyncController.swift:542:17` - 'no calls to throwing functions occur within try'
+- `ApplePrefilter.swift:121:45` - "immutable value 'skew' was never used"
+- `ApplePrefilter.swift:121:56` - "immutable value 'damp' was never used"
+- `MDMEnrollmentClient.swift:24:14` - "immutable value 'data' was never used"
+- `AppBlockingView.swift:125:9` - 'switch must be exhaustive' (app UI target; surfaced now because the app target compiled fully for the first time)
+
+Plus two non-Swift notices:
+
+- `warning: KosherGuardURLFilter.appex is an ExtensionKit extension and must be embedded in the parent app bundle's Extensions directory, but is embedded in the parent app bundle's PlugIns directory` - NEW packaging warning, surfaced now that bundling completed. Non-fatal for the unsigned compile, but it must be fixed before a real signed deployment can load the URL Filter extension. NOT fixed in this round (out of the authorized scope).
+- Benign `appintentsmetadataprocessor` notices ("Metadata extraction skipped. No AppIntents.framework dependency found.") - not a defect.
+
+### Limits, stated plainly
+
+- This is an UNSIGNED compile-and-link success on a CI runner. It proves the Swift source compiles and links for iPhoneOS 26.5 arm64 with `CODE_SIGNING_ALLOWED=NO`. It does NOT prove the app runs, the URL Filter or DNS proxy filter anything, or that any target loads on a device.
+- The ExtensionKit embedding warning above is unresolved and blocks real extension loading until fixed.
+- Nothing signed, deployed or purchased; no Apple account or device changes; `main`, `stage-10-ios-runtime-integration`, `stage-11-apple-build-signing` and the superseded `stage-12-free-ci-unsigned-build` untouched.
