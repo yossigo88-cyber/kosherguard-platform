@@ -270,13 +270,19 @@ public struct DatasetStatus: Codable, Equatable {
         /// Seconds since 1970 of the last successful activation.
         public let lastBuiltAt: Double?
         public let buildCount: Int
-        public let lastError: String?
+        /// Stable machine-readable category of the last activation
+        /// failure (nil when healthy). The server never sends the
+        /// detailed operator error to credential holders.
+        public let errorCode: String?
+        /// Static, credential-safe action sentence for errorCode.
+        public let errorAction: String?
         enum CodingKeys: String, CodingKey {
             case generation, behind
             case publishedGeneration = "published_generation"
             case lastBuiltAt = "last_built_at"
             case buildCount = "build_count"
-            case lastError = "last_error"
+            case errorCode = "error_code"
+            case errorAction = "error_action"
         }
     }
     public let servedGeneration: Int

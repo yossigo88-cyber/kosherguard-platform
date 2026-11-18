@@ -30,7 +30,45 @@ from .server import DatasetRef
 
 
 class WatchError(Exception):
-    pass
+    """Publication problem. `code` is a stable machine-readable
+    category safe to show any holder of a device credential; the
+    message may name device IDs, hosts or paths and is OPERATOR-ONLY
+    (see public_status vs status)."""
+
+    def __init__(self, message, code="invalid_publication"):
+        super().__init__(message)
+        self.code = code
+
+
+# Static, credential-safe action text per error code. Never format
+# exception messages into these: they can carry other devices' IDs,
+# policy contents or filesystem paths.
+_ERROR_ACTIONS = {
+    "unreadable_document": "The latest published filter data could "
+        "not be read; the previous data remains in use.",
+    "invalid_policy": "The latest published filter data is not in a "
+        "recognized format; it has not been applied.",
+    "unsupported_default_policy": "This policy uses a default action "
+        "the personal filter cannot express; it has not been applied.",
+    "unsupported_schedules": "This policy uses timed schedules the "
+        "personal filter cannot express; it has not been applied.",
+    "per_device_policy_unsupported": "This publication assigns "
+        "different policies per device, which the personal filter "
+        "cannot express; it has not been applied.",
+    "per_device_exceptions_unsupported": "This publication carries "
+        "per-device exceptions the personal filter cannot express; "
+        "it has not been applied.",
+    "publication_layout_invalid": "The publication layout is "
+        "invalid; it has not been applied.",
+    "manifest_mismatch": "The published manifest does not match its "
+        "generation; it has not been applied.",
+    "dataset_build_refused": "The published rules could not be built "
+        "into a device dataset; the previous data remains in use.",
+    "internal_error": "The latest published filter data could not be "
+        "activated; the previous data remains in use.",
+    "invalid_publication": "The latest published filter data could "
+        "not be activated; the previous data remains in use.",
+}
 
 
 def _norm(host) -> str:
@@ -65,9 +103,10 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
         policy = json.loads((generation_dir / "policy.json")
                             .read_bytes().decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise WatchError(f"unreadable policy document: {exc}") from exc
+        raise WatchError(f"unreadable policy document: {exc}",
+                         "unreadable_document") from exc
     if not isinstance(policy, dict):
-        raise WatchError("policy document is not an object")
+        raise WatchError("policy document is not an object", "invalid_policy")
     # Canonical field inventory (engine POLICY_KEYS + the "_"-prefixed
     # metadata convention the engine validator allows):
     #   default_policy  -> checked: only "allow" is expressible
@@ -89,24 +128,27 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
              "category_rules", "_schedules"}
     unknown = sorted(set(policy) - known)
     if unknown:
-        raise WatchError(f"policy document has unknown keys: {unknown}")
+        raise WatchError(f"policy document has unknown keys: {unknown}",
+                         "invalid_policy")
     if policy.get("_schedules"):
         raise WatchError(
             "policy carries timed _schedules; a URL Filter membership "
             "dataset cannot express time windows, refusing rather than "
-            "blocking outside the configured schedule")
+            "blocking outside the configured schedule",
+            "unsupported_schedules")
     if policy.get("default_policy") != "allow":
         raise WatchError(
             "default_policy {!r} is not expressible as a URL Filter "
             "membership dataset (presence = block only); refusing "
             "rather than degrading it into an allow-default blocklist"
-            .format(policy.get("default_policy")))
+            .format(policy.get("default_policy")),
+            "unsupported_default_policy")
 
     def str_list(value, field):
         if not isinstance(value, list) or not all(
                 isinstance(v, str) for v in value):
             raise WatchError(f"policy document {field} must be a list "
-                             "of strings")
+                             "of strings", "invalid_policy")
         return value
 
     blocklist = str_list(policy.get("blocklist", []), "blocklist")
@@ -115,7 +157,8 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
     if not isinstance(category_rules, dict) or \
             set(category_rules) - {"allow", "block"}:
         raise WatchError("policy document category_rules must be an "
-                         "object with only allow/block lists")
+                         "object with only allow/block lists",
+                     "invalid_policy")
     category_block = str_list(category_rules.get("block", []),
                               "category_rules.block")
     category_allow = str_list(category_rules.get("allow", []),
@@ -128,11 +171,11 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
                                  .decode("utf-8"))
             domains = cat_doc.get("domains", {})
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise WatchError(f"unreadable categories document: {exc}") \
-                from exc
+            raise WatchError(f"unreadable categories document: {exc}",
+                             "unreadable_document") from exc
         if not isinstance(domains, dict):
             raise WatchError("categories document domains is not an "
-                             "object")
+                             "object", "invalid_policy")
     _refuse_per_device_divergence(generation_dir)
     rules: dict[str, URLRule] = {}
     for host in blocklist:
@@ -171,11 +214,13 @@ def _refuse_per_device_divergence(generation_dir) -> None:
             device_map = json.loads(device_map_path.read_bytes()
                                     .decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise WatchError(f"unreadable device map: {exc}") from exc
+            raise WatchError(f"unreadable device map: {exc}",
+                         "unreadable_document") from exc
         default_pid = device_map.get("default_policy_id")
         devices = device_map.get("devices", {})
         if not isinstance(devices, dict):
-            raise WatchError("device map devices is not an object")
+            raise WatchError("device map devices is not an object",
+                         "invalid_policy")
         divergent = [dev for dev, entry in devices.items()
                      if isinstance(entry, dict)
                      and entry.get("policy_id") != default_pid]
@@ -184,20 +229,23 @@ def _refuse_per_device_divergence(generation_dir) -> None:
                 "generation assigns non-default policies to devices "
                 f"{sorted(divergent)}; a single membership dataset "
                 "cannot express per-device policy, refusing to merge "
-                "them into one global dataset")
+                "them into one global dataset",
+                "per_device_policy_unsupported")
     exceptions_path = generation_dir / "exceptions.json"
     if exceptions_path.exists():
         try:
             overlay = json.loads(exceptions_path.read_bytes()
                                  .decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise WatchError(f"unreadable exceptions overlay: {exc}")                 from exc
+            raise WatchError(f"unreadable exceptions overlay: {exc}",
+                         "unreadable_document") from exc
         if overlay:
             raise WatchError(
                 "generation carries per-device exception overlays for "
                 f"devices {sorted(overlay)}; a single membership "
                 "dataset cannot express per-device exceptions, "
-                "refusing to merge them into one global dataset")
+                "refusing to merge them into one global dataset",
+                "per_device_exceptions_unsupported")
 
 
 class PublicationWatcher:
@@ -225,6 +273,7 @@ class PublicationWatcher:
         self._published_generation: int | None = None
         self.last_built_at: float | None = None
         self.last_error: str | None = None
+        self.last_error_code: str | None = None
         self.build_count = 0
         self._lock = threading.Lock()
 
@@ -246,7 +295,8 @@ class PublicationWatcher:
         # Confinement: never follow the link outside the tenant root.
         root_real = os.path.realpath(tenant_root)
         if not os.path.realpath(path).startswith(root_real + os.sep):
-            raise WatchError("current points outside the tenant root")
+            raise WatchError("current points outside the tenant root",
+                     "publication_layout_invalid")
         return path
 
     def check_once(self) -> str:
@@ -268,7 +318,8 @@ class PublicationWatcher:
                 if os.path.basename(
                         os.path.realpath(generation_dir)) \
                         != str(generation):
-                    raise WatchError("manifest generation mismatch")
+                    raise WatchError("manifest generation mismatch",
+                         "manifest_mismatch")
                 self._published_generation = generation
                 if generation == self._loaded_generation:
                     return "unchanged"
@@ -277,9 +328,18 @@ class PublicationWatcher:
                 # the device key-set refusal of unexpressible
                 # ancestor exceptions) never disturbs the serving
                 # dataset.
-                dataset = self._build(
-                    rules, version=generation,
-                    provenance=f"publication:{self.tenant_root}")
+                try:
+                    dataset = self._build(
+                        rules, version=generation,
+                        provenance=f"publication:{self.tenant_root}")
+                except WatchError:
+                    raise
+                except Exception as exc:
+                    # The device key-set refusal names the conflicting
+                    # hosts - operator detail, not for credential
+                    # holders.
+                    raise WatchError(f"dataset build refused: {exc}",
+                                     "dataset_build_refused") from exc
                 # Staged activation: the activation hook (device PIR
                 # export + regeneration command) runs BEFORE the
                 # serving swap. If it fails, the generation is NOT
@@ -297,9 +357,13 @@ class PublicationWatcher:
                 self.last_built_at = time.time()
                 self.build_count += 1
                 self.last_error = None
+                self.last_error_code = None
                 return "updated"
             except Exception as exc:
                 self.last_error = str(exc)
+                self.last_error_code = (
+                    exc.code if isinstance(exc, WatchError)
+                    else "internal_error")
                 return "failed"
 
     def start_refresh_loop(self, interval: float = 60.0,
@@ -319,6 +383,27 @@ class PublicationWatcher:
         threading.Thread(target=loop, name="publication-watch",
                          daemon=True).start()
         return stop
+
+    def public_status(self) -> dict:
+        """Credential-safe view for the /v1/dataset/status endpoint:
+        every field is safe for ANY holder of a tenant device
+        credential. The detailed last_error (which can name other
+        devices' IDs, hosts or paths) is NEVER included - only a
+        stable code and a static action sentence."""
+        with self._lock:
+            return {"generation": self._loaded_generation,
+                    "published_generation": self._published_generation,
+                    "behind": (self._published_generation is not None
+                               and self._published_generation
+                               != self._loaded_generation),
+                    "last_built_at": self.last_built_at,
+                    "build_count": self.build_count,
+                    "error_code": self.last_error_code,
+                    "error_action": (
+                        _ERROR_ACTIONS.get(self.last_error_code,
+                                           _ERROR_ACTIONS[
+                                               "internal_error"])
+                        if self.last_error_code else None)}
 
     def status(self) -> dict:
         with self._lock:

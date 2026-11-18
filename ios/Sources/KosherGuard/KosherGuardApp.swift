@@ -622,14 +622,18 @@ final class FilterSyncViewModel {
                     datasetStatusLine = "Server dataset generation "
                         + "\(datasetStatus.servedGeneration) is behind "
                         + "the latest published generation "
-                        + "\(watcher.publishedGeneration.map(String.init) ?? "?")"
-                        + (watcher.lastError.map { ": \($0)" } ?? ".")
+                        + "\(watcher.publishedGeneration.map(String.init) ?? "?"). "
+                        + (watcher.errorAction
+                           ?? "The latest publication has not been applied.")
                 } else {
                     datasetStatusLine = "Server dataset generation "
                         + "\(datasetStatus.servedGeneration) is current."
                 }
             } else {
-                datasetStatusLine = nil
+                // Status fetch is best-effort: unavailable is shown as
+                // UNAVAILABLE, never implied freshness.
+                datasetStatusLine = "Server dataset status unavailable; "
+                    + "freshness not confirmed."
             }
         case .persistenceUnavailable(let detail):
             stateDescription = "Sync could not save: \(detail)"

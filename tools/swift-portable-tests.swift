@@ -4903,15 +4903,16 @@ final class DatasetStatusTests: XCTestCase {
         {"served_generation": 3, "watcher": {"generation": 3,
          "published_generation": 4, "behind": true,
          "last_built_at": 1763400000.5, "build_count": 7,
-         "last_error": "manifest generation mismatch"}}
+         "error_code": "manifest_mismatch",
+         "error_action": "The published manifest does not match."}}
         """.data(using: .utf8)!
         let status = try JSONDecoder().decode(DatasetStatus.self,
                                               from: json)
         XCTAssertEqual(status.servedGeneration, 3)
         XCTAssertEqual(status.watcher?.publishedGeneration, 4)
         XCTAssertEqual(status.watcher?.behind, true)
-        XCTAssertEqual(status.watcher?.lastError,
-                       "manifest generation mismatch")
+        XCTAssertEqual(status.watcher?.errorCode,
+                       "manifest_mismatch")
         XCTAssertEqual(status.watcher?.buildCount, 7)
     }
 
@@ -4926,12 +4927,13 @@ final class DatasetStatusTests: XCTestCase {
         let json2 = """
         {"served_generation": 2, "watcher": {"generation": 2,
          "published_generation": null, "behind": false,
-         "last_built_at": null, "build_count": 0, "last_error": null}}
+         "last_built_at": null, "build_count": 0, "error_code": null,
+         "error_action": null}}
         """.data(using: .utf8)!
         let status2 = try JSONDecoder().decode(DatasetStatus.self,
                                                from: json2)
         XCTAssertEqual(status2.watcher?.behind, false)
-        XCTAssertNil(status2.watcher?.lastError)
+        XCTAssertNil(status2.watcher?.errorCode)
     }
 
     func testMalformedStatusFailsToDecode() {

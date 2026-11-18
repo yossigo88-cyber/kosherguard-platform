@@ -342,7 +342,7 @@ class TestAutomaticPublicationChain:
         root, ref, watcher, _ = rig
         from app.server import create_app as mk
         c = TestClient(mk(ref.current, dataset_ref=ref,
-                          status_provider=watcher.status))
+                          status_provider=watcher.public_status))
         body = c.get("/v1/dataset/status").json()
         assert body["served_generation"] == 1
         assert body["watcher"]["behind"] is False
@@ -353,7 +353,10 @@ class TestAutomaticPublicationChain:
         assert body["served_generation"] == 1
         assert body["watcher"]["published_generation"] == 2
         assert body["watcher"]["behind"] is True
-        assert body["watcher"]["last_error"]
+        # json.dump quotes the raw string, so this lands as a
+        # non-object document -> invalid_policy.
+        assert body["watcher"]["error_code"] == "invalid_policy"
+        assert body["watcher"]["error_action"]
         # Recovery clears it.
         publish(root, 3, ["fresh.example"])
         assert watcher.check_once() == "updated"
@@ -361,12 +364,42 @@ class TestAutomaticPublicationChain:
         assert body["served_generation"] == 3
         assert body["watcher"]["behind"] is False
 
+    def test_status_endpoint_never_discloses_operator_detail(self, rig):
+        """Privacy regression: a divergent generation's detailed error
+        names the divergent DEVICE ID; the public endpoint must expose
+        only the generic code + static action text - no device IDs,
+        hosts, policy contents or paths."""
+        root, ref, watcher, _ = rig
+        from app.server import create_app as mk
+        c = TestClient(mk(ref.current, dataset_ref=ref,
+                          status_provider=watcher.public_status))
+        publish(root, 2, ["secret-host.example"])
+        gen_dir = os.path.join(root, "generations", "2")
+        with open(os.path.join(gen_dir, "device-map.json"), "w") as fh:
+            json.dump({"default_policy_id": 1,
+                       "devices": {"777": {"policy": "assigned-policy-2.json",
+                                           "policy_id": 2}}}, fh)
+        assert watcher.check_once() == "failed"
+        # Operator view retains the detail...
+        assert "777" in watcher.status()["last_error"]
+        # ...the credential-safe view never does.
+        import json as _json
+        body = _json.dumps(c.get("/v1/dataset/status").json())
+        assert "777" not in body
+        assert "secret-host.example" not in body
+        assert "generations" not in body
+        assert "device-map" not in body
+        w = c.get("/v1/dataset/status").json()["watcher"]
+        assert w["error_code"] == "per_device_policy_unsupported"
+        assert w["error_action"].endswith("not been applied.")
+        assert "last_error" not in w
+
     def test_status_endpoint_requires_device_credential(self, rig):
         root, ref, watcher, _ = rig
         from app.server import create_app as mk
         c = TestClient(mk(ref.current, dataset_ref=ref,
                           device_token_key=b"k" * 32,
-                          status_provider=watcher.status))
+                          status_provider=watcher.public_status))
         assert c.get("/v1/dataset/status").status_code == 401
 
 class TestDeploymentEntrypoint:

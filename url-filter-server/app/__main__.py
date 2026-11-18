@@ -83,7 +83,7 @@ def main() -> None:
     watcher = PublicationWatcher(root, ref, on_swap=export_and_regen)
     watcher.start_refresh_loop(interval=interval)
     app = create_app(dataset, dataset_ref=ref,
-                     status_provider=watcher.status)
+                     status_provider=watcher.public_status)
 
     import uvicorn
     uvicorn.run(app, host=host or "127.0.0.1", port=int(port or 9000))

@@ -140,6 +140,10 @@ def create_app(dataset: Dataset,
         body = {"served_generation": ref.current.version,
                 "watcher": None}
         if status_provider is not None:
+            # The provider must be the watcher's CREDENTIAL-SAFE view
+            # (public_status): the detailed operator error can name
+            # other devices' IDs, hosts or paths and must never cross
+            # into a response any tenant device can read.
             body["watcher"] = status_provider()
         return body
 
@@ -216,7 +220,7 @@ def build_runtime(dataset: Dataset,
             interval=watch_interval))
     app = create_app(dataset, device_token_key=device_token_key,
                      revocation_feed=feed, dataset_ref=ref,
-                     status_provider=(watcher.status
+                     status_provider=(watcher.public_status
                                       if watcher is not None else None))
     if not stops:
         return app, None
