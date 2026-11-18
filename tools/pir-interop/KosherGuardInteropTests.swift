@@ -46,7 +46,10 @@ struct KosherGuardInteropTests {
         let updateMode = ProcessInfo.processInfo.environment["KG_PIR_EXPECT_MODE"] == "update"
         // loadUsecase resolves "<fileStem>-<shard>.{params.txtpb,bin}"
         // relative to the process working directory.
-        #require(FileManager.default.changeCurrentDirectoryPath(workdir))
+        // NOTE: on Linux (swift-corelibs-foundation)
+        // changeCurrentDirectoryPath THROWS; on Darwin it returns a
+        // plain Bool. `try` inside #require covers both.
+        #require(try FileManager.default.changeCurrentDirectoryPath(workdir))
 
         // Same wiring as Sources/PIRService/main.swift.
         let usecaseStore = UsecaseStore()

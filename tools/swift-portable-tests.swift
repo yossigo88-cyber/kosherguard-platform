@@ -3768,7 +3768,9 @@ final class AppShieldReachabilityTests: XCTestCase {
         for needle in [
             // The view asks the controller; the controller owns the
             // Apple call (checked in testControllerLifecycleDiscipline).
-            "controller.requestAuthorization()",
+            // B4 added the .child path: the real call now carries an
+            // explicit AuthorizationKind argument.
+            "controller.requestAuthorization(for: kind)",
             "familyActivityPicker(",
             "controller.applyShield(selection:",
             "controller.clearShield()",

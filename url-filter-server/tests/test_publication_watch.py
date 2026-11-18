@@ -147,6 +147,11 @@ class TestAutomaticPublicationChain:
             {"default_policy": "allow", "blocklist": [],
              "_schedules": [{"days": [1], "start": "22:00",
                              "end": "06:00"}]},
+            # Unknown underscore key: no KNOWN non-semantic underscore
+            # policy field exists, so one we don't recognize is
+            # refused rather than silently dropped.
+            {"default_policy": "allow", "blocklist": [],
+             "_future_semantic": {"x": 1}},
         ]
         for i, doc in enumerate(bad_docs, start=2):
             publish(root, i, [], policy_doc=doc)
@@ -289,10 +294,12 @@ class TestAutomaticPublicationChain:
         """Order limits, tested: the entrypoint hook writes the device
         export (atomic os.replace) THEN runs the regen command. A
         failure after the export write leaves the new export on disk
-        but the PIR service unreloaded and the served Bloom/prefilter
-        on the old generation - every SERVED artifact stays on the
-        last good generation, and the retry rewrites the same export
-        idempotently."""
+        and every SERVED artifact on the last good generation, and
+        the retry rewrites the same export idempotently. What this
+        does NOT prove: the external PIR backend's state after a
+        hook failure is UNKNOWN (the regen command may have partially
+        run); only our server's served Bloom/prefilter/shards are
+        proven to stay on the last good generation."""
         root, ref, _, c = rig
         export = str(tmp_path / "device.textpb")
         calls = {"n": 0}

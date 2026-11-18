@@ -22,4 +22,13 @@ let package = Package(name: "PortableReview", dependencies: [
 ])
 SWIFT
 cd "$WORK"
-KG_REPO_ROOT="$ROOT" swift test --jobs 4
+set -o pipefail
+KG_REPO_ROOT="$ROOT" swift test --jobs 4 2>&1 | tee "$WORK/test-output.log"
+# Silent-pass guard: swift test exits 0 when a filter/bundle problem
+# leaves zero XCTest tests; require a real XCTest summary with at
+# least one executed test (the swift-testing runner's "0 tests" line
+# is expected - the suite is XCTest).
+grep -qE "Executed [1-9][0-9]* tests" "$WORK/test-output.log" || {
+    echo "ERROR: no XCTest tests executed (silent pass risk)" >&2
+    exit 1
+}

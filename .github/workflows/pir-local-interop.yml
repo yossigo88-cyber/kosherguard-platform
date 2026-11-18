@@ -165,7 +165,12 @@ jobs:
           KG_PIR_EXPECT_MODE: base
         run: |
           set -o pipefail
-          swift test -c release --filter KosherGuardInteropTests 2>&1 | tail -40
+          swift test -c release --filter KosherGuardInteropTests 2>&1 | tee roundtrip.log | tail -40
+          # Guard against a silent pass: with swift-testing, a
+          # --filter that matches zero tests still exits 0, so a
+          # typo'd or uncompiled test would look green. Require the
+          # interop test's own completion marker in the output.
+          grep -q "PIR-LOOPBACK-RESULT: PASS" roundtrip.log
 
       - name: "Binary lifecycle: boot, auth boundaries, SIGHUP dataset reload"
         run: |
@@ -218,7 +223,9 @@ jobs:
           KG_PIR_EXPECT_MODE: update
         run: |
           set -o pipefail
-          swift test -c release --filter KosherGuardInteropTests 2>&1 | tail -40
+          swift test -c release --filter KosherGuardInteropTests 2>&1 | tee roundtrip.log | tail -40
+          # Same silent-pass guard as the base round trip.
+          grep -q "PIR-LOOPBACK-RESULT: PASS" roundtrip.log
 
       - name: Provenance summary
         if: always()

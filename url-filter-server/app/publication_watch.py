@@ -80,13 +80,14 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
     #                      silently blocking outside the user's
     #                      schedule is not an accepted semantic.
     #                      Empty/absent is fine.
-    #   other "_"-keys  -> inert metadata, ignored (engine convention)
-    # Anything else is an unknown key and refused.
-    unknown = sorted(
-        k for k in policy
-        if k not in ("default_policy", "allowlist", "blocklist",
-                     "category_rules")
-        and not (isinstance(k, str) and k.startswith("_")))
+    #   anything else (INCLUDING unknown "_"-keys) -> refused: the
+    #   engine allows "_"-prefixed metadata by convention, but this
+    #   parser knows no non-semantic underscore policy field today, so
+    #   an unrecognized one is treated as semantic content this lane
+    #   cannot honor - never silently dropped.
+    known = {"default_policy", "allowlist", "blocklist",
+             "category_rules", "_schedules"}
+    unknown = sorted(set(policy) - known)
     if unknown:
         raise WatchError(f"policy document has unknown keys: {unknown}")
     if policy.get("_schedules"):
