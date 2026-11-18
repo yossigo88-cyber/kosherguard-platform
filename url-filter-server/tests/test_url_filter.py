@@ -400,3 +400,48 @@ class TestDeviceAuthRevocationAndBinding:
         bodies.add(r.text)
         assert len(bodies) == 1, f"401 bodies differ by reason: {bodies}"
         assert "unauthorized" in bodies.pop()
+
+
+class TestDeviceExportMarkerBinding:
+    """The exclusive device-export binding: deploy/pir/prepare-dataset.sh
+    refuses any input whose first line is not the device-export marker,
+    so the generic allow-valued export can never be processed for the
+    device dataset (its allow rows would BLOCK allowed sites under
+    presence semantics). These tests pin that the marker distinguishes
+    the two exporters and survives the round-trip parser."""
+
+    def test_device_export_first_line_is_marker(self):
+        from app.pir_export import (DEVICE_EXPORT_MARKER,
+                                    export_device_textpb)
+        out = export_device_textpb([URLRule("a.example", "block", "")])
+        assert out.splitlines()[0] == DEVICE_EXPORT_MARKER
+        # The marker must be a protobuf-text comment so Apple's parser
+        # (SwiftProtobuf text format) accepts marked input.
+        assert DEVICE_EXPORT_MARKER.startswith("# kosherguard-device-export-v1:")
+
+    def test_generic_export_never_carries_marker(self):
+        """GUARD DISCRIMINATION: the generic export must NOT pass the
+        prepare-dataset marker check - this is the unsafe input the
+        guard exists to refuse."""
+        from app.pir_export import export_textpb
+        out = export_textpb([URLRule("a.example", "block", "ads"),
+                             URLRule("b.example", "allow", "")])
+        first = out.splitlines()[0] if out.splitlines() else ""
+        assert not first.startswith("# kosherguard-device-export-v1:")
+
+    def test_marker_does_not_break_round_trip_parser(self):
+        from app.pir_export import export_device_textpb, parse_textpb
+        rows = parse_textpb(export_device_textpb(
+            [URLRule("a.example", "block", "")]))
+        assert rows == [("a.example", "1")]
+
+    def test_empty_device_export_still_marked(self):
+        """An all-allowed rule set exports zero rows but still carries
+        the marker - an empty device dataset is a valid (block-nothing)
+        input, not a guard failure."""
+        from app.pir_export import (DEVICE_EXPORT_MARKER,
+                                    export_device_textpb)
+        out = export_device_textpb([URLRule("a.example", "allow", "")])
+        assert out.splitlines()[0] == DEVICE_EXPORT_MARKER
+        from app.pir_export import parse_textpb
+        assert parse_textpb(out) == []

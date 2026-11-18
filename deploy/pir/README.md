@@ -6,7 +6,7 @@ deployed, NOT verified end to end. What each layer is and what remains:
 | Layer | What it is | Status |
 | --- | --- | --- |
 | Dataset export | `url-filter-server/app/pir_export.py` emits Apple's keyword-PIR textpb input format | Implemented + tested (Python) |
-| Dataset processing | Apple's PIRShardDatabase + PIRProcessDatabase binaries | Integrated (Dockerfile/script), never built |
+| Dataset processing | Apple's PIRProcessDatabase (a product of apple/swift-homomorphic-encryption, built from the revision pinned by the service's Package.resolved - NOT a product of pir-service-example; corrected) | Integrated (Dockerfile/script), never built as an image; same pinned flow exercised by the interop workflow |
 | Private query service | Apple's PIRService (apple/pir-service-example @ bbb215355b87be40e081756d072f29cd8f9f000b) | Integrated (Dockerfile), never built |
 | Token issuer | Privacy Pass publicly-verifiable tokens, inside Apple's PIRService example | Integrated via same image, unconfigured |
 | OHTTP gateway | We host; Apple documents it for NEURLFilter | UNIMPLEMENTED - options surveyed and candidate recommended in `docs/reviews/OHTTP_GATEWAY_ASSESSMENT.md`; integration gated on Apple's relay approval |

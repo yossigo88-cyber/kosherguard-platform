@@ -98,6 +98,18 @@ def parse_textpb(text: str) -> list[tuple[str, str]]:
 # the record is simply set to the integer 1 serving as place holder."
 DEVICE_VALUE_PLACEHOLDER = "1"
 
+# Provenance binding for the device pipeline: ONLY output carrying
+# this first-line marker may be processed for the device dataset
+# (deploy/pir/prepare-dataset.sh refuses anything else, and the
+# interop workflow asserts it). The generic export_textpb output must
+# never reach a device: its allow rows would BLOCK the allowed sites
+# under presence semantics. The marker is a protobuf-text comment
+# (SwiftProtobuf text format accepts `#` comments; the interop CI
+# exercises Apple's real PIRProcessDatabase parser on marked output).
+DEVICE_EXPORT_MARKER = (
+    "# kosherguard-device-export-v1: block-only presence rows for "
+    "NEURLFilter; value is Apple's ignored placeholder")
+
 
 def export_device_textpb(rules: list[URLRule]) -> str:
     """Serialize the DEVICE (NEURLFilter) dataset: BLOCK ROWS ONLY.
@@ -134,7 +146,7 @@ def export_device_textpb(rules: list[URLRule]) -> str:
         else:
             blocked.add(keyword)
     rows = sorted(blocked - allowed)
-    return "".join(
+    return DEVICE_EXPORT_MARKER + "\n" + "".join(
         'rows {\n'
         f'  keyword: "{_escape_text_string(keyword)}"\n'
         f'  value: "{DEVICE_VALUE_PLACEHOLDER}"\n'

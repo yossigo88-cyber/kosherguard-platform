@@ -110,6 +110,11 @@ jobs:
         run: |
           mkdir -p work
           python3 kgp/tools/pir-interop/export_fixture_dataset.py --out "$GITHUB_WORKSPACE/work/input.txtpb"
+          # Device-export binding: the pipeline input must carry the
+          # device-export marker (prepare-dataset.sh enforces the same
+          # guard), and the processing step below proves Apple's real
+          # parser accepts the marked file.
+          grep -q '^# kosherguard-device-export-v1:' "$GITHUB_WORKSPACE/work/input.txtpb"
           cat > work/url-config.json <<EOF
           {
             "inputDatabase": "$GITHUB_WORKSPACE/work/input.txtpb",
