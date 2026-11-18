@@ -23,8 +23,11 @@ and the PIR pair is jointly optional.
 
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from sqlalchemy import select
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -201,6 +204,57 @@ class TestPersonalRegistration:
         assert len(register_events) == 1
         assert KEY not in register_events[0]["detail"]
 
+
+
+
+class TestRegistrationConcurrency:
+    """PostgreSQL-backed races against the registration endpoint.
+
+    The suite runs on pgserver, so lock_tenant is a real SELECT FOR
+    UPDATE here - these tests would deadlock or duplicate on a broken
+    serialization, not pass vacuously. Sessions are created serially
+    (MFA enrolment is a single-user flow); the race under test is the
+    registration endpoint itself.
+    """
+
+    def test_concurrent_same_key_yields_one_row(self, rig, engine):
+        app, (ta, _) = rig
+        clients = [login(app, "a@example.com") for _ in range(4)]
+        barrier = threading.Barrier(4)
+
+        def go(c):
+            barrier.wait(timeout=10)
+            return register(c)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(go, clients))
+        assert all(r.status_code == 200 for r in results)
+        bodies = [r.json() for r in results]
+        assert len({b["id"] for b in bodies}) == 1
+        assert sum(1 for b in bodies if b["created"]) == 1
+        with session_scope(engine) as s:
+            rows = s.scalars(
+                select(Device).where(Device.tenant_id == ta)).all()
+            assert len(rows) == 1
+
+    def test_concurrent_same_name_one_wins_one_409(self, rig, engine):
+        app, (ta, _) = rig
+        clients = [login(app, "a@example.com") for _ in range(2)]
+        barrier = threading.Barrier(2)
+        keys = ["kg-" + "b" * 32, "kg-" + "c" * 32]
+
+        def go(pair):
+            c, key = pair
+            barrier.wait(timeout=10)
+            return register(c, name="same-name", key=key)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(go, zip(clients, keys)))
+        assert sorted(r.status_code for r in results) == [200, 409]
+        with session_scope(engine) as s:
+            rows = s.scalars(
+                select(Device).where(Device.tenant_id == ta)).all()
+            assert len(rows) == 1
 
 class TestClientConfig:
     def test_defaults_are_null(self, rig):
