@@ -188,9 +188,16 @@ final class AppShieldViewModel {
 
     /// The one consent entry point. Apple's system prompt is the
     /// authorization UX; errors/denials surface as notAuthorized.
-    func requestAuthorization() async {
+    /// kind selects Apple's two documented forms: .individual (this
+    /// device's user self-authorizes with Face ID/Touch ID) or
+    /// .child (device signed into a Family Sharing CHILD account; a
+    /// parent or guardian must authenticate). .child on a non-child
+    /// account fails honestly through the same error path.
+    func requestAuthorization(
+        for kind: AppShieldController.AuthorizationKind = .individual
+    ) async {
         do {
-            try await controller.requestAuthorization()
+            try await controller.requestAuthorization(for: kind)
         } catch {
             state = .notAuthorized
             note = "Authorization was not granted (\(error.localizedDescription))."
@@ -267,6 +274,17 @@ struct AppBlockingSection: View {
             Button("Enable app blocking") {
                 Task { await model.requestAuthorization() }
             }
+            // Family-managed route (Apple .child authorization): for
+            // a device signed into a child's Family Sharing account;
+            // a parent or guardian must authenticate the request.
+            Button("This is my child's device") {
+                Task {
+                    await model.requestAuthorization(for: .child)
+                }
+            }
+            Text("On a child's device, a parent or guardian confirms "
+                 + "with their own authentication.")
+                .font(.footnote).foregroundStyle(.secondary)
         case .notAuthorized:
             Text("Screen Time access was not granted, so no apps are "
                  + "blocked. You can grant it in Settings > Screen "

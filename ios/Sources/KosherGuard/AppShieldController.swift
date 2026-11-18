@@ -41,12 +41,35 @@ final class AppShieldController {
         AuthorizationCenter.shared.authorizationStatus
     }
 
-    /// Ask the user for Screen Time authorization (individual
-    /// device use). Throws on denial/failure - the caller must
-    /// surface that shielding is NOT active.
-    func requestAuthorization() async throws {
-        try await AuthorizationCenter.shared.requestAuthorization(
-            for: .individual)
+    /// The two Apple authorization forms (developer.apple.com/
+    /// documentation/familycontrols/authorizationcenter/
+    /// requestauthorization(for:), read 2026-11-17):
+    /// - .individual: the device user self-authorizes with Face ID /
+    ///   Touch ID. This is the personally-owned route.
+    /// - .child: for a device signed into a CHILD account in a Family
+    ///   Sharing group; a parent or guardian must authenticate the
+    ///   request. This is the family-managed route - consent is real
+    ///   (the guardian authenticates), not assumed. Apple additionally
+    ///   gates .child usage in distribution (Family Controls child
+    ///   entitlement / App Review) - NOT requested yet, so this path
+    ///   is UNVERIFIED end to end.
+    enum AuthorizationKind: String {
+        case individual
+        case child
+    }
+
+    /// Ask for Screen Time authorization. Throws on denial/failure -
+    /// the caller must surface that shielding is NOT active.
+    func requestAuthorization(
+        for kind: AuthorizationKind = .individual) async throws {
+        switch kind {
+        case .individual:
+            try await AuthorizationCenter.shared.requestAuthorization(
+                for: .individual)
+        case .child:
+            try await AuthorizationCenter.shared.requestAuthorization(
+                for: .child)
+        }
     }
 
     /// Apply an on-device FamilyActivityPicker selection as the
