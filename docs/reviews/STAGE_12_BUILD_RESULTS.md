@@ -1,10 +1,10 @@
 # Stage 12 - First Real Xcode Build: ACTUAL Results
 
 - Repository: https://github.com/yossigo88-cyber/kosherguard-platform (public)
-- Branch: `stage-12-free-ios-build`. This running report covers four runs on four successive heads: run 1 built `5c737e9c3e891de089affb62193f46f2713a9f37` (the header run below), run 2 built `c789cd36394cf5044c846af5f0e7bda53465e1c8`, run 3 built `7abe15773b74646e6613ff56aac506d13c55730e`, and run 4 built `a4026c23ae6be14dcfda2a002f20c24dcea36ff3` - the current tested code, which SUCCEEDED.
+- Branch: `stage-12-free-ios-build`. This running report covers five runs on five successive heads: run 1 built `5c737e9c3e891de089affb62193f46f2713a9f37` (the header run below), run 2 built `c789cd36394cf5044c846af5f0e7bda53465e1c8`, run 3 built `7abe15773b74646e6613ff56aac506d13c55730e`, run 4 built `a4026c23ae6be14dcfda2a002f20c24dcea36ff3`, and run 5 built `50573f04511ffcc614a7f1afe965e5553ea18c1d` - the current tested code, which SUCCEEDED with the packaging warning and all Swift warnings resolved.
 - Run 1: GitHub Actions run 44207115197 ("iOS unsigned build"), 2026-11-18T00:21:14Z, free standard `macos-26` runner, $0 compute for public repos, no artifacts uploaded
 - Untouched: `main` `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`, `stage-10` `791f0ef`, `stage-11` `62c0ccc`, superseded `stage-12-free-ci-unsigned-build` `b30a6bb`
-- Status: FOUR REAL RUNS COMPLETED. Run 1 failed with 6 compile errors (fixed, user-approved). Run 2 CONFIRMED those 6 are gone and surfaced 1 new compile error in a different file. Run 3 CONFIRMED that error is fixed (all four extensions link) and surfaced 2 pre-existing errors further along in the app target. Run 4 CONFIRMS those 2 are fixed: **BUILD SUCCEEDED** - the app target and all four extensions compile and link, unsigned. Nothing was signed, deployed or purchased. A successful unsigned compile is NOT evidence of working filtering on a device.
+- Status: FIVE REAL RUNS COMPLETED. Run 1 failed with 6 compile errors (fixed, user-approved). Run 2 CONFIRMED those 6 are gone and surfaced 1 new compile error in a different file. Run 3 CONFIRMED that error is fixed (all four extensions link) and surfaced 2 pre-existing errors further along in the app target. Run 4 CONFIRMS those 2 are fixed: **BUILD SUCCEEDED** - the app target and all four extensions compile and link, unsigned. Run 5 (packaging validation) CONFIRMS the URLFilter ExtensionKit appex now embeds in the app bundle's `Extensions` directory per Apple's requirement, and all Swift warnings are resolved: **BUILD SUCCEEDED**, zero code warnings. Nothing was signed, deployed or purchased. A successful unsigned compile is NOT evidence of working filtering on a device.
 
 ## 1. What ran
 
@@ -158,3 +158,72 @@ Plus two non-Swift notices:
 - This is an UNSIGNED compile-and-link success on a CI runner. It proves the Swift source compiles and links for iPhoneOS 26.5 arm64 with `CODE_SIGNING_ALLOWED=NO`. It does NOT prove the app runs, the URL Filter or DNS proxy filter anything, or that any target loads on a device.
 - The ExtensionKit embedding warning above is unresolved and blocks real extension loading until fixed.
 - Nothing signed, deployed or purchased; no Apple account or device changes; `main`, `stage-10-ios-runtime-integration`, `stage-11-apple-build-signing` and the superseded `stage-12-free-ci-unsigned-build` untouched.
+
+## Run 5 - packaging validation round (2026-11-18T01:34Z) - BUILD SUCCEEDED, warnings resolved
+
+- Run: GitHub Actions run 44216829456, head `50573f04511ffcc614a7f1afe965e5553ea18c1d`, same free `macos-26` runner, Xcode 26.6 / iPhoneOS 26.5 SDK. Run URL: https://github.com/yossigo88-cyber/kosherguard-platform/actions/runs/44216829456
+- static-validation: SUCCESS. xcode-compile: SUCCESS - **BUILD SUCCEEDED**.
+- Scope: investigate the run-4 ExtensionKit packaging warning against Apple's requirements before changing anything; correct confirmed packaging issues; fix only safe, necessary Swift warnings; re-run gates and one free unsigned build; document signing/device readiness.
+
+### Investigation: what Apple actually requires (verified, not assumed from the warning)
+
+1. The run-4 warning verbatim: `KosherGuardURLFilter.appex is an ExtensionKit extension and must be embedded in the parent app bundle's Extensions directory, but is embedded in the parent app bundle's PlugIns directory`.
+2. Apple's own sample project for this exact extension point - "Filtering traffic by URL" (https://developer.apple.com/documentation/networkextension/filtering-traffic-by-url), project archive downloaded from Apple's docs-assets CDN - embeds `SimpleURLFilterExtension.appex` with a copy phase named "Embed Foundation Extensions" using `dstPath = "$(EXTENSIONS_FOLDER_PATH)"` and `dstSubfolderSpec = 16`, and sets `IPHONEOS_DEPLOYMENT_TARGET = 26.0` on the extension target.
+3. Apple Technote TN3134 (https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment): a URL filter provider is packaged as an app extension and requires iOS 26.0 minimum.
+4. Conclusion: the warning was CORRECT. `KosherGuardURLFilter.appex` (declared with `EXAppExtensionAttributes` / `EXExtensionPointIdentifier com.apple.networkextension.url-filter-control`) is an ExtensionKit extension and belongs in the app bundle's `Extensions` directory. The other three appexes are traditional NetworkExtension app extensions (`NSExtension` dictionary) and correctly stay in `PlugIns`.
+
+### Fix 1 (packaging, confirmed): `ios/KosherGuard.xcodeproj/project.pbxproj`
+
+- Split the single "Embed Foundation Extensions" copy phase (which had embedded ALL FOUR appexes into `PlugIns`, dstSubfolderSpec 13) into two:
+  - "Embed App Extensions" (PlugIns, dstSubfolderSpec 13, unchanged destination): KosherGuardFilter, KosherGuardFilterControl, KosherGuardDNSProxy.
+  - "Embed Foundation Extensions" (NEW phase, `dstPath = "$(EXTENSIONS_FOLDER_PATH)"`, dstSubfolderSpec 16 - byte-matching Apple's sample): KosherGuardURLFilter only.
+- Raised the URLFilterExtension target's `IPHONEOS_DEPLOYMENT_TARGET` from 17.0 to 26.0 (Debug + Release), matching TN3134's minimum OS and Apple's sample. The app and other extension targets keep 17.0; no other build setting changed.
+- Verified in the run-5 raw log: the built app contains `KosherGuard.app/Extensions/KosherGuardURLFilter.appex` and `KosherGuard.app/PlugIns/{KosherGuardDNSProxy,KosherGuardFilter,KosherGuardFilterControl}.appex`. The packaging warning is GONE. No deployment-target-mismatch warning appeared.
+
+### Fix 2 (Swift warnings): all four were safe to fix; all four fixed
+
+- `AppBlockingView.swift:125` 'switch must be exhaustive': the iOS 26 SDK added a KNOWN case, `AuthorizationStatus.approvedWithDataAccess` (Apple doc: https://developer.apple.com/documentation/familycontrols/authorizationstatus/approvedwithdataaccess - iOS 26.4+, "grants everything that .approved allows" plus non-tokenized data access). It is availability-annotated, so it cannot be a case pattern on the app's iOS 17.0 deployment target. The approved path is now a shared local function; a plain `default` branch routes `.approvedWithDataAccess` (guarded by `if #available(iOS 26.4, *)`) to the same approved path, and every other unknown state still fails closed to `.notAuthorized` - the pre-existing fail-closed rule is preserved, not weakened.
+- `FilterSyncController.swift:542` unnecessary `try?` on a non-throwing `flatMap`: replaced with `if let stagingFile { try? ... }`. Same behavior.
+- `ApplePrefilter.swift:121` unused `skew`/`damp`: removed from `encodeLabel`'s declaration (the used copies in `adapt()` at line 166 are untouched). Same behavior.
+- `MDMEnrollmentClient.swift:24` unused `data`: `let (data, response)` -> `let (_, response)`. Same behavior; the function still always throws `unsignedProfileRefused` in this build.
+- NOT "fixed": the benign `appintentsmetadataprocessor` notices ("Metadata extraction skipped. No AppIntents.framework dependency found.") - toolchain noise, not a code defect.
+
+### Pre-push gates - actually run, in this order, BEFORE the push
+
+1. `python3 tools/validate-ios-project.py` - all checks passed, exit 0 (14 informational placeholders, expected until a real team ID exists).
+2. `bash tools/run-swift-portable-tests.sh` on the official `swift-6.0.3-RELEASE-ubuntu22.04` toolchain (download.swift.org, 784207421 bytes, freshly downloaded this round). FIRST run: 135/136 - the source-level regression test `AppShieldReachabilityTests.testSectionCallsRealShieldFlow` failed because it textually required `@unknown default`, which the corrected exhaustiveness fix cannot keep (a known SDK case needs a real `default`). The test (`tools/swift-portable-tests.swift`) was updated to assert the SAME rule against the new structure: the switch must have a `default` branch whose tail still maps to `state = .notAuthorized`, and the new `.approvedWithDataAccess` handling must be present. SECOND run (the recorded result): **136 tests, 0 failures, exit 0**. No test was deleted or weakened; the fail-closed assertion still exists and still guards the same behavior. Honest limit, unchanged: the harness compiles only the portable Foundation sources; NetworkExtension/ExtensionKit and SwiftUI files are NOT compiled by it - the macOS run verifies those. (Note: `AppBlockingView.swift` is app-target SwiftUI code, not in the portable compile set; the harness test reads it as source text only.)
+
+### Verified in the run-5 raw log
+
+- ZERO `error:` lines. `** BUILD SUCCEEDED **`.
+- Real compile/link for all five targets (app + four extensions).
+- Zero Swift warnings and zero packaging warnings. Remaining output is only the benign AppIntents metadata notices and runner-infra noise (git hint, Node.js 20 deprecation of the checkout action).
+- Run 5 built exactly head `50573f04511ffcc614a7f1afe965e5553ea18c1d`.
+
+### What is ready for signing and real-device testing - and what is NOT proven
+
+Ready (compile/package level only):
+
+- The app and all four extensions compile and link cleanly for iPhoneOS 26.5 arm64 with zero warnings.
+- The bundle layout now matches Apple's requirement for every extension type: three NetworkExtension appexes in `PlugIns`, the ExtensionKit URL Filter appex in `Extensions`.
+
+Still required before any device run (unchanged blockers, NOT done in this stage):
+
+- A real Apple Developer team ID and signing: `TEAMIDPLACEHOLDER` remains in all four entitlements files, and `kosherguard.example.com` / `group.com.kosherguard.shared` placeholders remain (the validator's 14 informational notes). Code signing is OFF in this workflow by design.
+- Apple's distribution approval for the Family Controls entitlement is required before App Store / distribution use of the app-blocking feature (per Apple's Family Controls documentation).
+- Platform requirements from TN3134 still gate real behavior: URL filter provider needs iOS 26.0+; content filter on iOS requires supervised devices (or Screen Time child authorization); DNS proxy provider requires supervised/managed devices for the relevant modes.
+- Entitlement, provisioning and installation validation cannot happen in an unsigned CI compile; neither can actual filtering behavior.
+
+### Limits, stated plainly
+
+- This remains an UNSIGNED compile-and-link success on a CI runner. It proves source correctness and correct bundle layout only - not app launch, not extension loading, not filtering, not MDM, not device behavior.
+- Nothing signed, deployed or purchased; no Apple account or device changes; `main`, `stage-10-ios-runtime-integration`, `stage-11-apple-build-signing` and the superseded `stage-12-free-ci-unsigned-build` untouched.
+
+### Changed files in this round (commit `50573f04511ffcc614a7f1afe965e5553ea18c1d`)
+
+- `ios/KosherGuard.xcodeproj/project.pbxproj` - packaging fix + URLFilterExtension deployment target 26.0
+- `ios/Sources/KosherGuard/AppBlockingView.swift` - `.approvedWithDataAccess` exhaustiveness fix
+- `ios/Sources/URLFilter/FilterSyncController.swift` - unnecessary `try?` removed
+- `ios/Sources/URLFilter/ApplePrefilter.swift` - unused constants removed
+- `ios/Sources/URLFilter/MDMEnrollmentClient.swift` - unused binding removed
+- `tools/swift-portable-tests.swift` - regression assertion updated to the corrected fail-closed structure
