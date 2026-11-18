@@ -381,14 +381,34 @@ final class FilterSyncViewModel {
             // keys simply leave the URL Filter off; the NEFilter
             // explicit-rule path is unaffected. A removed/invalid
             // configuration disables it explicitly (fail closed).
+            // PLACEHOLDER endpoints (RFC 2606/6761 reserved names,
+            // e.g. the shipped *.kosherguard.example.com stand-ins)
+            // are NOT an error: the URL database service is not
+            // deployed yet, so the filter is left off with an honest
+            // status. Enabling would hand the system PIR lookups
+            // that can never complete, which under shouldFailClosed
+            // blocks ALL WebKit/URLSession traffic for no reason.
             if #available(iOS 26.0, *) {
                 do {
-                    if confirmed.pirServerURL != nil,
-                       confirmed.pirPrivacyPassIssuerURL != nil {
-                        try await URLFilterConfiguration.enable(
-                            from: confirmed)
-                        await MainActor.run {
-                            self.urlFilterState = .enabled
+                    if let pirServer = confirmed.pirServerURL,
+                       let issuer = confirmed.pirPrivacyPassIssuerURL {
+                        if let problem =
+                            PIREndpointPolicy.deploymentProblem(
+                                pirServer: pirServer, issuer: issuer) {
+                            try await URLFilterConfiguration
+                                .disableFilter()
+                            store?.recordStatus("URL Filter off: "
+                                + "PIR endpoints not deployed ("
+                                + problem + ")")
+                            await MainActor.run {
+                                self.urlFilterState = .notInstalled
+                            }
+                        } else {
+                            try await URLFilterConfiguration.enable(
+                                from: confirmed)
+                            await MainActor.run {
+                                self.urlFilterState = .enabled
+                            }
                         }
                     } else {
                         try await URLFilterConfiguration.disableFilter()

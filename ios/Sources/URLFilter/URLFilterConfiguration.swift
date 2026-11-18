@@ -25,6 +25,15 @@ struct URLFilterConfiguration {
         /// URL Filter without them would produce a filter that can
         /// never resolve a prefilter hit - fail closed instead.
         case notConfigured(String)
+        /// The endpoints are provably undeployable placeholder hosts
+        /// (RFC 2606/6761 reserved names, e.g. the shipped
+        /// *.kosherguard.example.com stand-ins). Refused BEFORE any
+        /// NEURLFilterManager call: enabling with placeholders would
+        /// install a filter whose PIR lookups can never complete,
+        /// which under shouldFailClosed blocks all WebKit/URLSession
+        /// traffic for no reason. The honest state is "URL database
+        /// service not deployed" - the filter stays off.
+        case placeholderHosts(String)
     }
 
     /// Configure (or reconfigure) the system URL Filter from the
@@ -51,6 +60,14 @@ struct URLFilterConfiguration {
         guard let issuer = configuration.pirPrivacyPassIssuerURL else {
             throw ConfigurationError.notConfigured("pirPrivacyPassIssuerURL")
         }
+        // PLACEHOLDER REFUSAL, before any system call: standards-
+        // reserved hosts (the shipped *.kosherguard.example.com
+        // stand-ins included) can never be a deployed PIR service.
+        // Portable-XCTested policy (PIREndpointPolicy).
+        if let problem = PIREndpointPolicy.deploymentProblem(
+            pirServer: pirServer, issuer: issuer) {
+            throw ConfigurationError.placeholderHosts(problem)
+        }
         // NSPIRConfiguration (grounded in Apple's PIR-service
         // onboarding documentation, read 2026-11-17): the app
         // Info.plist statically declares the PIR endpoints; from
@@ -58,27 +75,13 @@ struct URLFilterConfiguration {
         // these runtime values and the plist. Validate the match
         // here so a misconfigured deployment fails at enable time
         // with a clear error instead of a system rejection later.
-        if let declared = Bundle.main.object(
-            forInfoDictionaryKey: "NSPIRConfiguration")
-            as? [String: Any] {
-            if let declaredPIR = declared["PIRServerURL"] as? String,
-               let declaredURL = URL(string: declaredPIR),
-               declaredURL.host(percentEncoded: false)
-                    != pirServer.host(percentEncoded: false) {
-                throw ConfigurationError.notConfigured(
-                    "pirServerURL does not match the Info.plist "
-                    + "NSPIRConfiguration.PIRServerURL")
-            }
-            if let declaredIssuer =
-                    declared["PrivacyPassIssuerURL"] as? String,
-               let declaredURL = URL(string: declaredIssuer),
-               declaredURL.host(percentEncoded: false)
-                    != issuer.host(percentEncoded: false) {
-                throw ConfigurationError.notConfigured(
-                    "pirPrivacyPassIssuerURL does not match the "
-                    + "Info.plist NSPIRConfiguration."
-                    + "PrivacyPassIssuerURL")
-            }
+        let declared = Bundle.main.object(
+            forInfoDictionaryKey: "NSPIRConfiguration") as? [String: Any]
+        if let problem = PIREndpointPolicy.declarationProblem(
+            declaredPIR: declared?["PIRServerURL"] as? String,
+            declaredIssuer: declared?["PrivacyPassIssuerURL"] as? String,
+            runtimePIR: pirServer, runtimeIssuer: issuer) {
+            throw ConfigurationError.notConfigured(problem)
         }
         let manager = NEURLFilterManager.shared
         try await manager.loadFromPreferences()

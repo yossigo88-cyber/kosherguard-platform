@@ -4679,3 +4679,129 @@ final class PersonalLaneCorrectionTests: XCTestCase {
         XCTAssertFalse(fetched.issues.isEmpty)
     }
 }
+
+// MARK: - PIR endpoint deployability policy (B3)
+// The gate that keeps placeholder PIR hosts from ever reaching
+// NEURLFilterManager.setConfiguration. The tripwire test at the
+// bottom ties the SHIPPED App-Info.plist declarations to this
+// policy: while the declared hosts are placeholders, enable can
+// never succeed; when ops replaces them with real hosts, the test
+// fails loudly and forces a review of the enable path.
+final class PIREndpointPolicyTests: XCTestCase {
+
+    private func url(_ s: String) -> URL { URL(string: s)! }
+
+    func testRFC2606DocumentationDomainsRefused() {
+        for host in ["example.com", "example.net", "example.org",
+                     "pir.kosherguard.example.com",
+                     "issuer.kosherguard.example.com",
+                     "sub.example.org"] {
+            let problem = PIREndpointPolicy.deploymentProblem(
+                pirServer: url("https://\(host)"),
+                issuer: url("https://pir.kosherguard.org"))
+            XCTAssertNotNil(problem, "\(host) must be refused: "
+                + String(describing: problem))
+            XCTAssertTrue(problem?.contains("pirServerURL") ?? false)
+        }
+    }
+
+    func testRFC6761SpecialUseTLDsRefused() {
+        for host in ["localhost", "pir.localhost", "a.invalid",
+                     "a.test", "a.example"] {
+            XCTAssertNotNil(PIREndpointPolicy.deploymentProblem(
+                pirServer: url("https://\(host)"),
+                issuer: url("https://pir.kosherguard.org")),
+                "\(host) must be refused")
+        }
+    }
+
+    func testNonHTTPSAndNonHostOnlyURLsRefused() {
+        for raw in ["http://pir.kosherguard.org",
+                    "https://user@pir.kosherguard.org",
+                    "https://pir.kosherguard.org:8443",
+                    "https://pir.kosherguard.org/pir",
+                    "https://pir.kosherguard.org?x=1"] {
+            XCTAssertNotNil(PIREndpointPolicy.deploymentProblem(
+                pirServer: url(raw),
+                issuer: url("https://issuer.kosherguard.org")),
+                "\(raw) must be refused")
+        }
+    }
+
+    func testDeployableShapeAccepted() {
+        XCTAssertNil(PIREndpointPolicy.deploymentProblem(
+            pirServer: url("https://pir.kosherguard.org"),
+            issuer: url("https://issuer.kosherguard.org")))
+        // A root path "/" is host-only in effect.
+        XCTAssertNil(PIREndpointPolicy.deploymentProblem(
+            pirServer: url("https://pir.kosherguard.org/"),
+            issuer: url("https://issuer.kosherguard.org")))
+    }
+
+    func testProblemIsReportedOnTheIssuerWhenIssuerIsPlaceholder() {
+        let problem = PIREndpointPolicy.deploymentProblem(
+            pirServer: url("https://pir.kosherguard.org"),
+            issuer: url("https://issuer.kosherguard.example.com"))
+        XCTAssertTrue(problem?.contains("pirPrivacyPassIssuerURL")
+            ?? false)
+    }
+
+    func testDeclarationMatchIsCaseAndTrailingDotInsensitive() {
+        XCTAssertNil(PIREndpointPolicy.declarationProblem(
+            declaredPIR: "https://PIR.KosherGuard.ORG.",
+            declaredIssuer: "https://issuer.kosherguard.org",
+            runtimePIR: url("https://pir.kosherguard.org"),
+            runtimeIssuer: url("https://issuer.kosherguard.org")))
+    }
+
+    func testDeclarationMismatchReportedPerKey() {
+        let pir = PIREndpointPolicy.declarationProblem(
+            declaredPIR: "https://other.kosherguard.org",
+            declaredIssuer: nil,
+            runtimePIR: url("https://pir.kosherguard.org"),
+            runtimeIssuer: url("https://issuer.kosherguard.org"))
+        XCTAssertTrue(pir?.contains("NSPIRConfiguration.PIRServerURL")
+            ?? false)
+        let issuer = PIREndpointPolicy.declarationProblem(
+            declaredPIR: nil,
+            declaredIssuer: "https://other.kosherguard.org",
+            runtimePIR: url("https://pir.kosherguard.org"),
+            runtimeIssuer: url("https://issuer.kosherguard.org"))
+        XCTAssertTrue(issuer?.contains("PrivacyPassIssuerURL") ?? false)
+    }
+
+    func testAbsentDeclarationImposesNoConstraint() {
+        XCTAssertNil(PIREndpointPolicy.declarationProblem(
+            declaredPIR: nil, declaredIssuer: nil,
+            runtimePIR: url("https://pir.kosherguard.org"),
+            runtimeIssuer: url("https://issuer.kosherguard.org")))
+    }
+
+    /// TRIPWIRE: the shipped App-Info.plist NSPIRConfiguration hosts
+    /// must be refused by the deployment policy while they are
+    /// placeholders. When ops replaces them with real deployed hosts,
+    /// this test FAILS - intentionally - to force a review of the
+    /// enable path (the refusal then stops firing and the URL Filter
+    /// can be enabled for the first time).
+    func testShippedPlistHostsAreRefusedWhilePlaceholders() throws {
+        guard let root = ProcessInfo.processInfo
+            .environment["KG_REPO_ROOT"]
+        else { throw XCTSkip("KG_REPO_ROOT not set") }
+        let data = try Data(contentsOf: URL(fileURLWithPath: root +
+            "/ios/Configuration/App-Info.plist"))
+        let plist = try PropertyListSerialization.propertyList(
+            from: data, format: nil) as? [String: Any]
+        let declared = plist?["NSPIRConfiguration"] as? [String: Any]
+        let pir = try XCTUnwrap(declared?["PIRServerURL"] as? String)
+        let issuer = try XCTUnwrap(
+            declared?["PrivacyPassIssuerURL"] as? String)
+        let problem = PIREndpointPolicy.deploymentProblem(
+            pirServer: try XCTUnwrap(URL(string: pir)),
+            issuer: try XCTUnwrap(URL(string: issuer)))
+        XCTAssertNotNil(problem, "shipped NSPIRConfiguration hosts "
+            + "are expected to be undeployable placeholders; a real "
+            + "deployment must update this test with the enable-path "
+            + "review")
+        XCTAssertTrue(problem?.contains("placeholder") ?? false)
+    }
+}
