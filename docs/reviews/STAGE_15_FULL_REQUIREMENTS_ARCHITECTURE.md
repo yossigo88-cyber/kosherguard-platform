@@ -31,7 +31,7 @@ out explicitly per row.
 | R0 | Bulk category blocklist, privacy-preserving, system-enforced web filtering on personal iPhones | URL Filter lane: export pipeline, real Apple PIR round trips (CI runs 44238729494, 44242647306), 95/95 url-filter-server tests (re-run locally at docs tip), portable Swift 177/177 in CI (run 44242647317) | No real-device run (needs signing + device); PIR service is Apple's non-production example; OHTTP relay onboarding not started |
 | R1 | Different policies and exceptions per device | DNS edge SERVER-SIDE: authenticated per-device DoH identity (`dns-edge/doh_identity.py`), per-device policy selection (`dns-edge/device_policy.py`), delegated exception overlay with baseline floor (`dns-edge/policy_bundle.py`); 87/87 dns-edge tests pass locally at docs tip | **Device-delivery gap (verified, not inferred):** `docs/design/DOH_IOS_TRANSPORT.md` documents that the native iOS DNS path (`com.apple.dnsSettings.managed`) has NO header/credential field, so the header-based per-device identity cannot ride the system-wide DNS path; it works only where we control the HTTP client (our own app). Per-device URL-embedded credentials are rejected by the approved design rule against URL-transported tokens. So per-device DNS policy is NOT deliverable to a personal iPhone's system DNS today. URL Filter lane: unexpressible (single shared dataset). Alternatives: sections 4.A/4.B |
 | R2 | Default-block (allowlist-only) posture | DNS edge: engine `default_policy: block` (`filtering-engine/src/policy_engine.py`); 337 engine tests pass locally at docs tip. Deliverable on the native DNS path (no identity needed) | URL Filter lane: unexpressible (membership-only dataset). Screen Time alternative exists (4.A). DNS granularity is domains only |
-| R3 | Timed filtering schedules | DNS edge: weekly time-window schedules, allowlist always wins (`dns-edge/schedules.py`; 25 + 3 schedule tests pass). Deliverable on the native DNS path (resolver-side timing) | URL Filter lane: refused loudly (dataset has no time dimension). Screen Time alternative exists (4.A/4.B) |
+| R3 | Timed filtering schedules | DNS edge: weekly time-window schedules, allowlist always wins (`dns-edge/schedules.py`; 42 collected schedule tests pass: 36 in `test_schedules.py` + 6 in `test_dated_schedules.py`). Deliverable on the native DNS path (resolver-side timing) | URL Filter lane: refused loudly (dataset has no time dimension). Screen Time alternative exists (4.A/4.B) |
 | R4 | Block a parent domain while allowing specific subdomains | Engine semantics: explicit allowlist beats blocklist, entries cover subdomains (`policy_engine.py` precedence 1-5); deliverable resolver-side on the native DNS path | URL Filter lane: unexpressible, refused loudly (3.2). DNS granularity is domains only (no URL paths) |
 | R5 | Production-ready PIR service | Not implemented; Apple's pinned example is interop-tested but Apple-marked non-production (5.1) | Candidate comparison in 5.2; all production hardening + Apple onboarding outstanding |
 | R6 | Reliable dataset activation and recovery | Partially: hot reload without restart, last-good retention, publication watch (95/95 tests) | Staged activation non-atomic; post-hook-failure PIR state UNKNOWN (Stage 14 limit 5); mixed-generation consistency analyzed in section 6 (design proposal) |
@@ -377,13 +377,30 @@ Proposed generation protocol:
    content-addressed paths, never in place. (Same-snapshot construction is
    also what Apple's BloomFilterTool sample does and what the secondary
    production notes identify as mandatory.)
-2. Serve an OVERLAP dataset during the transition window: N+1 content UNION
-   the keys removed between N and N+1, kept for at least one
-   `prefilterFetchInterval` plus margin after activation. This makes
-   removals fail-toward-block for stale-Bloom devices and makes replica
-   skew harmless (every replica serves a superset during the window). The
-   window length is a configured policy, since the system controls actual
-   prefilter refresh timing.
+2. Serve an OVERLAP dataset during a transition window: N+1 content UNION
+   the keys removed between N and N+1, kept for a configured window after
+   activation. This is a MITIGATION, not a correctness guarantee, and its
+   limits are stated plainly:
+   - A configured window cannot bound offline devices or OS-delayed
+     refreshes. iOS controls actual prefilter refresh timing, and a device
+     that is offline (or whose refresh the OS defers) keeps its stale Bloom
+     past ANY fixed window; for such a device the stale-generation
+     weakening in the bullet list above persists until ITS prefilter next
+     refreshes, however long that takes.
+   - The window therefore does not prove convergence and does not deliver
+     global network fail-closed behavior. What it bounds is narrower:
+     while it lasts, the server side never makes staleness worse (every
+     replica serves a superset, so a removed key still answers "match" to
+     a stale-Bloom device), and replica skew is harmless within it. After
+     the window ends, removed keys age out on the assumption that most
+     online devices have refreshed - an availability tradeoff chosen by
+     configuration, not a proven property.
+   - Apple-documented cache/parameter behavior is the only grounded
+     recovery lever: the system periodically fetches `/config` (with
+     caching delay noted by Apple), and the manager API exposes
+     `resetPIRCache()` and a refetch-parameters call for stale on-device
+     parameters. Our overlap window is a proposed addition on top of
+     those, untested until a device and a deployed service exist.
 3. Verify N+1 with canary queries through the real query path before
    activation (the CI evidence harness already prints per-keyword results;
    point the same probe at the new generation, including Apple's test
