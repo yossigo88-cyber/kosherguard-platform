@@ -1,8 +1,8 @@
 # Stage 12 - First Real Xcode Build: ACTUAL Results
 
 - Repository: https://github.com/yossigo88-cyber/kosherguard-platform (public)
-- Branch: `stage-12-free-ios-build` at `5c737e9c3e891de089affb62193f46f2713a9f37`
-- Run: GitHub Actions run 44207115197 ("iOS unsigned build"), 2026-11-18T00:21:14Z, free standard `macos-26` runner, $0 compute for public repos, no artifacts uploaded
+- Branch: `stage-12-free-ios-build`. This running report covers four runs on four successive heads: run 1 built `5c737e9c3e891de089affb62193f46f2713a9f37` (the header run below), run 2 built `c789cd36394cf5044c846af5f0e7bda53465e1c8`, run 3 built `7abe15773b74646e6613ff56aac506d13c55730e`, and run 4 built `a4026c23ae6be14dcfda2a002f20c24dcea36ff3` - the current tested code, which SUCCEEDED.
+- Run 1: GitHub Actions run 44207115197 ("iOS unsigned build"), 2026-11-18T00:21:14Z, free standard `macos-26` runner, $0 compute for public repos, no artifacts uploaded
 - Untouched: `main` `5f75d213a5ef9a19e811cfe4f56c44acc9f06f2a`, `stage-10` `791f0ef`, `stage-11` `62c0ccc`, superseded `stage-12-free-ci-unsigned-build` `b30a6bb`
 - Status: FOUR REAL RUNS COMPLETED. Run 1 failed with 6 compile errors (fixed, user-approved). Run 2 CONFIRMED those 6 are gone and surfaced 1 new compile error in a different file. Run 3 CONFIRMED that error is fixed (all four extensions link) and surfaced 2 pre-existing errors further along in the app target. Run 4 CONFIRMS those 2 are fixed: **BUILD SUCCEEDED** - the app target and all four extensions compile and link, unsigned. Nothing was signed, deployed or purchased. A successful unsigned compile is NOT evidence of working filtering on a device.
 
