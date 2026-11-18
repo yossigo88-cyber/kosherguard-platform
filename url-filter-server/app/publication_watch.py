@@ -55,10 +55,10 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
     Categories expand through the SAME generation's categories.json
     (domains -> [categories]): category_rules.block marks each listed
     domain block, category_rules.allow overlays allow. Allows overlay
-    blocks, exactly like the device feed. Filtering _schedules are
-    engine-time metadata; a membership dataset cannot express time
-    windows, so a scheduled block applies for the whole publication
-    (over-blocks, never under-blocks).
+    blocks, exactly like the device feed. A policy carrying timed
+    _schedules is REFUSED (see the field inventory in the body): the
+    dataset cannot express time windows and silently applying the
+    block outside the user's schedule is not an accepted semantic.
     """
     generation_dir = Path(generation_dir)
     try:
@@ -68,11 +68,32 @@ def rules_from_generation(generation_dir) -> list[URLRule]:
         raise WatchError(f"unreadable policy document: {exc}") from exc
     if not isinstance(policy, dict):
         raise WatchError("policy document is not an object")
-    allowed_keys = {"default_policy", "allowlist", "blocklist",
-                    "category_rules", "_schedules", "_meta"}
-    unknown = sorted(set(policy) - allowed_keys)
+    # Canonical field inventory (engine POLICY_KEYS + the "_"-prefixed
+    # metadata convention the engine validator allows):
+    #   default_policy  -> checked: only "allow" is expressible
+    #   allowlist       -> dataset allow overlay
+    #   blocklist       -> dataset block entries
+    #   category_rules  -> expanded via the same generation's
+    #                      categories.json
+    #   _schedules      -> REFUSED when non-empty: timed schedules are
+    #                      unexpressible in a membership dataset and
+    #                      silently blocking outside the user's
+    #                      schedule is not an accepted semantic.
+    #                      Empty/absent is fine.
+    #   other "_"-keys  -> inert metadata, ignored (engine convention)
+    # Anything else is an unknown key and refused.
+    unknown = sorted(
+        k for k in policy
+        if k not in ("default_policy", "allowlist", "blocklist",
+                     "category_rules")
+        and not (isinstance(k, str) and k.startswith("_")))
     if unknown:
         raise WatchError(f"policy document has unknown keys: {unknown}")
+    if policy.get("_schedules"):
+        raise WatchError(
+            "policy carries timed _schedules; a URL Filter membership "
+            "dataset cannot express time windows, refusing rather than "
+            "blocking outside the configured schedule")
     if policy.get("default_policy") != "allow":
         raise WatchError(
             "default_policy {!r} is not expressible as a URL Filter "

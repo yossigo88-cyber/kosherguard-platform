@@ -142,6 +142,11 @@ class TestAutomaticPublicationChain:
              "category_rules": ["gambling"]},
             # Wrong value type.
             {"default_policy": "allow", "blocklist": "x.example"},
+            # Timed schedules: unexpressible, never silently applied
+            # outside the user's window.
+            {"default_policy": "allow", "blocklist": [],
+             "_schedules": [{"days": [1], "start": "22:00",
+                             "end": "06:00"}]},
         ]
         for i, doc in enumerate(bad_docs, start=2):
             publish(root, i, [], policy_doc=doc)
@@ -278,6 +283,44 @@ class TestAutomaticPublicationChain:
         assert watcher.check_once() == "failed"
         assert "per-device exception" in watcher.status()["last_error"]
         assert c.get("/v1/dataset/manifest").json()["version"] == 1
+
+    def test_partial_hook_failure_leaves_no_half_activated_state(
+            self, rig, tmp_path):
+        """Order limits, tested: the entrypoint hook writes the device
+        export (atomic os.replace) THEN runs the regen command. A
+        failure after the export write leaves the new export on disk
+        but the PIR service unreloaded and the served Bloom/prefilter
+        on the old generation - every SERVED artifact stays on the
+        last good generation, and the retry rewrites the same export
+        idempotently."""
+        root, ref, _, c = rig
+        export = str(tmp_path / "device.textpb")
+        calls = {"n": 0}
+
+        def hook(dataset):
+            from app.pir_export import export_device_textpb
+            tmp = export + ".tmp"
+            with open(tmp, "w") as fh:
+                fh.write(export_device_textpb(dataset.rules))
+            os.replace(tmp, export)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("SIGHUP failed")
+
+        w = PublicationWatcher(root, ref, on_swap=hook)
+        publish(root, 2, ["partial.example"])
+        assert w.check_once() == "failed"
+        # Served artifacts: still generation 1 everywhere.
+        assert c.get("/v1/dataset/manifest").json()["version"] == 1
+        assert b"partial.example" not in \
+            c.get("/v1/dataset/shards/0").content
+        # The on-disk export moved ahead (harmless: the PIR service
+        # only uses it after a successful regen, which the retry
+        # completes before anything serves generation 2).
+        with open(export) as fh:
+            assert "partial.example" in fh.read()
+        assert w.check_once() == "updated"
+        assert c.get("/v1/dataset/manifest").json()["version"] == 2
 
     def test_confinement_violation_recorded_as_failure(self, rig):
         root, ref, _, _ = rig
