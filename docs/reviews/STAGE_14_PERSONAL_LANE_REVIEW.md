@@ -167,30 +167,35 @@ Deliberate, tested refusals (a safety subset, not silent drops):
    relay is approval-gated. Nothing here has run on a real device:
    NEURLFilter end-to-end requires signing + a device, which is not granted.
 
-## Architecture-gap decision proposal (per-device / block-default / exceptions)
+## Open owner decision: preserve full requirements or ship a reduced subset
 
-The personal lane's expressiveness ceiling comes from one fact: the dataset
-is a single membership set with presence = block. Options, cheapest first:
+The dataset on this lane is a single membership set (presence = block), so
+the CURRENT DESIGN cannot express: per-device policy divergence, per-device
+exception overlays, a block-default posture, timed schedules, or
+ancestor-block + descendant-allow. The code refuses each loudly at publish
+time (tested refusals) rather than silently approximating.
 
-A. Accept the ceiling (recommended for v1): keep the loud refusals; document
-   block-default, per-device divergence, timed schedules and descendant
-   exceptions as supervised-lane (MDM) features. Zero new code; honest
-   product surface.
-B. Per-device datasets: publish one dataset per divergent device/group. Cost:
-   PIR privacy degrades as anonymity sets shrink (a dataset serving one
-   device is functionally a direct lookup); storage and export time scale
-   with device count. Only worth it if per-device policy is a hard
-   requirement AND small cohorts are acceptable.
-C. Approximate exceptions: at publish time, expand ancestor blocks and
-   subtract enumerable descendant allows. Works only when descendants are
-   finitely enumerable (known URL lists); arbitrary subtrees are not. Partial
-   correctness risk if the web changes under a fixed expansion.
-D. Block-default via a different primitive: not possible in the URL Filter
-   dataset; requires the supervised lane (DNS proxy / MDM controls) and is
-   out of scope for the personal lane.
+Boundary of this stage's evidence: whether any OTHER iOS mechanism could
+express these requirements was not investigated or verified here. This stage
+establishes only what the current dataset design cannot do; it does not
+establish that these features require supervision, MDM, or any particular
+alternative primitive, and no such claim should be read from this document.
 
-Recommendation: A for the personal lane now; revisit B only with an explicit
-privacy budget. Pending the owner's decision on item 4 above.
+The decision, which belongs to the owner and is NOT made here:
+
+1. Ship the reduced subset: the personal lane ships with the loud refusals
+   as accepted product behavior. This is a scope reduction relative to the
+   original requirements and needs the owner's explicit approval.
+2. Preserve the requirements: commission grounded research into which iOS
+   primitives (if any) can express each requirement, with OS API/source
+   evidence, before any further commitment.
+
+Unvalidated research leads if the owner chooses to preserve requirements
+(leads only - viability unknown, none verified by this stage): per-device
+dataset variants (whose privacy impact on the PIR anonymity set is itself
+unquantified here and would need grounding before any claim either way);
+publish-time expansion of finitely enumerable descendant-allow lists;
+other OS primitives outside the URL Filter dataset.
 
 ## Changed-file inventory (stage-14 range, 51 files, +6258/-171)
 
