@@ -302,6 +302,12 @@ final class FilterSyncViewModel {
     /// or a configuration without the PIR pair moves it back.
     private(set) var urlFilterState: FilterStatus.ExtensionState =
         .notInstalled
+    /// The SYSTEM's own URL Filter state from the last successful
+    /// NEURLFilterManager readback (isEnabled + Status +
+    /// lastDisconnectError), or why no readback exists. This is the
+    /// line a guardian can trust over anything this process
+    /// attempted. UNVERIFIED on device.
+    private(set) var systemReadback: String = "not read yet"
     /// Bumped after every successful app-policy mirror save. The
     /// app-blocking section observes this and re-evaluates the remote
     /// shield gate (including re-checking Screen Time authorization)

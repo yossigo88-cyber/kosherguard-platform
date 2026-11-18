@@ -166,7 +166,7 @@ struct URLFilterConfiguration {
         return SystemReadback(
             isEnabled: manager.isEnabled,
             status: String(describing: manager.status),
-            lastError: manager.lastDisconnectError
+            lastError: (await manager.lastDisconnectError)
                 .map { String(describing: $0) })
     }
 }
