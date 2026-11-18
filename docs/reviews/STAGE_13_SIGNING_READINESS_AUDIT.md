@@ -192,7 +192,7 @@ Money Apple itself charges (verified):
 | Apple Developer Program membership | **99 USD per membership year** (regional pricing may vary; fee waivers exist for nonprofits/accredited education/government) | https://developer.apple.com/programs/enroll/ (fetched 2026-11-17) |
 | Apple Account with two-factor authentication | $0 | enrollment prerequisites (same page) |
 | Apple Business organization account | No published fee on Apple's sign-up page; **requires Apple verification of the organization** (60-day window) | https://support.apple.com/guide/business/sign-up-and-verify-your-organization-axm402206497/web |
-| Managed capabilities (Network Extension values, Family Controls Distribution), MDM Vendor CSR, URL Filter/OHTTP onboarding, MDM APNs push certificate | **No Apple-published fee found today** - approval-gated, not purchasable; treated as $0 pending portal confirmation, not as fee evidence | pages cited in section 3 |
+| Managed capabilities (Network Extension values, Family Controls Distribution), MDM Vendor CSR, URL Filter/OHTTP onboarding, MDM APNs push certificate | **No separate Apple-published fee found; fee not verified** - approval-gated and approval is not guaranteed; absence of a published fee is not evidence of zero cost | pages cited in section 3 |
 | CloudKit Identity & Trust registration tier/cost | **UNVERIFIED** - no Apple page found today states a fee or required tier; do not assume free or all-inclusive until the CloudKit Console shows the requirement with the paid account | https://developer.apple.com/icloud/identity/ |
 
 Organization enrollment prerequisites if KosherGuard enrolls as an
@@ -214,8 +214,9 @@ erasable device for the supervision lane).
 Total honest bottom line: **$99/year is the sole VERIFIED Apple
 membership fee** to reach any signed on-device test - not a
 guaranteed total price. The UNVERIFIED CloudKit Identity & Trust
-tier/cost question stands, the approval-gated items above carry no
-published fee but that is not fee evidence, and hardware is extra. There is no legitimate
+tier/cost question stands, no separate fee is verified for the
+approval-gated items above (no published fee found; absence of a
+published fee is not evidence of zero cost), and hardware is extra. There is no legitimate
 $0 path to a signed filter-extension build: managed entitlements
 cannot be provisioned on a free Personal Team (section 4). This
 audit does not recommend any bypass, and none exists in Apple's
